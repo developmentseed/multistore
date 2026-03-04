@@ -18,6 +18,7 @@
 pub mod jwks;
 pub mod request;
 pub mod responses;
+pub mod route_handler;
 pub mod sts;
 
 use base64::Engine;

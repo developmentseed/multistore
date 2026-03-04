@@ -574,6 +574,17 @@ impl ProxyResult {
             body: ProxyResponseBody::from_bytes(Bytes::from(body.into())),
         }
     }
+
+    /// Create an XML response with the given status and body.
+    pub fn xml(status: u16, body: impl Into<String>) -> Self {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/xml".parse().unwrap());
+        Self {
+            status,
+            headers,
+            body: ProxyResponseBody::from_bytes(Bytes::from(body.into())),
+        }
+    }
 }
 
 /// Headers to forward from backend responses (used by runtimes for Forward responses).
