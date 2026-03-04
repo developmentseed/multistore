@@ -234,9 +234,7 @@ where
             HandlerAction::Response(r) => GatewayResponse::Response(r),
             HandlerAction::Forward(f) => GatewayResponse::Forward(f, body),
             HandlerAction::NeedsBody(pending) => match collect_body(body).await {
-                Ok(bytes) => {
-                    GatewayResponse::Response(self.handle_with_body(pending, bytes).await)
-                }
+                Ok(bytes) => GatewayResponse::Response(self.handle_with_body(pending, bytes).await),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to read request body");
                     GatewayResponse::Response(error_response(

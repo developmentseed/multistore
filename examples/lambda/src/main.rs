@@ -133,18 +133,20 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
         headers: &headers,
     };
 
-    Ok(match state
-        .handler
-        .handle_request(&req_info, body, |b| async {
-            body_to_bytes(b).await.map_err(|e| e.to_string())
-        })
-        .await
-    {
-        GatewayResponse::Response(result) => build_lambda_response(result),
-        GatewayResponse::Forward(fwd, body) => {
-            forward_to_backend(&state.reqwest_client, fwd, body).await
-        }
-    })
+    Ok(
+        match state
+            .handler
+            .handle_request(&req_info, body, |b| async {
+                body_to_bytes(b).await.map_err(|e| e.to_string())
+            })
+            .await
+        {
+            GatewayResponse::Response(result) => build_lambda_response(result),
+            GatewayResponse::Forward(fwd, body) => {
+                forward_to_backend(&state.reqwest_client, fwd, body).await
+            }
+        },
+    )
 }
 
 /// Convert a `ProxyResult` to a Lambda `Response`.

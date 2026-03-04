@@ -60,11 +60,7 @@ unsafe impl Sync for JsBody {}
 /// - `PROXY_CONFIG` environment variable for configuration
 /// - `VIRTUAL_HOST_DOMAIN` environment variable (optional)
 #[event(fetch)]
-async fn fetch(
-    req: web_sys::Request,
-    env: Env,
-    _ctx: Context,
-) -> Result<web_sys::Response> {
+async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys::Response> {
     // Initialize panic hook for better error messages
     console_error_panic_hook::set_once();
 
@@ -111,13 +107,15 @@ async fn fetch(
         headers: &headers,
     };
 
-    Ok(match gateway
-        .handle_request(&req_info, js_body, collect_js_body)
-        .await
-    {
-        GatewayResponse::Response(result) => proxy_result_to_ws_response(result),
-        GatewayResponse::Forward(fwd, body) => forward_to_backend(fwd, body).await,
-    })
+    Ok(
+        match gateway
+            .handle_request(&req_info, js_body, collect_js_body)
+            .await
+        {
+            GatewayResponse::Response(result) => proxy_result_to_ws_response(result),
+            GatewayResponse::Forward(fwd, body) => forward_to_backend(fwd, body).await,
+        },
+    )
 }
 
 // ── Zero-copy forwarding ────────────────────────────────────────────
@@ -188,11 +186,8 @@ async fn forward_to_backend_inner(
     resp_init.set_status(status);
     resp_init.set_headers(&ws_resp_headers.into());
 
-    web_sys::Response::new_with_opt_readable_stream_and_init(
-        backend_ws.body().as_ref(),
-        &resp_init,
-    )
-    .map_err(|e| format!("failed to build response: {:?}", e))
+    web_sys::Response::new_with_opt_readable_stream_and_init(backend_ws.body().as_ref(), &resp_init)
+        .map_err(|e| format!("failed to build response: {:?}", e))
 }
 
 // ── Body collection (NeedsBody path) ───────────────────────────────
