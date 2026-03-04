@@ -9,6 +9,32 @@ The system could be utilized to...
 3. gate access to datasets
 4. bill users for dataset access
 
+## Configuration
+
+### Setting up credentials
+
+1. Copy the example configuration:
+   ```sh
+   cp database.example.yaml database.yaml
+   ```
+
+2. Edit `database.yaml` with your actual credentials:
+   - **data-sources**: Configure the S3 buckets you want to proxy
+   - **credentials**: Define user credentials for accessing your API
+
+**⚠️ Important**: Never commit `database.yaml` to git - it contains sensitive credentials!
+
+### For Cloudflare Workers deployment
+
+The CF Workers deployment uses environment variables for configuration:
+
+1. Create a GitHub secret called `DATABASE_CONFIG` containing your `database.yaml` contents
+2. Set up these additional secrets in your GitHub repository:
+   - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API token
+   - `CLOUDFLARE_ACCOUNT_ID`: Your Cloudflare account ID
+
+The deployment workflow will automatically inject the configuration as an environment variable.
+
 ## Development
 
 ### Running Hyper API

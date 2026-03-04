@@ -52,6 +52,9 @@ impl S3Auth for InMemoryCredentialsRegistry {
 
         // No matching credentials found
         warn!("Invalid access key provided");
-        Err(S3Error::new(s3s::S3ErrorCode::InvalidAccessKeyId))
+        Err(S3Error::with_message(
+            s3s::S3ErrorCode::InvalidAccessKeyId,
+            "Invalid access key provided",
+        ))
     }
 }

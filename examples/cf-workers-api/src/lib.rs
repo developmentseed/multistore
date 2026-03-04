@@ -10,14 +10,23 @@ use s3s::{service::S3ServiceBuilder, S3Error, S3ErrorCode};
 #[worker::event(fetch)]
 async fn fetch(
     req: worker::HttpRequest,
-    _env: worker::Env,
+    env: worker::Env,
     _ctx: worker::Context,
 ) -> s3s::S3Result<worker::Response> {
     // Initialize panic hook for better error messages
     console_error_panic_hook::set_once();
 
-    let config: serde_yaml::Value =
-        serde_yaml::from_str(include_str!("../../../database.yaml")).unwrap();
+    // Load config from environment variable (set in wrangler.toml or Cloudflare dashboard)
+    let config_yaml = env
+        .var("DATABASE_CONFIG")
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| {
+            worker::console_error!("DATABASE_CONFIG environment variable not set");
+            // Fallback to local config for development
+            include_str!("../../../database.yaml").to_string()
+        });
+
+    let config: serde_yaml::Value = serde_yaml::from_str(&config_yaml).unwrap();
 
     let creds_registry = InMemoryCredentialsRegistry::from_serde(config.clone());
 

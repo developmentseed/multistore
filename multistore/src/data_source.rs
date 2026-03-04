@@ -9,14 +9,37 @@ use tracing::{debug, instrument};
 use url::Url;
 pub mod in_memory;
 
+/// Represents a data source (ie an object storage backend, such as an S3 bucket)
 #[derive(Debug, Clone)]
 pub struct DataSource {
     name: String,
     region: String,
     url: String,
     creation_date: Option<dto::Timestamp>,
+    // Credentials to use when connecting to this data source
     credentials: HashMap<String, String>,
+    // Optional HTTP connector for making requests to this data source
     http_connector: Option<Arc<dyn HttpConnector>>,
+}
+
+impl DataSource {
+    pub fn new(
+        name: String,
+        region: String,
+        url: String,
+        creation_date: Option<dto::Timestamp>,
+        credentials: std::collections::HashMap<String, String>,
+        http_connector: Option<Arc<dyn HttpConnector>>,
+    ) -> Self {
+        Self {
+            name,
+            region,
+            url,
+            creation_date,
+            credentials,
+            http_connector,
+        }
+    }
 }
 
 /// Represents a paginated response from listing data sources
