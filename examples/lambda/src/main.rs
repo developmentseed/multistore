@@ -23,32 +23,26 @@ mod client;
 use client::{LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
 use multistore::config::static_file::StaticProvider;
-use multistore::proxy::{ForwardRequest, HandlerAction, ProxyHandler, RESPONSE_HEADER_ALLOWLIST};
+use multistore::proxy::{ForwardRequest, Gateway, HandlerAction, RESPONSE_HEADER_ALLOWLIST};
 use multistore::resolver::DefaultResolver;
 use multistore::response_body::ProxyResponseBody;
+use multistore::route_handler::RequestInfo;
 use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
+use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
 use multistore_oidc_provider::OidcCredentialProvider;
-use multistore_sts::{try_handle_sts, JwksCache};
+use multistore_sts::route_handler::StsRouteHandler;
+use multistore_sts::JwksCache;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 type OidcAuth = MaybeOidcAuth<ReqwestHttpExchange>;
-type Handler = ProxyHandler<LambdaBackend, DefaultResolver<StaticProvider>, OidcAuth>;
+type Handler = Gateway<LambdaBackend, DefaultResolver<StaticProvider>, OidcAuth>;
 
 struct AppState {
     handler: Handler,
     reqwest_client: reqwest::Client,
-    sts_config: StaticProvider,
-    jwks_cache: JwksCache,
-    token_key: Option<TokenKey>,
-    oidc_discovery: Option<OidcDiscovery>,
-}
-
-struct OidcDiscovery {
-    issuer: String,
-    signer: JwtSigner,
 }
 
 static STATE: OnceLock<AppState> = OnceLock::new();
@@ -100,24 +94,22 @@ async fn main() -> Result<(), Error> {
             let auth = MaybeOidcAuth::Enabled(Box::new(
                 multistore_oidc_provider::backend_auth::AwsOidcBackendAuth::new(provider),
             ));
-            let discovery = OidcDiscovery {
-                issuer: issuer.clone(),
-                signer,
-            };
+            let discovery = OidcDiscoveryRouteHandler::new(issuer.clone(), signer);
             (auth, Some(discovery))
         }
         _ => (MaybeOidcAuth::Disabled, None),
     };
 
-    let handler = ProxyHandler::new(backend, resolver).with_oidc_auth(oidc_auth);
+    // Build the gateway with route handlers (OIDC discovery first, then STS).
+    let mut handler = Gateway::new(backend, resolver).with_oidc_auth(oidc_auth);
+    if let Some(discovery) = oidc_discovery {
+        handler = handler.with_route_handler(discovery);
+    }
+    handler = handler.with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
 
     let _ = STATE.set(AppState {
         handler,
         reqwest_client,
-        sts_config,
-        jwks_cache,
-        token_key,
-        oidc_discovery,
     });
 
     lambda_http::run(service_fn(request_handler)).await
@@ -134,53 +126,13 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
 
     tracing::debug!(method = %method, uri = %uri, "incoming request");
 
-    // Intercept OIDC discovery endpoints
-    if let Some(disc) = &state.oidc_discovery {
-        if path == "/.well-known/openid-configuration" {
-            let jwks_uri = format!("{}/.well-known/jwks.json", disc.issuer);
-            let json = multistore_oidc_provider::discovery::openid_configuration_json(
-                &disc.issuer,
-                &jwks_uri,
-            );
-            return Ok(Response::builder()
-                .status(200)
-                .header("content-type", "application/json")
-                .body(Body::Text(json))
-                .unwrap());
-        }
-        if path == "/.well-known/jwks.json" {
-            let json = multistore_oidc_provider::jwks::jwks_json(
-                disc.signer.public_key(),
-                disc.signer.kid(),
-            );
-            return Ok(Response::builder()
-                .status(200)
-                .header("content-type", "application/json")
-                .body(Body::Text(json))
-                .unwrap());
-        }
-    }
-
-    // Intercept STS AssumeRoleWithWebIdentity requests
-    if let Some((status, xml)) = try_handle_sts(
-        query.as_deref(),
-        &state.sts_config,
-        &state.jwks_cache,
-        state.token_key.as_ref(),
-    )
-    .await
-    {
-        return Ok(Response::builder()
-            .status(status)
-            .header("content-type", "application/xml")
-            .body(Body::Text(xml))
-            .unwrap());
-    }
-
-    let action = state
-        .handler
-        .resolve_request(method, &path, query.as_deref(), &headers)
-        .await;
+    let req_info = RequestInfo {
+        method: &method,
+        path: &path,
+        query: query.as_deref(),
+        headers: &headers,
+    };
+    let action = state.handler.handle(&req_info).await;
 
     match action {
         HandlerAction::Response(result) => Ok(build_lambda_response(result)),

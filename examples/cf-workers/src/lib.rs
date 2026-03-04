@@ -28,14 +28,16 @@ mod tracing_layer;
 use client::{FetchHttpExchange, WorkerBackend};
 use multistore::axum::{build_proxy_response, error_response};
 use multistore::config::static_file::{StaticConfig, StaticProvider};
-use multistore::oidc_backend::OidcBackendAuth;
-use multistore::proxy::{ForwardRequest, HandlerAction, ProxyHandler, RESPONSE_HEADER_ALLOWLIST};
-use multistore::resolver::{DefaultResolver, RequestResolver};
+use multistore::proxy::{ForwardRequest, Gateway, HandlerAction, RESPONSE_HEADER_ALLOWLIST};
+use multistore::resolver::DefaultResolver;
+use multistore::route_handler::RequestInfo;
 use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
+use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
 use multistore_oidc_provider::OidcCredentialProvider;
-use multistore_sts::{try_handle_sts, try_parse_sts_request, JwksCache};
+use multistore_sts::route_handler::StsRouteHandler;
+use multistore_sts::JwksCache;
 
 use axum::body::Body;
 use axum::response::Response;
@@ -78,94 +80,43 @@ async fn fetch(
     // Build OIDC backend auth from env secrets/vars.
     let (oidc_auth, oidc_discovery) = load_oidc_auth(&env)?;
 
-    // Intercept OIDC discovery endpoints when OIDC provider is configured.
-    if let Some(disc) = &oidc_discovery {
-        if path == "/.well-known/openid-configuration" {
-            let jwks_uri = format!("{}/.well-known/jwks.json", disc.issuer);
-            let json = multistore_oidc_provider::discovery::openid_configuration_json(
-                &disc.issuer,
-                &jwks_uri,
-            );
-            return Ok(Response::builder()
-                .status(200)
-                .header("content-type", "application/json")
-                .body(Body::from(json))
-                .unwrap());
-        }
-        if path == "/.well-known/jwks.json" {
-            let json = multistore_oidc_provider::jwks::jwks_json(
-                disc.signer.public_key(),
-                disc.signer.kid(),
-            );
-            return Ok(Response::builder()
-                .status(200)
-                .header("content-type", "application/json")
-                .body(Body::from(json))
-                .unwrap());
-        }
-    }
-
-    // Intercept STS AssumeRoleWithWebIdentity requests before resolver dispatch.
-    // STS uses STS_CONFIG (falling back to PROXY_CONFIG) for role definitions.
-    if try_parse_sts_request(query.as_deref()).is_some() {
-        let config = load_sts_config(&env)?;
-        if let Some((status, xml)) =
-            try_handle_sts(query.as_deref(), &config, &jwks_cache, token_key.as_ref()).await
-        {
-            return Ok(Response::builder()
-                .status(status)
-                .header("content-type", "application/xml")
-                .body(Body::from(xml))
-                .unwrap());
-        }
-    }
+    // Load STS config eagerly (config parsing is cheap).
+    let sts_config = load_sts_config(&env)?;
 
     let config = load_static_config(&env)?;
     let virtual_host_domain = env.var("VIRTUAL_HOST_DOMAIN").ok().map(|v| v.to_string());
-    let resolver = DefaultResolver::new(config, virtual_host_domain, token_key);
-    let handler = ProxyHandler::new(WorkerBackend, resolver).with_oidc_auth(oidc_auth);
+    let resolver = DefaultResolver::new(config, virtual_host_domain, token_key.clone());
 
-    Ok(handle_action(
-        method,
-        &handler,
-        &reqwest_client,
-        &path,
-        query.as_deref(),
-        &headers,
-        body,
-    )
-    .await)
-}
+    // Build the gateway with route handlers (OIDC discovery first, then STS).
+    let mut handler = Gateway::new(WorkerBackend, resolver).with_oidc_auth(oidc_auth);
+    if let Some(discovery) = oidc_discovery {
+        handler = handler.with_route_handler(discovery);
+    }
+    handler = handler.with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
 
-// ── Two-phase request handling ──────────────────────────────────────
+    let req_info = RequestInfo {
+        method: &method,
+        path: &path,
+        query: query.as_deref(),
+        headers: &headers,
+    };
+    let action = handler.handle(&req_info).await;
 
-/// Handle the resolved action for any resolver type.
-async fn handle_action<R: RequestResolver, O: OidcBackendAuth>(
-    method: http::Method,
-    handler: &ProxyHandler<WorkerBackend, R, O>,
-    client: &reqwest::Client,
-    path: &str,
-    query: Option<&str>,
-    headers: &http::HeaderMap,
-    body: Body,
-) -> Response {
-    let action = handler.resolve_request(method, path, query, headers).await;
-
-    match action {
+    Ok(match action {
         HandlerAction::Response(result) => build_proxy_response(result),
-        HandlerAction::Forward(fwd) => forward_to_backend(client, fwd, body).await,
+        HandlerAction::Forward(fwd) => forward_to_backend(&reqwest_client, fwd, body).await,
         HandlerAction::NeedsBody(pending) => {
             let collected = match axum::body::to_bytes(body, usize::MAX).await {
                 Ok(b) => b,
                 Err(e) => {
                     tracing::error!(error = %e, "failed to read request body");
-                    return error_response(500, "Internal error");
+                    return Ok(error_response(500, "Internal error"));
                 }
             };
             let result = handler.handle_with_body(pending, collected).await;
             build_proxy_response(result)
         }
-    }
+    })
 }
 
 /// Execute a Forward request via reqwest.
@@ -273,16 +224,11 @@ fn load_sts_config(env: &Env) -> Result<StaticProvider> {
 
 type OidcAuth = MaybeOidcAuth<FetchHttpExchange>;
 
-struct WorkerOidcDiscovery {
-    issuer: String,
-    signer: JwtSigner,
-}
-
 /// Load OIDC provider config from env secrets/vars.
 ///
 /// Returns `MaybeOidcAuth::Enabled` if both `OIDC_PROVIDER_KEY` (secret) and
 /// `OIDC_PROVIDER_ISSUER` (var) are set; otherwise `Disabled`.
-fn load_oidc_auth(env: &Env) -> Result<(OidcAuth, Option<WorkerOidcDiscovery>)> {
+fn load_oidc_auth(env: &Env) -> Result<(OidcAuth, Option<OidcDiscoveryRouteHandler>)> {
     let key_pem = match env.secret("OIDC_PROVIDER_KEY") {
         Ok(val) => Some(val.to_string()),
         Err(_) => None,
@@ -303,7 +249,7 @@ fn load_oidc_auth(env: &Env) -> Result<(OidcAuth, Option<WorkerOidcDiscovery>)> 
             let auth = MaybeOidcAuth::Enabled(Box::new(
                 multistore_oidc_provider::backend_auth::AwsOidcBackendAuth::new(provider),
             ));
-            let discovery = WorkerOidcDiscovery { issuer, signer };
+            let discovery = OidcDiscoveryRouteHandler::new(issuer, signer);
             Ok((auth, Some(discovery)))
         }
         _ => Ok((MaybeOidcAuth::Disabled, None)),
