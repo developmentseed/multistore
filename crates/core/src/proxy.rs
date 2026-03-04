@@ -563,6 +563,19 @@ pub struct ProxyResult {
     pub body: ProxyResponseBody,
 }
 
+impl ProxyResult {
+    /// Create a JSON response with the given status and body.
+    pub fn json(status: u16, body: impl Into<String>) -> Self {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().unwrap());
+        Self {
+            status,
+            headers,
+            body: ProxyResponseBody::from_bytes(Bytes::from(body.into())),
+        }
+    }
+}
+
 /// Headers to forward from backend responses (used by runtimes for Forward responses).
 pub const RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
     "content-type",

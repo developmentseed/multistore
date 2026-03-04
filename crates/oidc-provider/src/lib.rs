@@ -18,6 +18,7 @@ pub mod discovery;
 pub mod exchange;
 pub mod jwks;
 pub mod jwt;
+pub mod route_handler;
 
 use std::sync::Arc;
 
