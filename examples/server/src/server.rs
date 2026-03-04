@@ -69,27 +69,26 @@ struct AppState<P: ConfigProvider> {
 /// #[tokio::main]
 /// async fn main() {
 ///     let config = StaticProvider::from_file("config.toml").unwrap();
-///     let sts_config = config.clone();
 ///     let server_config = ServerConfig {
 ///         listen_addr: ([0, 0, 0, 0], 8080).into(),
 ///         virtual_host_domain: Some("s3.local".to_string()),
 ///         ..Default::default()
 ///     };
-///     run(config, sts_config, server_config).await.unwrap();
+///     run(config, server_config).await.unwrap();
 /// }
 /// ```
 pub async fn run<P>(
     config: P,
-    sts_config: P,
     server_config: ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    P: ConfigProvider + Send + Sync + 'static,
+    P: ConfigProvider + Clone + Send + Sync + 'static,
 {
     let backend = ServerBackend::new();
     let reqwest_client = backend.client().clone();
     let jwks_cache = JwksCache::new(reqwest_client.clone(), Duration::from_secs(900));
     let token_key = server_config.token_key;
+    let sts_config = config.clone();
     let resolver =
         DefaultResolver::new(config, server_config.virtual_host_domain, token_key.clone());
 

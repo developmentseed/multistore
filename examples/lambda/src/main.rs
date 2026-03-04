@@ -12,7 +12,6 @@
 //! ## Environment Variables
 //!
 //! - `CONFIG_PATH` — Path to the TOML config file (default: `config.toml`)
-//! - `STS_CONFIG_PATH` — Optional separate STS config file
 //! - `VIRTUAL_HOST_DOMAIN` — Domain for virtual-hosted-style requests
 //! - `SESSION_TOKEN_KEY` — Base64-encoded AES-256-GCM key for session tokens
 //! - `OIDC_PROVIDER_KEY` — PEM-encoded RSA private key for OIDC provider
@@ -58,14 +57,9 @@ async fn main() -> Result<(), Error> {
         .init();
 
     let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".into());
-    let sts_config_path = std::env::var("STS_CONFIG_PATH").ok();
     let domain = std::env::var("VIRTUAL_HOST_DOMAIN").ok();
 
     let config = StaticProvider::from_file(&config_path)?;
-    let sts_config = match sts_config_path {
-        Some(path) => StaticProvider::from_file(&path)?,
-        None => config.clone(),
-    };
 
     let token_key = std::env::var("SESSION_TOKEN_KEY")
         .ok()
@@ -75,6 +69,7 @@ async fn main() -> Result<(), Error> {
     let backend = LambdaBackend::new();
     let reqwest_client = backend.client().clone();
     let jwks_cache = JwksCache::new(reqwest_client.clone(), Duration::from_secs(900));
+    let sts_config = config.clone();
     let resolver = DefaultResolver::new(config, domain, token_key.clone());
 
     let oidc_provider_key = std::env::var("OIDC_PROVIDER_KEY").ok();

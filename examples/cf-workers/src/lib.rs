@@ -85,17 +85,14 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     // Build OIDC backend auth from env secrets/vars.
     let (oidc_auth, oidc_discovery) = load_oidc_auth(&env)?;
 
-    // Load STS config eagerly (config parsing is cheap).
-    let sts_config = load_sts_config(&env)?;
-
     let config = load_static_config(&env)?;
     let virtual_host_domain = env.var("VIRTUAL_HOST_DOMAIN").ok().map(|v| v.to_string());
-    let resolver = DefaultResolver::new(config, virtual_host_domain, token_key.clone());
+    let resolver = DefaultResolver::new(config.clone(), virtual_host_domain, token_key.clone());
 
     // Build the gateway with route handlers
     let mut gateway = Gateway::new(WorkerBackend, resolver)
         .with_oidc_auth(oidc_auth)
-        .with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
+        .with_route_handler(StsRouteHandler::new(config, jwks_cache, token_key));
     if let Some(discovery) = oidc_discovery {
         gateway = gateway.with_route_handler(discovery);
     }
@@ -302,7 +299,8 @@ fn load_config_from_env(env: &Env, var_name: &str) -> Result<StaticProvider> {
         let static_config: StaticConfig = env
             .object_var(var_name)
             .map_err(|e| worker::Error::RustError(format!("{} config error: {}", var_name, e)))?;
-        Ok(StaticProvider::from_config(static_config))
+        StaticProvider::from_config(static_config)
+            .map_err(|e| worker::Error::RustError(format!("{} config error: {}", var_name, e)))
     }
 }
 
@@ -320,11 +318,6 @@ fn load_token_key(env: &Env) -> Result<Option<TokenKey>> {
         }
         Err(_) => Ok(None),
     }
-}
-
-/// Load STS config: tries STS_CONFIG first, falls back to PROXY_CONFIG.
-fn load_sts_config(env: &Env) -> Result<StaticProvider> {
-    load_config_from_env(env, "STS_CONFIG").or_else(|_| load_config_from_env(env, "PROXY_CONFIG"))
 }
 
 type OidcAuth = MaybeOidcAuth<FetchHttpExchange>;

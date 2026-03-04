@@ -74,8 +74,7 @@ actions = [
 bucket = "private-uploads"
 prefixes = []
 
-[vars.STS_CONFIG]
-[[vars.STS_CONFIG.roles]]
+[[vars.PROXY_CONFIG.roles]]
 max_session_duration_secs = 3600
 name = "Example User"
 role_id = "example-user"
@@ -84,17 +83,17 @@ trusted_oidc_issuers = [
   "https://auth.example.com",
 ]
 
-[[vars.STS_CONFIG.roles.allowed_scopes]]
+[[vars.PROXY_CONFIG.roles.allowed_scopes]]
 actions = ["get_object", "head_object", "put_object", "list_bucket"]
 bucket = "{sub}"
 prefixes = []
 
-[[vars.STS_CONFIG.roles.allowed_scopes]]
+[[vars.PROXY_CONFIG.roles.allowed_scopes]]
 actions = ["get_object", "head_object", "put_object", "list_bucket"]
 bucket = "private-uploads"
 prefixes = []
 
-[[vars.STS_CONFIG.roles]]
+[[vars.PROXY_CONFIG.roles]]
 max_session_duration_secs = 3600
 name = "GitHub Actions"
 role_id = "github-actions"
@@ -103,12 +102,12 @@ trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
 ]
 
-[[vars.STS_CONFIG.roles.allowed_scopes]]
+[[vars.PROXY_CONFIG.roles.allowed_scopes]]
 actions = ["get_object", "head_object", "list_bucket"]
 bucket = "cholmes"
 prefixes = []
 
-[[vars.STS_CONFIG.roles]]
+[[vars.PROXY_CONFIG.roles]]
 max_session_duration_secs = 3600
 name = "GitHub Actions (No Access)"
 role_id = "github-actions-no-access"

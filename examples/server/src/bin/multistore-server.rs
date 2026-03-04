@@ -1,7 +1,7 @@
 //! Multistore Proxy Server binary.
 //!
 //! Usage:
-//!     multistore-server --config config.toml [--sts-config sts.toml] [--listen 0.0.0.0:8080] [--domain s3.local]
+//!     multistore-server --config config.toml [--listen 0.0.0.0:8080] [--domain s3.local]
 
 use multistore::config::cached::CachedProvider;
 use multistore::config::static_file::StaticProvider;
@@ -41,25 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|i| args.get(i + 1))
         .cloned();
 
-    let sts_config_path = args
-        .iter()
-        .position(|a| a == "--sts-config")
-        .and_then(|i| args.get(i + 1))
-        .map(|s| s.as_str());
-
     tracing::info!(config = %config_path, listen = %listen_addr, "starting multistore-server");
 
     let base_config = StaticProvider::from_file(config_path)?;
-    let sts_base = match sts_config_path {
-        Some(path) => {
-            tracing::info!(sts_config = %path, "using separate STS config");
-            StaticProvider::from_file(path)?
-        }
-        None => base_config.clone(),
-    };
-
     let config = CachedProvider::new(base_config, Duration::from_secs(60));
-    let sts_config = CachedProvider::new(sts_base, Duration::from_secs(60));
 
     let token_key = std::env::var("SESSION_TOKEN_KEY")
         .ok()
@@ -77,5 +62,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         oidc_provider_issuer,
     };
 
-    run(config, sts_config, server_config).await
+    run(config, server_config).await
 }
