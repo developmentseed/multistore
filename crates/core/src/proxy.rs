@@ -1,6 +1,6 @@
-//! The main proxy handler that ties together resolution and backend forwarding.
+//! The main proxy gateway that ties together resolution and backend forwarding.
 //!
-//! [`ProxyHandler`] is generic over the runtime's backend and request resolver.
+//! [`Gateway`] is generic over the runtime's backend and request resolver.
 //! It uses a two-phase dispatch model:
 //!
 //! 1. **`resolve_request`** — parses, authenticates, and decides the action:
@@ -19,6 +19,7 @@ use crate::error::ProxyError;
 use crate::oidc_backend::{NoOidcAuth, OidcBackendAuth};
 use crate::resolver::{ListRewrite, RequestResolver, ResolvedAction};
 use crate::response_body::ProxyResponseBody;
+use crate::route_handler::{RequestInfo, RouteHandler};
 use crate::s3::response::{ErrorResponse, ListBucketResult, ListCommonPrefix, ListContents};
 use crate::types::{BucketConfig, S3Operation};
 use bytes::Bytes;
@@ -63,23 +64,30 @@ pub struct PendingRequest {
     request_id: String,
 }
 
-/// The core proxy handler, generic over runtime primitives.
+/// The core proxy gateway, generic over runtime primitives.
+///
+/// Combines pluggable [`RouteHandler`]s (checked in registration order)
+/// with the two-phase resolve/dispatch pipeline.
 ///
 /// # Type Parameters
 ///
 /// - `B`: The runtime's backend for object store creation, signing, and raw HTTP
 /// - `R`: The request resolver that decides what action to take for each request
 /// - `O`: OIDC backend auth for resolving credentials via token exchange
-pub struct ProxyHandler<B, R, O = NoOidcAuth> {
+pub struct Gateway<B, R, O = NoOidcAuth> {
     backend: B,
     resolver: R,
     oidc_auth: O,
+    route_handlers: Vec<Box<dyn RouteHandler>>,
     /// When true, error responses include full internal details (for development).
     /// When false, server-side errors use generic messages.
     debug_errors: bool,
 }
 
-impl<B, R> ProxyHandler<B, R>
+/// Backwards-compatible type alias.
+pub type ProxyHandler<B, R, O = NoOidcAuth> = Gateway<B, R, O>;
+
+impl<B, R> Gateway<B, R>
 where
     B: ProxyBackend,
     R: RequestResolver,
@@ -89,12 +97,13 @@ where
             backend,
             resolver,
             oidc_auth: NoOidcAuth,
+            route_handlers: Vec::new(),
             debug_errors: false,
         }
     }
 }
 
-impl<B, R, O> ProxyHandler<B, R, O>
+impl<B, R, O> Gateway<B, R, O>
 where
     B: ProxyBackend,
     R: RequestResolver,
@@ -105,13 +114,24 @@ where
     /// When configured, `dispatch_operation` calls `resolve_credentials`
     /// before accessing the backend — enabling OIDC-based credential
     /// resolution for buckets with `auth_type=oidc`.
-    pub fn with_oidc_auth<O2: OidcBackendAuth>(self, oidc_auth: O2) -> ProxyHandler<B, R, O2> {
-        ProxyHandler {
+    pub fn with_oidc_auth<O2: OidcBackendAuth>(self, oidc_auth: O2) -> Gateway<B, R, O2> {
+        Gateway {
             backend: self.backend,
             resolver: self.resolver,
             oidc_auth,
+            route_handlers: self.route_handlers,
             debug_errors: self.debug_errors,
         }
+    }
+
+    /// Register a route handler that is checked before proxy dispatch.
+    ///
+    /// Handlers are checked in registration order. The first handler to
+    /// return `Some(action)` wins — subsequent handlers and the proxy
+    /// dispatch are skipped.
+    pub fn with_route_handler(mut self, handler: impl RouteHandler + 'static) -> Self {
+        self.route_handlers.push(Box::new(handler));
+        self
     }
 
     /// Enable verbose error messages in S3 error responses.
@@ -122,6 +142,20 @@ where
     pub fn with_debug_errors(mut self, enabled: bool) -> Self {
         self.debug_errors = enabled;
         self
+    }
+
+    /// Main entry point: check route handlers, then fall through to proxy dispatch.
+    ///
+    /// Route handlers are checked in registration order. If none match,
+    /// the request is resolved via the normal proxy pipeline.
+    pub async fn handle(&self, req: &RequestInfo<'_>) -> HandlerAction {
+        for handler in &self.route_handlers {
+            if let Some(action) = handler.handle(req).await {
+                return action;
+            }
+        }
+        self.resolve_request(req.method.clone(), req.path, req.query, req.headers)
+            .await
     }
 
     /// Phase 1: Resolve an incoming request into an action.

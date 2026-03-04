@@ -14,7 +14,7 @@
 //! - [`auth`] — SigV4 request verification and credential resolution
 //! - [`s3::request`] — parse incoming S3 API requests into typed operations
 //! - [`s3::response`] — serialize S3 XML responses
-//! - [`proxy::ProxyHandler`] — the main request handler that ties everything together
+//! - [`proxy::Gateway`] — the main request handler that ties everything together
 
 pub mod auth;
 #[cfg(feature = "axum")]
