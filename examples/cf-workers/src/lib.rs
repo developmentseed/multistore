@@ -28,7 +28,7 @@ mod tracing_layer;
 use client::{FetchHttpExchange, WorkerBackend};
 use multistore::axum::{build_proxy_response, error_response};
 use multistore::config::static_file::{StaticConfig, StaticProvider};
-use multistore::proxy::{ForwardRequest, Gateway, HandlerAction, RESPONSE_HEADER_ALLOWLIST};
+use multistore::proxy::{ForwardRequest, Gateway, GatewayResponse, RESPONSE_HEADER_ALLOWLIST};
 use multistore::resolver::DefaultResolver;
 use multistore::route_handler::RequestInfo;
 use multistore::sealed_token::TokenKey;
@@ -87,12 +87,13 @@ async fn fetch(
     let virtual_host_domain = env.var("VIRTUAL_HOST_DOMAIN").ok().map(|v| v.to_string());
     let resolver = DefaultResolver::new(config, virtual_host_domain, token_key.clone());
 
-    // Build the gateway with route handlers (OIDC discovery first, then STS).
-    let mut handler = Gateway::new(WorkerBackend, resolver).with_oidc_auth(oidc_auth);
+    // Build the gateway with route handlers
+    let mut gateway = Gateway::new(WorkerBackend, resolver)
+        .with_oidc_auth(oidc_auth)
+        .with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
     if let Some(discovery) = oidc_discovery {
-        handler = handler.with_route_handler(discovery);
+        gateway = gateway.with_route_handler(discovery);
     }
-    handler = handler.with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
 
     let req_info = RequestInfo {
         method: &method,
@@ -100,21 +101,14 @@ async fn fetch(
         query: query.as_deref(),
         headers: &headers,
     };
-    let action = handler.handle(&req_info).await;
 
-    Ok(match action {
-        HandlerAction::Response(result) => build_proxy_response(result),
-        HandlerAction::Forward(fwd) => forward_to_backend(&reqwest_client, fwd, body).await,
-        HandlerAction::NeedsBody(pending) => {
-            let collected = match axum::body::to_bytes(body, usize::MAX).await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to read request body");
-                    return Ok(error_response(500, "Internal error"));
-                }
-            };
-            let result = handler.handle_with_body(pending, collected).await;
-            build_proxy_response(result)
+    Ok(match gateway
+        .handle_request(&req_info, body, |b| axum::body::to_bytes(b, usize::MAX))
+        .await
+    {
+        GatewayResponse::Response(result) => build_proxy_response(result),
+        GatewayResponse::Forward(fwd, body) => {
+            forward_to_backend(&reqwest_client, fwd, body).await
         }
     })
 }

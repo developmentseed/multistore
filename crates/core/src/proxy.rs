@@ -45,6 +45,20 @@ pub enum HandlerAction {
     NeedsBody(PendingRequest),
 }
 
+/// Simplified two-variant result from [`Gateway::handle_request`].
+///
+/// The gateway resolves `NeedsBody` internally via the body collection
+/// closure, so runtimes only need to handle `Response` and `Forward`.
+/// The body type `B` is generic — `Forward` passes it through untouched
+/// for zero-copy streaming.
+pub enum GatewayResponse<B> {
+    /// A fully formed response ready to send to the client.
+    Response(ProxyResult),
+    /// A presigned URL for the runtime to forward, with the original body
+    /// for streaming (e.g. PUT uploads).
+    Forward(ForwardRequest, B),
+}
+
 /// A presigned URL request for the runtime to execute.
 pub struct ForwardRequest {
     /// HTTP method for the backend request.
@@ -148,6 +162,9 @@ where
     ///
     /// Route handlers are checked in registration order. If none match,
     /// the request is resolved via the normal proxy pipeline.
+    ///
+    /// Returns a three-variant [`HandlerAction`]. For a simpler two-variant
+    /// API, use [`handle_request`](Self::handle_request) instead.
     pub async fn handle(&self, req: &RequestInfo<'_>) -> HandlerAction {
         for handler in &self.route_handlers {
             if let Some(action) = handler.handle(req).await {
@@ -156,6 +173,51 @@ where
         }
         self.resolve_request(req.method.clone(), req.path, req.query, req.headers)
             .await
+    }
+
+    /// Convenience entry point that resolves `NeedsBody` internally.
+    ///
+    /// The body is passed through untouched for `Forward` (preserving
+    /// zero-copy streaming for GET/PUT). For `NeedsBody` (multipart),
+    /// the `collect_body` closure is called to materialize the body.
+    ///
+    /// Runtimes match on only two variants — `Response` or `Forward`:
+    ///
+    /// ```rust,ignore
+    /// match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
+    ///     GatewayResponse::Response(result) => build_response(result),
+    ///     GatewayResponse::Forward(fwd, body) => forward(fwd, body).await,
+    /// }
+    /// ```
+    pub async fn handle_request<Body, F, Fut, E>(
+        &self,
+        req: &RequestInfo<'_>,
+        body: Body,
+        collect_body: F,
+    ) -> GatewayResponse<Body>
+    where
+        F: FnOnce(Body) -> Fut,
+        Fut: std::future::Future<Output = Result<Bytes, E>>,
+        E: std::fmt::Display,
+    {
+        match self.handle(req).await {
+            HandlerAction::Response(r) => GatewayResponse::Response(r),
+            HandlerAction::Forward(f) => GatewayResponse::Forward(f, body),
+            HandlerAction::NeedsBody(pending) => match collect_body(body).await {
+                Ok(bytes) => {
+                    GatewayResponse::Response(self.handle_with_body(pending, bytes).await)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to read request body");
+                    GatewayResponse::Response(error_response(
+                        &ProxyError::Internal("failed to read request body".into()),
+                        "",
+                        "",
+                        self.debug_errors,
+                    ))
+                }
+            },
+        }
     }
 
     /// Phase 1: Resolve an incoming request into an action.

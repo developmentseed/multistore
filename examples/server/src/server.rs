@@ -10,7 +10,7 @@ use http::HeaderMap;
 use http_body_util::BodyStream;
 use multistore::axum::{build_proxy_response, error_response};
 use multistore::config::ConfigProvider;
-use multistore::proxy::{ForwardRequest, Gateway, HandlerAction, RESPONSE_HEADER_ALLOWLIST};
+use multistore::proxy::{ForwardRequest, Gateway, GatewayResponse, RESPONSE_HEADER_ALLOWLIST};
 use multistore::resolver::DefaultResolver;
 use multistore::route_handler::RequestInfo;
 use multistore::sealed_token::TokenKey;
@@ -163,21 +163,15 @@ async fn request_handler<P: ConfigProvider + Send + Sync + 'static>(
         query: query.as_deref(),
         headers: &headers,
     };
-    let action = state.handler.handle(&req_info).await;
 
-    match action {
-        HandlerAction::Response(result) => build_proxy_response(result),
-        HandlerAction::Forward(fwd) => forward_to_backend(&state.reqwest_client, fwd, body).await,
-        HandlerAction::NeedsBody(pending) => {
-            let collected = match axum::body::to_bytes(body, usize::MAX).await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to read request body");
-                    return error_response(500, "Internal error");
-                }
-            };
-            let result = state.handler.handle_with_body(pending, collected).await;
-            build_proxy_response(result)
+    match state
+        .handler
+        .handle_request(&req_info, body, |b| axum::body::to_bytes(b, usize::MAX))
+        .await
+    {
+        GatewayResponse::Response(result) => build_proxy_response(result),
+        GatewayResponse::Forward(fwd, body) => {
+            forward_to_backend(&state.reqwest_client, fwd, body).await
         }
     }
 }

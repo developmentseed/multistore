@@ -23,7 +23,7 @@ mod client;
 use client::{LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
 use multistore::config::static_file::StaticProvider;
-use multistore::proxy::{ForwardRequest, Gateway, HandlerAction, RESPONSE_HEADER_ALLOWLIST};
+use multistore::proxy::{ForwardRequest, Gateway, GatewayResponse, RESPONSE_HEADER_ALLOWLIST};
 use multistore::resolver::DefaultResolver;
 use multistore::response_body::ProxyResponseBody;
 use multistore::route_handler::RequestInfo;
@@ -132,25 +132,19 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
         query: query.as_deref(),
         headers: &headers,
     };
-    let action = state.handler.handle(&req_info).await;
 
-    match action {
-        HandlerAction::Response(result) => Ok(build_lambda_response(result)),
-        HandlerAction::Forward(fwd) => {
-            Ok(forward_to_backend(&state.reqwest_client, fwd, body).await)
+    Ok(match state
+        .handler
+        .handle_request(&req_info, body, |b| async {
+            body_to_bytes(b).await.map_err(|e| e.to_string())
+        })
+        .await
+    {
+        GatewayResponse::Response(result) => build_lambda_response(result),
+        GatewayResponse::Forward(fwd, body) => {
+            forward_to_backend(&state.reqwest_client, fwd, body).await
         }
-        HandlerAction::NeedsBody(pending) => {
-            let collected = match body_to_bytes(body).await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to read request body");
-                    return Ok(error_response(500, "Internal error"));
-                }
-            };
-            let result = state.handler.handle_with_body(pending, collected).await;
-            Ok(build_lambda_response(result))
-        }
-    }
+    })
 }
 
 /// Convert a `ProxyResult` to a Lambda `Response`.
