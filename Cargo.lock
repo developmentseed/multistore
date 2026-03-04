@@ -1734,7 +1734,6 @@ name = "multistore-cf-workers"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "axum",
  "bytes",
  "chrono",
  "console_error_panic_hook",
@@ -4047,7 +4046,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7267f3baa986254a8dace6f6a7c6ab88aef59f00c03aaad6749e048b5faaf6f6"
 dependencies = [
  "async-trait",
- "axum",
  "bytes",
  "chrono",
  "futures-channel",
