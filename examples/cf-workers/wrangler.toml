@@ -37,6 +37,18 @@ endpoint = "http://localhost:9000"
 region = "us-east-1"
 secret_access_key = "minioadmin"
 
+[[vars.PROXY_CONFIG.buckets]]
+allowed_roles = ["github-actions"]
+anonymous_access = false
+backend_type = "s3"
+name = "cholmes"
+
+[vars.PROXY_CONFIG.buckets.backend_options]
+bucket_name = "cholmes"
+endpoint = "https://data.source.coop"
+region = "us-east-1"
+skip_signature = "true"
+
 [[vars.PROXY_CONFIG.credentials]]
 access_key_id = "AKLOCAL0000000000001"
 created_at = "2024-01-01T00:00:00Z"
@@ -81,3 +93,26 @@ prefixes = []
 actions = ["get_object", "head_object", "put_object", "list_bucket"]
 bucket = "private-uploads"
 prefixes = []
+
+[[vars.STS_CONFIG.roles]]
+max_session_duration_secs = 3600
+name = "GitHub Actions"
+role_id = "github-actions"
+subject_conditions = ["repo:alukach/multistore:*"]
+trusted_oidc_issuers = [
+  "https://token.actions.githubusercontent.com",
+]
+
+[[vars.STS_CONFIG.roles.allowed_scopes]]
+actions = ["get_object", "head_object", "list_bucket"]
+bucket = "cholmes"
+prefixes = []
+
+[[vars.STS_CONFIG.roles]]
+max_session_duration_secs = 3600
+name = "GitHub Actions (No Access)"
+role_id = "github-actions-no-access"
+subject_conditions = ["repo:alukach/multistore:*"]
+trusted_oidc_issuers = [
+  "https://token.actions.githubusercontent.com",
+]

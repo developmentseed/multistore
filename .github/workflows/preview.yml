@@ -1,0 +1,167 @@
+name: Preview Deploy & Smoke Test
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-preview:
+    name: Deploy Preview
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    outputs:
+      preview_url: ${{ steps.deploy.outputs.preview_url }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WORKER_NAME: multistore-proxy-pr-${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Deploy preview worker
+        id: deploy
+        run: |
+          OUTPUT=$(npx wrangler deploy --cwd examples/cf-workers --name "$WORKER_NAME" 2>&1)
+          echo "$OUTPUT"
+          URL=$(echo "$OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev')
+          echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Set SESSION_TOKEN_KEY secret
+        run: |
+          echo "${{ secrets.SESSION_TOKEN_KEY }}" | npx wrangler secret put SESSION_TOKEN_KEY --cwd examples/cf-workers --name "$WORKER_NAME"
+
+      - name: Wait for preview to be live
+        run: |
+          URL="${{ steps.deploy.outputs.preview_url }}"
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null; then
+              echo "Preview is live"
+              exit 0
+            fi
+            echo "Attempt $i: waiting for preview..."
+            sleep 2
+          done
+          echo "Preview did not become live in time"
+          exit 1
+
+  smoke-test:
+    name: Smoke Test
+    needs: deploy-preview
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    env:
+      PREVIEW_URL: ${{ needs.deploy-preview.outputs.preview_url }}
+    steps:
+      - name: Get GitHub OIDC token
+        id: oidc
+        run: |
+          OIDC_TOKEN=$(curl -sS \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
+            | jq -r '.value')
+          echo "::add-mask::$OIDC_TOKEN"
+          echo "token=$OIDC_TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: "Positive: Assume github-actions role"
+        id: assume-role
+        run: |
+          RESPONSE=$(curl -sS -G "$PREVIEW_URL" \
+            --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+            --data-urlencode "RoleArn=github-actions" \
+            --data-urlencode "WebIdentityToken=${{ steps.oidc.outputs.token }}")
+          echo "$RESPONSE"
+
+          # Assert the response contains credentials
+          echo "$RESPONSE" | grep -q "<AccessKeyId>" || { echo "FAIL: No AccessKeyId in response"; exit 1; }
+
+          # Parse credentials from XML
+          ACCESS_KEY=$(echo "$RESPONSE" | grep -oP '(?<=<AccessKeyId>)[^<]+')
+          SECRET_KEY=$(echo "$RESPONSE" | grep -oP '(?<=<SecretAccessKey>)[^<]+')
+          SESSION_TOKEN=$(echo "$RESPONSE" | grep -oP '(?<=<SessionToken>)[^<]+')
+
+          echo "::add-mask::$ACCESS_KEY"
+          echo "::add-mask::$SECRET_KEY"
+          echo "::add-mask::$SESSION_TOKEN"
+
+          echo "access_key=$ACCESS_KEY" >> "$GITHUB_OUTPUT"
+          echo "secret_key=$SECRET_KEY" >> "$GITHUB_OUTPUT"
+          echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: "Positive: List cholmes bucket"
+        run: |
+          aws configure set default.s3.addressing_style path
+          aws s3api list-objects-v2 \
+            --bucket cholmes \
+            --max-items 5 \
+            --endpoint-url "$PREVIEW_URL"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.assume-role.outputs.access_key }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.assume-role.outputs.secret_key }}
+          AWS_SESSION_TOKEN: ${{ steps.assume-role.outputs.session_token }}
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_EC2_METADATA_DISABLED: "true"
+
+      - name: "Negative: Assume github-actions-no-access role"
+        id: assume-no-access
+        run: |
+          RESPONSE=$(curl -sS -G "$PREVIEW_URL" \
+            --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+            --data-urlencode "RoleArn=github-actions-no-access" \
+            --data-urlencode "WebIdentityToken=${{ steps.oidc.outputs.token }}")
+          echo "$RESPONSE"
+
+          # Assert the response contains credentials (role assumption should succeed)
+          echo "$RESPONSE" | grep -q "<AccessKeyId>" || { echo "FAIL: No AccessKeyId in response"; exit 1; }
+
+          # Parse credentials from XML
+          ACCESS_KEY=$(echo "$RESPONSE" | grep -oP '(?<=<AccessKeyId>)[^<]+')
+          SECRET_KEY=$(echo "$RESPONSE" | grep -oP '(?<=<SecretAccessKey>)[^<]+')
+          SESSION_TOKEN=$(echo "$RESPONSE" | grep -oP '(?<=<SessionToken>)[^<]+')
+
+          echo "::add-mask::$ACCESS_KEY"
+          echo "::add-mask::$SECRET_KEY"
+          echo "::add-mask::$SESSION_TOKEN"
+
+          echo "access_key=$ACCESS_KEY" >> "$GITHUB_OUTPUT"
+          echo "secret_key=$SECRET_KEY" >> "$GITHUB_OUTPUT"
+          echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: "Negative: List cholmes bucket should be denied"
+        run: |
+          aws configure set default.s3.addressing_style path
+          if aws s3api list-objects-v2 \
+            --bucket cholmes \
+            --max-items 5 \
+            --endpoint-url "$PREVIEW_URL" 2>&1; then
+            echo "FAIL: Expected access denied but request succeeded"
+            exit 1
+          else
+            echo "PASS: Correctly denied access to cholmes bucket"
+          fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ steps.assume-no-access.outputs.access_key }}
+          AWS_SECRET_ACCESS_KEY: ${{ steps.assume-no-access.outputs.secret_key }}
+          AWS_SESSION_TOKEN: ${{ steps.assume-no-access.outputs.session_token }}
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_EC2_METADATA_DISABLED: "true"
+
+  cleanup-preview:
+    name: Cleanup Preview
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Delete preview worker
+        run: npx wrangler delete --name "multistore-proxy-pr-${{ github.event.pull_request.number }}" --force

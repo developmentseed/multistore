@@ -1,0 +1,33 @@
+# Source Cooperative data proxy backend
+[[buckets]]
+name = "cholmes"
+backend_type = "s3"
+anonymous_access = false
+allowed_roles = ["github-actions"]
+
+[buckets.backend_options]
+endpoint = "https://data.source.coop"
+bucket_name = "cholmes"
+region = "us-east-1"
+skip_signature = "true"
+
+# GitHub Actions OIDC role
+[[roles]]
+role_id = "github-actions"
+name = "GitHub Actions"
+trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
+subject_conditions = ["repo:alukach/multistore:*"]
+max_session_duration_secs = 3600
+
+[[roles.allowed_scopes]]
+bucket = "cholmes"
+prefixes = []
+actions = ["get_object", "head_object", "list_bucket"]
+
+# Role that can be assumed but has no bucket access
+[[roles]]
+role_id = "github-actions-no-access"
+name = "GitHub Actions (No Access)"
+trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
+subject_conditions = ["repo:alukach/not-this-repo:*"]
+max_session_duration_secs = 3600
