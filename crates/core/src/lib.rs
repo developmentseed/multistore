@@ -26,6 +26,7 @@ pub mod maybe_send;
 pub mod oidc_backend;
 pub mod proxy;
 pub mod resolver;
+pub mod route_handler;
 pub mod response_body;
 pub mod s3;
 pub mod sealed_token;
