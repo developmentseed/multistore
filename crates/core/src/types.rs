@@ -22,6 +22,7 @@ pub struct BucketConfig {
 
     /// IAM role ARNs that are allowed to access this bucket.
     /// Empty means only anonymous access (if enabled) or long-lived credentials.
+    #[serde(default)]
     pub allowed_roles: Vec<String>,
 
     /// Provider-specific config passed to the object_store builder.
@@ -107,6 +108,7 @@ pub struct RoleConfig {
     pub name: String,
 
     /// OIDC provider URLs trusted by this role (e.g., "https://token.actions.githubusercontent.com").
+    #[serde(default)]
     pub trusted_oidc_issuers: Vec<String>,
 
     /// Required audience claim value.
@@ -114,9 +116,11 @@ pub struct RoleConfig {
 
     /// Conditions on the subject claim (glob patterns).
     /// e.g., "repo:myorg/myrepo:ref:refs/heads/main"
+    #[serde(default)]
     pub subject_conditions: Vec<String>,
 
     /// Buckets and prefixes this role can access.
+    #[serde(default)]
     pub allowed_scopes: Vec<AccessScope>,
 
     /// Maximum session duration in seconds.
