@@ -4,9 +4,8 @@ build
 dist
 
 # Local
-database.yaml
 .DS_Store
 
-# Cloudflare
+# CF Workers
 node_modules
 .dev.vars

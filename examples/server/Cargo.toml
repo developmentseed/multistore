@@ -1,0 +1,25 @@
+[package]
+name = "multistore-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tokio/Hyper runtime for the S3 proxy gateway"
+
+[dependencies]
+multistore = { workspace = true, features = ["axum", "azure", "gcp"] }
+multistore-sts.workspace = true
+multistore-oidc-provider.workspace = true
+axum = { workspace = true, features = ["json", "tokio", "http1", "http2"] }
+tower-service.workspace = true
+tokio.workspace = true
+http.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+toml.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+thiserror.workspace = true
+object_store.workspace = true
+futures.workspace = true
+http-body-util.workspace = true

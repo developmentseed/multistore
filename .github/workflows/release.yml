@@ -14,6 +14,15 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
 
+      # Publish in dependency order: core first, then dependents
       - run: cargo publish -p multistore
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - run: cargo publish -p multistore-sts
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - run: cargo publish -p multistore-oidc-provider
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

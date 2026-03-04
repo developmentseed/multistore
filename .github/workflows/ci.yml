@@ -3,102 +3,72 @@ name: CI
 on:
   push:
 
-env:
-  CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 0
-  CARGO_NET_RETRY: 10
-  RUSTUP_MAX_RETRIES: 10
-
 jobs:
-  test-library:
-    name: Test multistore library
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@v1
         with:
-          shared-key: "multistore"
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --check
 
-      - name: Run tests
-        run: cargo test -p multistore
-
-      - name: Check formatting
-        run: cargo fmt -p multistore --check
-
-      - name: Run clippy
-        run: cargo clippy -p multistore -- -D warnings
-
-  build-hyper-api:
-    name: Build hyper-api example
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@v1
         with:
-          shared-key: "multistore"
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -- -D warnings
 
-      - name: Build
-        run: cargo build -p hyper-api
-
-      - name: Run tests
-        run: cargo test -p hyper-api
-
-  build-lambda-api:
-    name: Build lambda-api example
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@v1
         with:
-          shared-key: "multistore"
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check
 
-      - name: Build
-        run: cargo build -p lambda-api
-
-      - name: Run tests
-        run: cargo test -p lambda-api
-
-  build-cf-workers-api:
-    name: Build cf-workers-api example
+  test:
+    name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@v1
         with:
-          shared-key: "multistore"
-          cache-targets: true
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
 
-      - name: Install wasm32-unknown-unknown target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Setup fake database.yaml
-        run: cp database.example.yaml database.yaml
-
-      - name: Build for WASM
-        run: cargo build -p cf-workers-api --target wasm32-unknown-unknown
-
-  # Summary job that all checks must pass
-  ci-success:
-    name: CI Success
-    needs:
-      - test-library
-      - build-hyper-api
-      - build-lambda-api
-      - build-cf-workers-api
+  check-cf-workers:
+    name: Check CF Workers
     runs-on: ubuntu-latest
-    if: always()
     steps:
-      - name: Check all jobs succeeded
-        run: |
-          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
-            echo "One or more jobs failed"
-            exit 1
-          fi
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p multistore-cf-workers --target wasm32-unknown-unknown
+
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-audit
+      - run: cargo audit
