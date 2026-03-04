@@ -42,8 +42,12 @@ pub mod postgres;
 
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
+use crate::s3::response::BucketOwner;
 use crate::types::{BucketConfig, RoleConfig, StoredCredential};
 use std::future::Future;
+
+/// Default owner name used in `ListAllMyBucketsResult` responses.
+pub const DEFAULT_BUCKET_OWNER: &str = "multistore-proxy";
 
 /// Trait for retrieving proxy configuration from a backend store.
 ///
@@ -75,4 +79,14 @@ pub trait ConfigProvider: Clone + MaybeSend + MaybeSync + 'static {
         &self,
         access_key_id: &str,
     ) -> impl Future<Output = Result<Option<StoredCredential>, ProxyError>> + MaybeSend;
+
+    /// The owner identity returned in `ListAllMyBucketsResult` responses.
+    ///
+    /// Defaults to `("multistore-proxy", "multistore-proxy")`.
+    fn bucket_owner(&self) -> BucketOwner {
+        BucketOwner {
+            id: DEFAULT_BUCKET_OWNER.to_string(),
+            display_name: DEFAULT_BUCKET_OWNER.to_string(),
+        }
+    }
 }

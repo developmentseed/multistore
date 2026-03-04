@@ -22,6 +22,7 @@
 
 use crate::config::ConfigProvider;
 use crate::error::ProxyError;
+use crate::s3::response::BucketOwner;
 use crate::types::{BucketConfig, RoleConfig, StoredCredential};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -101,6 +102,10 @@ impl<P: ConfigProvider> CachedProvider<P> {
 }
 
 impl<P: ConfigProvider> ConfigProvider for CachedProvider<P> {
+    fn bucket_owner(&self) -> BucketOwner {
+        self.inner.bucket_owner()
+    }
+
     async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError> {
         // Check cache
         if let Ok(lock) = self.cache.buckets_list.read() {

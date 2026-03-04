@@ -5,6 +5,7 @@
 
 use crate::config::ConfigProvider;
 use crate::error::ProxyError;
+use crate::s3::response::BucketOwner;
 use crate::types::{BucketConfig, RoleConfig, StoredCredential};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -12,6 +13,10 @@ use std::sync::Arc;
 /// Full configuration file structure.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StaticConfig {
+    /// Owner ID returned in ListBuckets responses.
+    pub owner_id: Option<String>,
+    /// Owner display name returned in ListBuckets responses.
+    pub owner_display_name: Option<String>,
     #[serde(default)]
     pub buckets: Vec<BucketConfig>,
     #[serde(default)]
@@ -83,6 +88,24 @@ impl StaticProvider {
 }
 
 impl ConfigProvider for StaticProvider {
+    fn bucket_owner(&self) -> BucketOwner {
+        let default_owner = super::DEFAULT_BUCKET_OWNER;
+        BucketOwner {
+            id: self
+                .inner
+                .config
+                .owner_id
+                .clone()
+                .unwrap_or_else(|| default_owner.to_string()),
+            display_name: self
+                .inner
+                .config
+                .owner_display_name
+                .clone()
+                .unwrap_or_else(|| default_owner.to_string()),
+        }
+    }
+
     async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError> {
         Ok(self.inner.config.buckets.clone())
     }

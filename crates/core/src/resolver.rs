@@ -10,7 +10,7 @@ use crate::config::ConfigProvider;
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::s3::request::{self, HostStyle};
-use crate::s3::response::{BucketEntry, BucketList, BucketOwner, ListAllMyBucketsResult};
+use crate::s3::response::{BucketEntry, BucketList, ListAllMyBucketsResult};
 use crate::sealed_token::TokenKey;
 use crate::types::{BucketConfig, S3Operation};
 use bytes::Bytes;
@@ -103,10 +103,7 @@ impl<P: ConfigProvider> RequestResolver for DefaultResolver<P> {
             let buckets = self.config.list_buckets().await?;
             tracing::info!(count = buckets.len(), "listing virtual buckets");
             let xml = ListAllMyBucketsResult {
-                owner: BucketOwner {
-                    id: "s3-proxy".to_string(),
-                    display_name: "s3-proxy".to_string(),
-                },
+                owner: self.config.bucket_owner(),
                 buckets: BucketList {
                     buckets: buckets
                         .iter()
