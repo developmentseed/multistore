@@ -12,6 +12,7 @@
 use crate::error::ProxyError;
 use crate::maybe_send::MaybeSend;
 use crate::types::BucketConfig;
+use std::borrow::Cow;
 use std::future::Future;
 
 /// Resolves backend credentials via OIDC token exchange.
@@ -20,10 +21,10 @@ use std::future::Future;
 /// `create_store()` / `create_signer()`. Implementations may return the
 /// config unchanged (no `auth_type=oidc`) or inject temporary credentials.
 pub trait OidcBackendAuth: MaybeSend + 'static {
-    fn resolve_credentials(
-        &self,
-        config: &BucketConfig,
-    ) -> impl Future<Output = Result<BucketConfig, ProxyError>> + MaybeSend;
+    fn resolve_credentials<'a>(
+        &'a self,
+        config: &'a BucketConfig,
+    ) -> impl Future<Output = Result<Cow<'a, BucketConfig>, ProxyError>> + MaybeSend;
 }
 
 /// No-op implementation — returns config unchanged.
@@ -33,12 +34,15 @@ pub trait OidcBackendAuth: MaybeSend + 'static {
 pub struct NoOidcAuth;
 
 impl OidcBackendAuth for NoOidcAuth {
-    async fn resolve_credentials(&self, config: &BucketConfig) -> Result<BucketConfig, ProxyError> {
+    async fn resolve_credentials<'a>(
+        &'a self,
+        config: &'a BucketConfig,
+    ) -> Result<Cow<'a, BucketConfig>, ProxyError> {
         if config.option("auth_type") == Some("oidc") {
             return Err(ProxyError::ConfigError(
                 "bucket requires auth_type=oidc but no OIDC provider is configured".into(),
             ));
         }
-        Ok(config.clone())
+        Ok(Cow::Borrowed(config))
     }
 }

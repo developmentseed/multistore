@@ -270,17 +270,16 @@ where
         request_id: &str,
     ) -> Result<HandlerAction, ProxyError> {
         // Resolve OIDC credentials if auth_type=oidc is configured.
-        // This injects temporary credentials into a cloned config so the
-        // existing builder pipeline works unmodified.
+        // Returns Cow::Borrowed for non-OIDC buckets (zero-copy),
+        // Cow::Owned for OIDC buckets (with injected temporary credentials).
         let bucket_config = self.oidc_auth.resolve_credentials(bucket_config).await?;
-        let bucket_config = &bucket_config;
 
         match operation {
             S3Operation::GetObject { key, .. } => {
                 let fwd = self
                     .build_forward(
                         Method::GET,
-                        bucket_config,
+                        &bucket_config,
                         key,
                         original_headers,
                         &[
@@ -299,7 +298,7 @@ where
                 let fwd = self
                     .build_forward(
                         Method::HEAD,
-                        bucket_config,
+                        &bucket_config,
                         key,
                         original_headers,
                         &[
@@ -317,7 +316,7 @@ where
                 let fwd = self
                     .build_forward(
                         Method::PUT,
-                        bucket_config,
+                        &bucket_config,
                         key,
                         original_headers,
                         &["content-type", "content-length", "content-md5"],
@@ -328,14 +327,14 @@ where
             }
             S3Operation::DeleteObject { key, .. } => {
                 let fwd = self
-                    .build_forward(Method::DELETE, bucket_config, key, original_headers, &[])
+                    .build_forward(Method::DELETE, &bucket_config, key, original_headers, &[])
                     .await?;
                 tracing::debug!(path = fwd.url.path(), "DELETE via presigned URL");
                 Ok(HandlerAction::Forward(fwd))
             }
             S3Operation::ListBucket { raw_query, .. } => {
                 let result = self
-                    .handle_list(bucket_config, raw_query.as_deref(), list_rewrite)
+                    .handle_list(&bucket_config, raw_query.as_deref(), list_rewrite)
                     .await?;
                 Ok(HandlerAction::Response(result))
             }
@@ -353,7 +352,7 @@ where
                 Ok(HandlerAction::NeedsBody(PendingRequest {
                     method: method.clone(),
                     operation: operation.clone(),
-                    bucket_config: bucket_config.clone(),
+                    bucket_config: bucket_config.into_owned(),
                     original_headers: original_headers.clone(),
                     request_id: request_id.to_string(),
                 }))

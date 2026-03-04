@@ -8,6 +8,7 @@
 use multistore::error::ProxyError;
 use multistore::oidc_backend::OidcBackendAuth;
 use multistore::types::BucketConfig;
+use std::borrow::Cow;
 
 use crate::exchange::aws::AwsExchange;
 use crate::{HttpExchange, OidcCredentialProvider};
@@ -58,14 +59,17 @@ impl<H: HttpExchange> AwsOidcBackendAuth<H> {
 }
 
 impl<H: HttpExchange> OidcBackendAuth for AwsOidcBackendAuth<H> {
-    async fn resolve_credentials(&self, config: &BucketConfig) -> Result<BucketConfig, ProxyError> {
+    async fn resolve_credentials<'a>(
+        &'a self,
+        config: &'a BucketConfig,
+    ) -> Result<Cow<'a, BucketConfig>, ProxyError> {
         if config.option("auth_type") != Some("oidc") {
-            return Ok(config.clone());
+            return Ok(Cow::Borrowed(config));
         }
 
         // TODO: dispatch on backend_type for Azure/GCP when those exchanges are wired up.
         match config.backend_type.as_str() {
-            "s3" => self.resolve_aws(config).await,
+            "s3" => self.resolve_aws(config).await.map(Cow::Owned),
             other => Err(ProxyError::ConfigError(format!(
                 "OIDC backend auth not yet supported for backend_type '{other}'"
             ))),
@@ -84,7 +88,10 @@ pub enum MaybeOidcAuth<H: HttpExchange> {
 }
 
 impl<H: HttpExchange> OidcBackendAuth for MaybeOidcAuth<H> {
-    async fn resolve_credentials(&self, config: &BucketConfig) -> Result<BucketConfig, ProxyError> {
+    async fn resolve_credentials<'a>(
+        &'a self,
+        config: &'a BucketConfig,
+    ) -> Result<Cow<'a, BucketConfig>, ProxyError> {
         match self {
             MaybeOidcAuth::Enabled(auth) => auth.resolve_credentials(config).await,
             MaybeOidcAuth::Disabled => {
@@ -93,7 +100,7 @@ impl<H: HttpExchange> OidcBackendAuth for MaybeOidcAuth<H> {
                         "bucket requires auth_type=oidc but no OIDC provider is configured".into(),
                     ))
                 } else {
-                    Ok(config.clone())
+                    Ok(Cow::Borrowed(config))
                 }
             }
         }
