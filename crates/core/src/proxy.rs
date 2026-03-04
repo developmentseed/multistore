@@ -1,7 +1,19 @@
 //! The main proxy gateway that ties together resolution and backend forwarding.
 //!
 //! [`Gateway`] is generic over the runtime's backend and request resolver.
-//! It uses a two-phase dispatch model:
+//! Incoming requests pass through two layers:
+//!
+//! ## Route handlers (pre-dispatch)
+//!
+//! Pluggable [`RouteHandler`] implementations are checked in registration order
+//! before the proxy dispatch pipeline runs. Each handler inspects the
+//! [`RequestInfo`] and may short-circuit with a [`HandlerAction`]. Built-in
+//! handlers include OIDC discovery (`OidcDiscoveryRouteHandler`) and STS
+//! (`StsRouteHandler`).
+//!
+//! ## Proxy dispatch (two-phase)
+//!
+//! If no route handler matches, the request enters the two-phase pipeline:
 //!
 //! 1. **`resolve_request`** — parses, authenticates, and decides the action:
 //!    - GET/HEAD/PUT/DELETE → [`HandlerAction::Forward`] with a presigned URL
@@ -11,8 +23,26 @@
 //!
 //! 2. **`handle_with_body`** — completes multipart operations once the body arrives.
 //!
-//! Runtimes handle [`Forward`] by executing the presigned URL with their native
-//! HTTP client, enabling zero-copy streaming for both request and response bodies.
+//! ## Runtime integration
+//!
+//! The recommended entry point is [`Gateway::handle_request`], which returns a
+//! two-variant [`GatewayResponse<B>`]:
+//!
+//! - **`Response`** — a fully formed response to send to the client
+//! - **`Forward`** — a presigned URL plus the original body for zero-copy streaming
+//!
+//! `NeedsBody` is resolved internally via a caller-provided body collection
+//! closure, so runtimes only need a two-arm match:
+//!
+//! ```rust,ignore
+//! match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
+//!     GatewayResponse::Response(result) => build_response(result),
+//!     GatewayResponse::Forward(fwd, body) => forward(fwd, body).await,
+//! }
+//! ```
+//!
+//! For lower-level control, use [`Gateway::handle`] which returns the
+//! three-variant [`HandlerAction`] directly.
 
 use crate::backend::{hash_payload, ProxyBackend, S3RequestSigner, UNSIGNED_PAYLOAD};
 use crate::error::ProxyError;

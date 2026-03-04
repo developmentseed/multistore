@@ -1,7 +1,7 @@
 //! Route handler for STS `AssumeRoleWithWebIdentity` requests.
 //!
 //! Intercepts STS queries before they reach the proxy dispatch pipeline
-//! and delegates to [`try_handle_sts`](crate::try_handle_sts).
+//! and delegates to [`try_handle_sts`].
 
 use crate::{try_handle_sts, JwksCache};
 use multistore::config::ConfigProvider;

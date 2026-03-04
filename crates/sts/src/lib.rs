@@ -4,6 +4,16 @@
 //! workloads like GitHub Actions to exchange OIDC tokens for temporary S3
 //! credentials scoped to specific buckets and prefixes.
 //!
+//! # Integration
+//!
+//! Register [`route_handler::StsRouteHandler`] with the gateway to intercept
+//! STS requests automatically:
+//!
+//! ```rust,ignore
+//! let gateway = Gateway::new(backend, resolver)
+//!     .with_route_handler(StsRouteHandler::new(config, jwks_cache, token_key));
+//! ```
+//!
 //! # Flow
 //!
 //! 1. Client obtains a JWT from their OIDC provider (e.g., GitHub Actions ID token)

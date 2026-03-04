@@ -23,18 +23,20 @@
 
 ## STS Operations
 
+Handled by `StsRouteHandler` (registered as a route handler on the `Gateway`).
+
 | Operation | HTTP Method | Description |
 |-----------|------------|-------------|
 | AssumeRoleWithWebIdentity | `POST /?Action=AssumeRoleWithWebIdentity&...` | Exchange OIDC JWT for temporary credentials |
 
 ## OIDC Discovery Endpoints
 
+Handled by `OidcDiscoveryRouteHandler` (registered as a route handler on the `Gateway`). Served when `OIDC_PROVIDER_KEY` and `OIDC_PROVIDER_ISSUER` are configured.
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/.well-known/openid-configuration` | GET | OpenID Connect discovery document |
 | `/.well-known/jwks.json` | GET | JSON Web Key Set (proxy's RSA public key) |
-
-These are served when `OIDC_PROVIDER_KEY` and `OIDC_PROVIDER_ISSUER` are configured.
 
 ## Limitations
 

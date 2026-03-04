@@ -97,26 +97,28 @@ The `backend` module provides shared helpers:
 
 These handle the multi-provider dispatch logic so your backend implementation only needs to provide the HTTP transport layer.
 
-## Wiring Into the Handler
+## Wiring Into the Gateway
 
 ```rust
 let backend = MyBackend::new(http_client);
-let resolver = DefaultResolver::new(config_provider, token_key, domain);
-let handler = ProxyHandler::new(backend, resolver);
+let resolver = DefaultResolver::new(config_provider, domain, token_key);
+let gateway = Gateway::new(backend, resolver)
+    .with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
 
-// In your request handler, handle all three action types:
-match handler.resolve_request(method, path, query, &headers).await {
-    HandlerAction::Forward(fwd) => {
+// In your request handler, use handle_request for a two-variant match:
+let req_info = RequestInfo {
+    method: &method,
+    path: &path,
+    query: query.as_deref(),
+    headers: &headers,
+};
+match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
+    GatewayResponse::Response(result) => {
+        // Return the complete response (LIST, errors, STS, etc.)
+    }
+    GatewayResponse::Forward(fwd, body) => {
         // Execute presigned URL with your HTTP client
         // Stream request body (PUT) or response body (GET)
-    }
-    HandlerAction::Response(res) => {
-        // Return the complete response (LIST, errors)
-    }
-    HandlerAction::NeedsBody(pending) => {
-        // Collect request body, then:
-        let result = handler.handle_with_body(pending, body).await;
-        // Return the result
     }
 }
 ```

@@ -95,18 +95,22 @@ impl RequestResolver for MyResolver {
 }
 ```
 
-## Wiring Into the Handler
+## Wiring Into the Gateway
 
 ```rust
 let resolver = MyResolver::new(api_client);
-let handler = ProxyHandler::new(backend, resolver);
+let gateway = Gateway::new(backend, resolver);
 
 // In your request handler:
-let action = handler.resolve_request(method, path, query, &headers).await;
-match action {
-    HandlerAction::Forward(fwd) => { /* execute presigned URL */ }
-    HandlerAction::Response(res) => { /* return response */ }
-    HandlerAction::NeedsBody(pending) => { /* collect body, call handle_with_body */ }
+let req_info = RequestInfo {
+    method: &method,
+    path: &path,
+    query: query.as_deref(),
+    headers: &headers,
+};
+match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
+    GatewayResponse::Response(result) => { /* return response */ }
+    GatewayResponse::Forward(fwd, body) => { /* execute presigned URL, stream body */ }
 }
 ```
 

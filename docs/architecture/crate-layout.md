@@ -18,7 +18,8 @@ examples/
 ### `multistore`
 
 The runtime-agnostic core. Contains:
-- `ProxyHandler` — Two-phase request handler (`resolve_request()` → `HandlerAction`)
+- `Gateway` — Route handler chain + two-phase request dispatch (`handle_request()` → `GatewayResponse`)
+- `RouteHandler` trait — Pluggable pre-dispatch request interception
 - `RequestResolver` and `DefaultResolver` — Request parsing, SigV4 auth, authorization
 - `ConfigProvider` trait and implementations (static file, HTTP, DynamoDB, Postgres)
 - `ProxyBackend` trait — Runtime abstraction for store/signer/raw HTTP
@@ -37,6 +38,7 @@ The runtime-agnostic core. Contains:
 ### `multistore-sts`
 
 OIDC token exchange implementing `AssumeRoleWithWebIdentity`:
+- `StsRouteHandler` — `RouteHandler` implementation that intercepts STS requests
 - JWT decoding and validation (RS256)
 - JWKS fetching and caching
 - Trust policy evaluation (issuer, audience, subject conditions)
@@ -45,6 +47,7 @@ OIDC token exchange implementing `AssumeRoleWithWebIdentity`:
 ### `multistore-oidc-provider`
 
 Outbound OIDC identity provider for backend authentication:
+- `OidcDiscoveryRouteHandler` — `RouteHandler` for `.well-known` discovery endpoints
 - RSA JWT signing (`JwtSigner`)
 - JWKS endpoint serving
 - OpenID Connect discovery document
@@ -57,6 +60,7 @@ The native server runtime (in `examples/server/`):
 - Tokio/Hyper HTTP server
 - `ServerBackend` implementing `ProxyBackend` with reqwest
 - Streaming via hyper `Incoming` bodies and reqwest `bytes_stream()`
+- Wires `Gateway` with `StsRouteHandler` and `OidcDiscoveryRouteHandler`
 - CLI argument parsing (`--config`, `--listen`, `--domain`, `--sts-config`)
 
 ### `multistore-cf-workers`
@@ -90,4 +94,4 @@ flowchart TD
     oidc --> core
 ```
 
-Libraries define trait abstractions. Runtimes implement `ProxyBackend` with platform-native primitives and wire everything together.
+Libraries define trait abstractions. Runtimes implement `ProxyBackend` with platform-native primitives, register route handlers on the `Gateway`, and handle the two-variant `GatewayResponse`.

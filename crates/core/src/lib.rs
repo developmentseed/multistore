@@ -14,6 +14,7 @@
 //! - [`auth`] — SigV4 request verification and credential resolution
 //! - [`s3::request`] — parse incoming S3 API requests into typed operations
 //! - [`s3::response`] — serialize S3 XML responses
+//! - [`route_handler::RouteHandler`] — pluggable pre-dispatch request interception (OIDC, STS, etc.)
 //! - [`proxy::Gateway`] — the main request handler that ties everything together
 
 pub mod auth;

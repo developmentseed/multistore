@@ -86,8 +86,8 @@ let cached = CachedProvider::new(redis_provider, Duration::from_secs(60));
 // Create resolver with optional token key and domain
 let resolver = DefaultResolver::new(cached, token_key, virtual_host_domain);
 
-// Wire into the proxy handler
-let handler = ProxyHandler::new(backend, resolver);
+// Wire into the gateway
+let gateway = Gateway::new(backend, resolver);
 ```
 
 ## Using with CachedProvider
