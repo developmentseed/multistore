@@ -13,13 +13,11 @@ use std::pin::Pin;
 
 /// The future type returned by [`RouteHandler::handle`].
 #[cfg(not(target_arch = "wasm32"))]
-pub type RouteHandlerFuture<'a> =
-    Pin<Box<dyn Future<Output = Option<HandlerAction>> + Send + 'a>>;
+pub type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<HandlerAction>> + Send + 'a>>;
 
 /// The future type returned by [`RouteHandler::handle`].
 #[cfg(target_arch = "wasm32")]
-pub type RouteHandlerFuture<'a> =
-    Pin<Box<dyn Future<Output = Option<HandlerAction>> + 'a>>;
+pub type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<HandlerAction>> + 'a>>;
 
 /// Parsed request metadata passed to route handlers.
 pub struct RequestInfo<'a> {

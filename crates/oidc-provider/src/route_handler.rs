@@ -29,9 +29,7 @@ impl RouteHandler for OidcDiscoveryRouteHandler {
                     let jwks_uri = format!("{}/.well-known/jwks.json", self.issuer);
                     openid_configuration_json(&self.issuer, &jwks_uri)
                 }
-                "/.well-known/jwks.json" => {
-                    jwks_json(self.signer.public_key(), self.signer.kid())
-                }
+                "/.well-known/jwks.json" => jwks_json(self.signer.public_key(), self.signer.kid()),
                 _ => return None,
             };
 
