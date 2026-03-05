@@ -1,0 +1,4 @@
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071", # Marvin Attack on rsa crate - no fix available; used for JWT signing/verification, not decryption
+]
