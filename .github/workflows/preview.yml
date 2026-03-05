@@ -18,6 +18,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_WORKERS_SUBDOMAIN: ${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}
       WORKER_NAME: multistore-proxy-pr-${{ github.event.pull_request.number }}
     permissions:
       pull-requests: write
@@ -32,7 +33,7 @@ jobs:
       - name: Deploy preview worker
         id: deploy
         run: |
-          OUTPUT=$(npx wrangler deploy --cwd examples/cf-workers --name "$WORKER_NAME" --var "OIDC_PROVIDER_ISSUER:${{ vars.OIDC_PROVIDER_ISSUER }}" 2>&1)
+          OUTPUT=$(npx wrangler deploy --cwd examples/cf-workers --name "$WORKER_NAME" --var "OIDC_PROVIDER_ISSUER:https://${WORKER_NAME}.${CLOUDFLARE_WORKERS_SUBDOMAIN}.workers.dev" 2>&1)
           echo "$OUTPUT"
           URL=$(echo "$OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev')
           echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
