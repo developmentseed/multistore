@@ -1,5 +1,10 @@
 .PHONY: check test run-server run-workers ci docs
 
+build: build-workers
+
+build-workers:
+	npx wrangler build --cwd examples/cf-workers
+
 check:
 	cargo check
 
