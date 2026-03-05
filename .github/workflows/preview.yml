@@ -32,14 +32,15 @@ jobs:
       - name: Deploy preview worker
         id: deploy
         run: |
-          OUTPUT=$(npx wrangler deploy --cwd examples/cf-workers --name "$WORKER_NAME" 2>&1)
+          OUTPUT=$(npx wrangler deploy --cwd examples/cf-workers --name "$WORKER_NAME" --var "OIDC_PROVIDER_ISSUER:${{ vars.OIDC_PROVIDER_ISSUER }}" 2>&1)
           echo "$OUTPUT"
           URL=$(echo "$OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev')
           echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Set SESSION_TOKEN_KEY secret
+      - name: Set worker secrets
         run: |
           echo "${{ secrets.SESSION_TOKEN_KEY }}" | npx wrangler secret put SESSION_TOKEN_KEY --cwd examples/cf-workers --name "$WORKER_NAME"
+          echo "${{ secrets.OIDC_PROVIDER_KEY }}" | npx wrangler secret put OIDC_PROVIDER_KEY --cwd examples/cf-workers --name "$WORKER_NAME"
 
       - name: Wait for preview to be live
         run: |
