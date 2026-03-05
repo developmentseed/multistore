@@ -62,98 +62,11 @@ jobs:
     env:
       PREVIEW_URL: ${{ needs.deploy-preview.outputs.preview_url }}
     steps:
-      - name: Get GitHub OIDC token
-        id: oidc
-        run: |
-          OIDC_TOKEN=$(curl -sS \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" \
-            | jq -r '.value')
-          echo "::add-mask::$OIDC_TOKEN"
-          echo "token=$OIDC_TOKEN" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
 
-      - name: "Positive: Assume github-actions role"
-        id: assume-role
-        run: |
-          RESPONSE=$(curl -sS -G "$PREVIEW_URL" \
-            --data-urlencode "Action=AssumeRoleWithWebIdentity" \
-            --data-urlencode "RoleArn=github-actions" \
-            --data-urlencode "WebIdentityToken=${{ steps.oidc.outputs.token }}")
-          echo "$RESPONSE"
-
-          # Assert the response contains credentials
-          echo "$RESPONSE" | grep -q "<AccessKeyId>" || { echo "FAIL: No AccessKeyId in response"; exit 1; }
-
-          # Parse credentials from XML
-          ACCESS_KEY=$(echo "$RESPONSE" | grep -oP '(?<=<AccessKeyId>)[^<]+')
-          SECRET_KEY=$(echo "$RESPONSE" | grep -oP '(?<=<SecretAccessKey>)[^<]+')
-          SESSION_TOKEN=$(echo "$RESPONSE" | grep -oP '(?<=<SessionToken>)[^<]+')
-
-          echo "::add-mask::$ACCESS_KEY"
-          echo "::add-mask::$SECRET_KEY"
-          echo "::add-mask::$SESSION_TOKEN"
-
-          echo "access_key=$ACCESS_KEY" >> "$GITHUB_OUTPUT"
-          echo "secret_key=$SECRET_KEY" >> "$GITHUB_OUTPUT"
-          echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
-
-      - name: "Positive: List cholmes bucket"
-        run: |
-          aws configure set default.s3.addressing_style path
-          aws s3api list-objects-v2 \
-            --bucket cholmes \
-            --max-items 5 \
-            --endpoint-url "$PREVIEW_URL"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ steps.assume-role.outputs.access_key }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.assume-role.outputs.secret_key }}
-          AWS_SESSION_TOKEN: ${{ steps.assume-role.outputs.session_token }}
-          AWS_DEFAULT_REGION: us-east-1
-          AWS_EC2_METADATA_DISABLED: "true"
-
-      - name: "Negative: Assume github-actions-no-access role"
-        id: assume-no-access
-        run: |
-          RESPONSE=$(curl -sS -G "$PREVIEW_URL" \
-            --data-urlencode "Action=AssumeRoleWithWebIdentity" \
-            --data-urlencode "RoleArn=github-actions-no-access" \
-            --data-urlencode "WebIdentityToken=${{ steps.oidc.outputs.token }}")
-          echo "$RESPONSE"
-
-          # Assert the response contains credentials (role assumption should succeed)
-          echo "$RESPONSE" | grep -q "<AccessKeyId>" || { echo "FAIL: No AccessKeyId in response"; exit 1; }
-
-          # Parse credentials from XML
-          ACCESS_KEY=$(echo "$RESPONSE" | grep -oP '(?<=<AccessKeyId>)[^<]+')
-          SECRET_KEY=$(echo "$RESPONSE" | grep -oP '(?<=<SecretAccessKey>)[^<]+')
-          SESSION_TOKEN=$(echo "$RESPONSE" | grep -oP '(?<=<SessionToken>)[^<]+')
-
-          echo "::add-mask::$ACCESS_KEY"
-          echo "::add-mask::$SECRET_KEY"
-          echo "::add-mask::$SESSION_TOKEN"
-
-          echo "access_key=$ACCESS_KEY" >> "$GITHUB_OUTPUT"
-          echo "secret_key=$SECRET_KEY" >> "$GITHUB_OUTPUT"
-          echo "session_token=$SESSION_TOKEN" >> "$GITHUB_OUTPUT"
-
-      - name: "Negative: List cholmes bucket should be denied"
-        run: |
-          aws configure set default.s3.addressing_style path
-          if aws s3api list-objects-v2 \
-            --bucket cholmes \
-            --max-items 5 \
-            --endpoint-url "$PREVIEW_URL" 2>&1; then
-            echo "FAIL: Expected access denied but request succeeded"
-            exit 1
-          else
-            echo "PASS: Correctly denied access to cholmes bucket"
-          fi
-        env:
-          AWS_ACCESS_KEY_ID: ${{ steps.assume-no-access.outputs.access_key }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.assume-no-access.outputs.secret_key }}
-          AWS_SESSION_TOKEN: ${{ steps.assume-no-access.outputs.session_token }}
-          AWS_DEFAULT_REGION: us-east-1
-          AWS_EC2_METADATA_DISABLED: "true"
+      - name: Run smoke tests
+        run: uvx --with pytest,boto3,requests pytest tests/smoke/ -v
 
   cleanup-preview:
     name: Cleanup Preview
