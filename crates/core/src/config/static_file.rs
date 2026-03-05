@@ -55,9 +55,9 @@ impl StaticConfig {
             } else if !role_ids.insert(&role.role_id) {
                 errors.push(format!("duplicate role_id: {:?}", role.role_id));
             }
-            if role.trusted_oidc_issuers.is_empty() {
+            if role.trusted_oidc_issuers.is_empty() && role.trusted_aws_accounts.is_empty() {
                 errors.push(format!(
-                    "role {:?} has no trusted_oidc_issuers (will never accept a token)",
+                    "role {:?} has no trusted_oidc_issuers or trusted_aws_accounts (will never accept a token)",
                     role.role_id
                 ));
             }
@@ -239,6 +239,7 @@ mod tests {
                 name: "My Role".into(),
                 trusted_oidc_issuers: vec!["https://issuer.example.com".into()],
                 required_audience: None,
+                trusted_aws_accounts: vec![],
                 subject_conditions: vec![],
                 allowed_scopes: vec![],
                 max_session_duration_secs: 3600,
@@ -305,11 +306,31 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_trusted_oidc_issuers() {
+    fn test_no_trusted_issuers_or_accounts() {
         let mut config = valid_config();
         config.roles[0].trusted_oidc_issuers.clear();
+        config.roles[0].trusted_aws_accounts.clear();
         let err = config.validate().unwrap_err().to_string();
-        assert!(err.contains("no trusted_oidc_issuers"), "{}", err);
+        assert!(
+            err.contains("no trusted_oidc_issuers or trusted_aws_accounts"),
+            "{}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_role_with_only_aws_accounts_passes() {
+        let mut config = valid_config();
+        config.roles[0].trusted_oidc_issuers.clear();
+        config.roles[0].trusted_aws_accounts = vec!["123456789012".into()];
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn test_role_with_both_oidc_and_aws_passes() {
+        let mut config = valid_config();
+        config.roles[0].trusted_aws_accounts = vec!["123456789012".into()];
+        config.validate().unwrap();
     }
 
     #[test]
@@ -368,13 +389,21 @@ mod tests {
             max_session_duration_secs = 3600
         "#;
         let err = StaticProvider::from_toml(toml).unwrap_err().to_string();
-        assert!(err.contains("no trusted_oidc_issuers"), "{}", err);
+        assert!(
+            err.contains("no trusted_oidc_issuers or trusted_aws_accounts"),
+            "{}",
+            err
+        );
     }
 
     #[test]
     fn test_from_json_runs_validation() {
         let json = r#"{"roles": [{"role_id": "bad-role", "name": "Bad", "max_session_duration_secs": 3600}]}"#;
         let err = StaticProvider::from_json(json).unwrap_err().to_string();
-        assert!(err.contains("no trusted_oidc_issuers"), "{}", err);
+        assert!(
+            err.contains("no trusted_oidc_issuers or trusted_aws_accounts"),
+            "{}",
+            err
+        );
     }
 }

@@ -1,8 +1,15 @@
 //! OIDC/STS authentication for the S3 proxy gateway.
 //!
-//! This crate implements the `AssumeRoleWithWebIdentity` STS API, allowing
-//! workloads like GitHub Actions to exchange OIDC tokens for temporary S3
-//! credentials scoped to specific buckets and prefixes.
+//! This crate implements STS-style token exchange APIs, allowing workloads to
+//! exchange identity proofs for temporary S3 credentials scoped to specific
+//! buckets and prefixes.
+//!
+//! # Supported auth methods
+//!
+//! - **`AssumeRoleWithWebIdentity`** — exchange an OIDC JWT for credentials
+//!   (e.g., GitHub Actions, Auth0)
+//! - **`AssumeRoleWithAWSIdentity`** — exchange a signed AWS `GetCallerIdentity`
+//!   request for credentials (any AWS service with IAM credentials)
 //!
 //! # Integration
 //!
@@ -14,7 +21,7 @@
 //!     .with_route_handler(StsRouteHandler::new(config, jwks_cache, token_key));
 //! ```
 //!
-//! # Flow
+//! # OIDC Flow
 //!
 //! 1. Client obtains a JWT from their OIDC provider (e.g., GitHub Actions ID token)
 //! 2. Client calls `AssumeRoleWithWebIdentity` with the JWT and desired role
@@ -23,14 +30,25 @@
 //! 5. Mints temporary credentials (AccessKeyId/SecretAccessKey/SessionToken)
 //! 6. Returns credentials to the client
 //!
+//! # AWS IAM Flow
+//!
+//! 1. Client signs a `GetCallerIdentity` request using its IAM credentials
+//! 2. Client calls `AssumeRoleWithAWSIdentity` with the signed request and desired role
+//! 3. Proxy forwards the signed request to AWS STS to verify identity
+//! 4. Checks trust policy (account, ARN subject conditions)
+//! 5. Mints temporary credentials
+//! 6. Returns credentials to the client
+//!
 //! The client then uses these credentials to sign S3 requests normally.
 
+pub mod aws_identity;
 pub mod jwks;
 pub mod request;
 pub mod responses;
 pub mod route_handler;
 pub mod sts;
 
+use aws_identity::{verify_aws_identity, AwsCallerIdentity};
 use base64::Engine;
 pub use jwks::JwksCache;
 use multistore::config::ConfigProvider;
@@ -44,6 +62,9 @@ pub use responses::{build_sts_error_response, build_sts_response};
 /// Try to handle an STS request. Returns `Some((status, xml))` if the query
 /// contained an STS action, or `None` if it wasn't an STS request.
 ///
+/// Supports both `AssumeRoleWithWebIdentity` (OIDC) and
+/// `AssumeRoleWithAWSIdentity` (IAM identity verification).
+///
 /// Requires a `TokenKey` — minted credentials are encrypted into the session
 /// token itself, so no server-side storage is needed. If `token_key` is `None`
 /// and an STS request arrives, an error response is returned.
@@ -51,30 +72,58 @@ pub async fn try_handle_sts<C: ConfigProvider>(
     query: Option<&str>,
     config: &C,
     jwks_cache: &JwksCache,
+    http_client: &reqwest::Client,
     token_key: Option<&TokenKey>,
 ) -> Option<(u16, String)> {
-    let sts_result = try_parse_sts_request(query)?;
-    let (status, xml) = match sts_result {
-        Ok(sts_request) => {
-            let Some(key) = token_key else {
-                tracing::error!("STS request received but SESSION_TOKEN_KEY is not configured");
-                return Some(build_sts_error_response(&ProxyError::ConfigError(
-                    "STS requires SESSION_TOKEN_KEY to be configured".into(),
-                )));
-            };
-            match assume_role_with_web_identity(config, &sts_request, "STSPRXY", jwks_cache, key)
-                .await
-            {
-                Ok(creds) => build_sts_response(&creds),
-                Err(e) => {
-                    tracing::warn!(error = %e, "STS request failed");
-                    build_sts_error_response(&e)
+    // Try OIDC first
+    if let Some(sts_result) = try_parse_sts_request(query) {
+        let (status, xml) = match sts_result {
+            Ok(sts_request) => {
+                let Some(key) = token_key else {
+                    tracing::error!("STS request received but SESSION_TOKEN_KEY is not configured");
+                    return Some(build_sts_error_response(&ProxyError::ConfigError(
+                        "STS requires SESSION_TOKEN_KEY to be configured".into(),
+                    )));
+                };
+                match assume_role_with_web_identity(config, &sts_request, "STSPRXY", jwks_cache, key)
+                    .await
+                {
+                    Ok(creds) => build_sts_response(&creds),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "STS OIDC request failed");
+                        build_sts_error_response(&e)
+                    }
                 }
             }
-        }
-        Err(e) => build_sts_error_response(&e),
-    };
-    Some((status, xml))
+            Err(e) => build_sts_error_response(&e),
+        };
+        return Some((status, xml));
+    }
+
+    // Try AWS IAM identity verification
+    if let Some(aws_result) = aws_identity::try_parse_aws_identity_request(query) {
+        let (status, xml) = match aws_result {
+            Ok(aws_request) => {
+                let Some(key) = token_key else {
+                    tracing::error!("STS request received but SESSION_TOKEN_KEY is not configured");
+                    return Some(build_sts_error_response(&ProxyError::ConfigError(
+                        "STS requires SESSION_TOKEN_KEY to be configured".into(),
+                    )));
+                };
+                match handle_aws_identity_request(config, &aws_request, http_client, key).await {
+                    Ok(creds) => build_sts_response(&creds),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "STS AWS IAM request failed");
+                        build_sts_error_response(&e)
+                    }
+                }
+            }
+            Err(e) => build_sts_error_response(&e),
+        };
+        return Some((status, xml));
+    }
+
+    None
 }
 
 /// Decode JWT header and claims without signature verification.
@@ -178,6 +227,101 @@ pub async fn assume_role_with_web_identity<C: ConfigProvider>(
     let mut creds = sts::mint_temporary_credentials(&role, subject, duration, key_prefix, &claims);
 
     // Encrypt the full credentials into the session token — stateless, no storage needed
+    creds.session_token = token_key.seal(&creds)?;
+
+    Ok(creds)
+}
+
+/// Verify AWS IAM identity and mint temporary credentials.
+async fn handle_aws_identity_request<C: ConfigProvider>(
+    config: &C,
+    aws_request: &aws_identity::AwsIdentityRequest,
+    http_client: &reqwest::Client,
+    token_key: &TokenKey,
+) -> Result<TemporaryCredentials, ProxyError> {
+    // Forward the signed GetCallerIdentity request to AWS STS
+    let identity = verify_aws_identity(http_client, aws_request).await?;
+
+    tracing::info!(
+        account = %identity.account,
+        arn = %identity.arn,
+        "verified AWS IAM identity"
+    );
+
+    assume_role_with_aws_identity(
+        config,
+        &aws_request.role_arn,
+        aws_request.duration_seconds,
+        &identity,
+        "STSPRXY",
+        token_key,
+    )
+    .await
+}
+
+/// Verify a caller's AWS identity against role trust policy and mint credentials.
+///
+/// Checks that the caller's AWS account is in `trusted_aws_accounts` and
+/// that the caller's ARN matches `subject_conditions`. Then mints temporary
+/// credentials using the same pipeline as the OIDC flow.
+pub async fn assume_role_with_aws_identity<C: ConfigProvider>(
+    config: &C,
+    role_arn: &str,
+    duration_seconds: Option<u64>,
+    identity: &AwsCallerIdentity,
+    key_prefix: &str,
+    token_key: &TokenKey,
+) -> Result<TemporaryCredentials, ProxyError> {
+    // Look up the role
+    let role = config
+        .get_role(role_arn)
+        .await?
+        .ok_or_else(|| ProxyError::RoleNotFound(role_arn.to_string()))?;
+
+    // Verify the caller's account is trusted
+    if !role.trusted_aws_accounts.iter().any(|a| a == &identity.account) {
+        tracing::warn!(
+            account = %identity.account,
+            role = %role_arn,
+            "AWS account not trusted by role"
+        );
+        return Err(ProxyError::AccessDenied);
+    }
+
+    // Check subject conditions against the caller's ARN
+    if !role.subject_conditions.is_empty() {
+        let matches = role
+            .subject_conditions
+            .iter()
+            .any(|pattern| subject_matches(&identity.arn, pattern));
+        if !matches {
+            tracing::warn!(
+                arn = %identity.arn,
+                role = %role_arn,
+                "ARN does not match any subject conditions"
+            );
+            return Err(ProxyError::AccessDenied);
+        }
+    }
+
+    // Build synthetic claims for template variable resolution in scopes
+    let claims = serde_json::json!({
+        "sub": &identity.arn,
+        "aws_account": &identity.account,
+        "aws_arn": &identity.arn,
+        "aws_user_id": &identity.user_id,
+    });
+
+    // Mint temporary credentials
+    const MIN_SESSION_DURATION_SECS: u64 = 900;
+    let duration = duration_seconds
+        .unwrap_or(3600)
+        .clamp(MIN_SESSION_DURATION_SECS, role.max_session_duration_secs);
+
+    let mut creds =
+        sts::mint_temporary_credentials(&role, &identity.arn, duration, key_prefix, &claims);
+
+    // Encrypt into session token
     creds.session_token = token_key.seal(&creds)?;
 
     Ok(creds)

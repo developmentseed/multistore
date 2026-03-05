@@ -1,7 +1,8 @@
-//! Route handler for STS `AssumeRoleWithWebIdentity` requests.
+//! Route handler for STS requests.
 //!
-//! Intercepts STS queries before they reach the proxy dispatch pipeline
-//! and delegates to [`try_handle_sts`].
+//! Intercepts STS queries (`AssumeRoleWithWebIdentity` and
+//! `AssumeRoleWithAWSIdentity`) before they reach the proxy dispatch
+//! pipeline and delegates to [`try_handle_sts`].
 
 use crate::{try_handle_sts, JwksCache};
 use multistore::config::ConfigProvider;
@@ -9,7 +10,7 @@ use multistore::proxy::{HandlerAction, ProxyResult};
 use multistore::route_handler::{RequestInfo, RouteHandler, RouteHandlerFuture};
 use multistore::sealed_token::TokenKey;
 
-/// Route handler that intercepts STS `AssumeRoleWithWebIdentity` requests.
+/// Route handler that intercepts STS requests (OIDC and AWS IAM).
 pub struct StsRouteHandler<C> {
     config: C,
     jwks_cache: JwksCache,
@@ -33,6 +34,7 @@ impl<C: ConfigProvider> RouteHandler for StsRouteHandler<C> {
                 req.query,
                 &self.config,
                 &self.jwks_cache,
+                self.jwks_cache.http_client(),
                 self.token_key.as_ref(),
             )
             .await?;

@@ -4,13 +4,14 @@ This page covers how to configure the proxy to authenticate incoming client requ
 
 ## Authentication Modes
 
-The proxy supports three authentication modes:
+The proxy supports four authentication modes:
 
 | Mode | Config | Use Case |
 |------|--------|----------|
 | **Anonymous** | `anonymous_access = true` on a bucket | Public datasets, open data |
 | **Long-lived access keys** | `[[credentials]]` entries | Service accounts, internal tools |
-| **OIDC/STS temporary credentials** | `[[roles]]` with trust policies | CI/CD, user sessions, federated identity |
+| **OIDC/STS temporary credentials** | `[[roles]]` with `trusted_oidc_issuers` | CI/CD, user sessions, federated identity |
+| **AWS IAM identity verification** | `[[roles]]` with `trusted_aws_accounts` | AWS services (Lambda, EC2, ECS) — see [AWS IAM Auth](./aws-iam-auth) |
 
 ## Anonymous Access
 

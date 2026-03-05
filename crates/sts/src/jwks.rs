@@ -235,6 +235,11 @@ impl JwksCache {
         }
     }
 
+    /// Returns a reference to the underlying HTTP client.
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
     /// Fetch JWKS for the given issuer, returning a cached response if fresh.
     pub async fn get_or_fetch(&self, issuer: &str) -> Result<JwksResponse, ProxyError> {
         // Check cache

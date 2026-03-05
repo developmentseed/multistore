@@ -114,8 +114,15 @@ pub struct RoleConfig {
     /// Required audience claim value.
     pub required_audience: Option<String>,
 
+    /// AWS account IDs trusted by this role for IAM identity verification.
+    /// When set, AWS services in these accounts can authenticate by presenting
+    /// a signed `GetCallerIdentity` request.
+    #[serde(default)]
+    pub trusted_aws_accounts: Vec<String>,
+
     /// Conditions on the subject claim (glob patterns).
-    /// e.g., "repo:myorg/myrepo:ref:refs/heads/main"
+    /// For OIDC: matched against the `sub` claim (e.g., "repo:myorg/myrepo:ref:refs/heads/main").
+    /// For AWS IAM: matched against the caller's IAM ARN (e.g., "arn:aws:sts::123456789012:assumed-role/MyRole/*").
     #[serde(default)]
     pub subject_conditions: Vec<String>,
 
