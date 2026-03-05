@@ -24,6 +24,29 @@ bucket = "cholmes"
 prefixes = []
 actions = ["get_object", "head_object", "list_bucket"]
 
+# Source Cooperative staging OIDC role — read/write access to any bucket
+[[roles]]
+role_id = "source-coop-user"
+name = "Source Cooperative User"
+trusted_oidc_issuers = ["https://auth.staging.source.coop"]
+subject_conditions = ["*"]
+max_session_duration_secs = 3600
+
+[[roles.allowed_scopes]]
+bucket = "*"
+prefixes = []
+actions = [
+  "get_object",
+  "head_object",
+  "put_object",
+  "delete_object",
+  "list_bucket",
+  "create_multipart_upload",
+  "upload_part",
+  "complete_multipart_upload",
+  "abort_multipart_upload",
+]
+
 # Role that can be assumed but has no bucket access
 [[roles]]
 role_id = "github-actions-no-access"
