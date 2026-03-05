@@ -109,8 +109,8 @@ prefixes = []
 
 [[vars.PROXY_CONFIG.roles]]
 max_session_duration_secs = 3600
-name = "Source Cooperative User"
-role_id = "source-coop-user"
+name = "Default User Access"
+role_id = "default"
 subject_conditions = ["*"]
 trusted_oidc_issuers = [
   "https://auth.staging.source.coop",

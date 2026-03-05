@@ -26,7 +26,7 @@ actions = ["get_object", "head_object", "list_bucket"]
 
 # Source Cooperative staging OIDC role — read/write access to any bucket
 [[roles]]
-role_id = "source-coop-user"
+role_id = "default"
 name = "Source Cooperative User"
 trusted_oidc_issuers = ["https://auth.staging.source.coop"]
 subject_conditions = ["*"]
