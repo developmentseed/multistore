@@ -41,14 +41,12 @@ fn validate_sts_url(url: &str) -> Result<url::Url, ProxyError> {
         .map_err(|e| ProxyError::InvalidRequest(format!("invalid STS URL: {}", e)))?;
 
     if parsed.scheme() != "https" {
-        return Err(ProxyError::InvalidRequest(
-            "STS URL must use HTTPS".into(),
-        ));
+        return Err(ProxyError::InvalidRequest("STS URL must use HTTPS".into()));
     }
 
-    let host = parsed.host_str().ok_or_else(|| {
-        ProxyError::InvalidRequest("STS URL missing host".into())
-    })?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| ProxyError::InvalidRequest("STS URL missing host".into()))?;
 
     // Allow: sts.amazonaws.com, sts.<region>.amazonaws.com,
     //        sts-fips.<region>.amazonaws.com
@@ -86,10 +84,9 @@ struct GetCallerIdentityResult {
 }
 
 fn parse_caller_identity_xml(xml: &str) -> Result<AwsCallerIdentity, ProxyError> {
-    let resp: GetCallerIdentityResponse = quick_xml::de::from_str(xml)
-        .map_err(|e| ProxyError::InvalidRequest(format!(
-            "failed to parse GetCallerIdentity response: {}", e
-        )))?;
+    let resp: GetCallerIdentityResponse = quick_xml::de::from_str(xml).map_err(|e| {
+        ProxyError::InvalidRequest(format!("failed to parse GetCallerIdentity response: {}", e))
+    })?;
 
     Ok(AwsCallerIdentity {
         account: resp.result.account,
@@ -212,9 +209,10 @@ pub async fn verify_aws_identity(
     })?;
 
     let status = response.status();
-    let body = response.text().await.map_err(|e| {
-        ProxyError::Internal(format!("failed to read STS response: {}", e))
-    })?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| ProxyError::Internal(format!("failed to read STS response: {}", e)))?;
 
     if !status.is_success() {
         tracing::warn!(
@@ -264,8 +262,7 @@ mod tests {
 
     #[test]
     fn test_validate_sts_url_rejects_subdomain_trick() {
-        let err =
-            validate_sts_url("https://sts.amazonaws.com.evil.com/").unwrap_err();
+        let err = validate_sts_url("https://sts.amazonaws.com.evil.com/").unwrap_err();
         assert!(err.to_string().contains("not a valid AWS STS"), "{}", err);
     }
 
@@ -313,9 +310,10 @@ mod tests {
     fn test_not_aws_identity_request() {
         assert!(try_parse_aws_identity_request(None).is_none());
         assert!(try_parse_aws_identity_request(Some("Action=ListBuckets")).is_none());
-        assert!(
-            try_parse_aws_identity_request(Some("Action=AssumeRoleWithWebIdentity&RoleArn=r&WebIdentityToken=t")).is_none()
-        );
+        assert!(try_parse_aws_identity_request(Some(
+            "Action=AssumeRoleWithWebIdentity&RoleArn=r&WebIdentityToken=t"
+        ))
+        .is_none());
     }
 
     #[test]
@@ -324,14 +322,17 @@ mod tests {
 
         let url_b64 = STANDARD.encode("https://sts.amazonaws.com/");
         let body_b64 = STANDARD.encode("Action=GetCallerIdentity&Version=2011-06-15");
-        let headers_b64 = STANDARD.encode(r#"{"Authorization":"AWS4-HMAC-SHA256 ...","X-Amz-Date":"20260305T120000Z"}"#);
+        let headers_b64 = STANDARD
+            .encode(r#"{"Authorization":"AWS4-HMAC-SHA256 ...","X-Amz-Date":"20260305T120000Z"}"#);
 
         let query = format!(
             "Action=AssumeRoleWithAWSIdentity&RoleArn=my-aws-role&IamRequestUrl={}&IamRequestBody={}&IamRequestHeaders={}",
             url_b64, body_b64, headers_b64
         );
 
-        let req = try_parse_aws_identity_request(Some(&query)).unwrap().unwrap();
+        let req = try_parse_aws_identity_request(Some(&query))
+            .unwrap()
+            .unwrap();
         assert_eq!(req.role_arn, "my-aws-role");
         assert_eq!(req.iam_request_url, "https://sts.amazonaws.com/");
         assert_eq!(
@@ -355,14 +356,18 @@ mod tests {
             url_b64, body_b64, headers_b64
         );
 
-        let req = try_parse_aws_identity_request(Some(&query)).unwrap().unwrap();
+        let req = try_parse_aws_identity_request(Some(&query))
+            .unwrap()
+            .unwrap();
         assert_eq!(req.duration_seconds, Some(1800));
     }
 
     #[test]
     fn test_parse_aws_identity_request_missing_params() {
         let query = "Action=AssumeRoleWithAWSIdentity&RoleArn=r";
-        let err = try_parse_aws_identity_request(Some(query)).unwrap().unwrap_err();
+        let err = try_parse_aws_identity_request(Some(query))
+            .unwrap()
+            .unwrap_err();
         assert!(err.to_string().contains("missing IamRequestUrl"), "{}", err);
     }
 }

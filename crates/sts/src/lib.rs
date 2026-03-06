@@ -85,8 +85,14 @@ pub async fn try_handle_sts<C: ConfigProvider>(
                         "STS requires SESSION_TOKEN_KEY to be configured".into(),
                     )));
                 };
-                match assume_role_with_web_identity(config, &sts_request, "STSPRXY", jwks_cache, key)
-                    .await
+                match assume_role_with_web_identity(
+                    config,
+                    &sts_request,
+                    "STSPRXY",
+                    jwks_cache,
+                    key,
+                )
+                .await
                 {
                     Ok(creds) => build_sts_response(&creds),
                     Err(e) => {
@@ -279,7 +285,11 @@ pub async fn assume_role_with_aws_identity<C: ConfigProvider>(
         .ok_or_else(|| ProxyError::RoleNotFound(role_arn.to_string()))?;
 
     // Verify the caller's account is trusted
-    if !role.trusted_aws_accounts.iter().any(|a| a == &identity.account) {
+    if !role
+        .trusted_aws_accounts
+        .iter()
+        .any(|a| a == &identity.account)
+    {
         tracing::warn!(
             account = %identity.account,
             role = %role_arn,
