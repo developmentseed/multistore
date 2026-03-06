@@ -9,9 +9,8 @@ use axum::Router;
 use futures::TryStreamExt;
 use http::HeaderMap;
 use http_body_util::BodyStream;
-use multistore::config::ConfigProvider;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::resolver::DefaultResolver;
+use multistore::registry::{BucketRegistry, CredentialRegistry};
 use multistore::route_handler::{ForwardRequest, RequestInfo, RESPONSE_HEADER_ALLOWLIST};
 use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
@@ -53,8 +52,8 @@ impl Default for ServerConfig {
 
 type OidcAuth = MaybeOidcAuth<ReqwestHttpExchange>;
 
-struct AppState<P: ConfigProvider> {
-    handler: ProxyGateway<ServerBackend, DefaultResolver<P>, OidcAuth>,
+struct AppState<R: BucketRegistry, C: CredentialRegistry> {
+    handler: ProxyGateway<ServerBackend, R, C, OidcAuth>,
     reqwest_client: reqwest::Client,
 }
 
@@ -74,23 +73,23 @@ struct AppState<P: ConfigProvider> {
 ///         virtual_host_domain: Some("s3.local".to_string()),
 ///         ..Default::default()
 ///     };
-///     run(config, server_config).await.unwrap();
+///     run(config.clone(), config, server_config).await.unwrap();
 /// }
 /// ```
-pub async fn run<P>(
-    config: P,
+pub async fn run<R, C>(
+    bucket_registry: R,
+    credential_registry: C,
     server_config: ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    P: ConfigProvider + Clone + Send + Sync + 'static,
+    R: BucketRegistry,
+    C: CredentialRegistry,
 {
     let backend = ServerBackend::new();
     let reqwest_client = backend.client().clone();
     let jwks_cache = JwksCache::new(reqwest_client.clone(), Duration::from_secs(900));
     let token_key = server_config.token_key;
-    let sts_config = config.clone();
-    let resolver =
-        DefaultResolver::new(config, server_config.virtual_host_domain, token_key.clone());
+    let sts_creds = credential_registry.clone();
 
     // Build OIDC provider if both key and issuer are configured.
     let (oidc_auth, oidc_discovery) = match (
@@ -117,11 +116,18 @@ where
     };
 
     // Build the gateway with route handlers (OIDC discovery first, then STS).
-    let mut handler = ProxyGateway::new(backend, resolver).with_backend_auth(oidc_auth);
+    let mut handler = ProxyGateway::new(
+        backend,
+        bucket_registry,
+        credential_registry,
+        server_config.virtual_host_domain,
+        token_key.clone(),
+    )
+    .with_backend_auth(oidc_auth);
     if let Some(discovery) = oidc_discovery {
         handler = handler.with_route_handler(discovery);
     }
-    handler = handler.with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
+    handler = handler.with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
 
     let state = Arc::new(AppState {
         handler,
@@ -129,7 +135,7 @@ where
     });
 
     let app = Router::new()
-        .fallback(request_handler::<P>)
+        .fallback(request_handler::<R, C>)
         .with_state(state);
 
     let listener = TcpListener::bind(server_config.listen_addr).await?;
@@ -139,8 +145,8 @@ where
     Ok(())
 }
 
-async fn request_handler<P: ConfigProvider + Send + Sync + 'static>(
-    State(state): State<Arc<AppState<P>>>,
+async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
+    State(state): State<Arc<AppState<R, C>>>,
     req: axum::extract::Request,
 ) -> Response {
     let (parts, body) = req.into_parts();

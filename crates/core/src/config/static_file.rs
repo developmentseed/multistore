@@ -3,9 +3,13 @@
 //! Loads configuration from a TOML or JSON file at startup.
 //! Suitable for simple deployments or development.
 
-use crate::config::ConfigProvider;
+use crate::api::response::BucketEntry;
+use crate::auth;
 use crate::error::ProxyError;
-use crate::types::{BucketConfig, BucketOwner, RoleConfig, StoredCredential};
+use crate::registry::{BucketRegistry, CredentialRegistry, ResolvedBucket};
+use crate::types::{
+    BucketConfig, BucketOwner, ResolvedIdentity, RoleConfig, S3Operation, StoredCredential,
+};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -160,7 +164,7 @@ impl StaticProvider {
     }
 }
 
-impl ConfigProvider for StaticProvider {
+impl BucketRegistry for StaticProvider {
     fn bucket_owner(&self) -> BucketOwner {
         let default_owner = super::DEFAULT_BUCKET_OWNER;
         BucketOwner {
@@ -179,30 +183,50 @@ impl ConfigProvider for StaticProvider {
         }
     }
 
-    async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError> {
-        Ok(self.inner.config.buckets.clone())
-    }
-
-    async fn get_bucket(&self, name: &str) -> Result<Option<BucketConfig>, ProxyError> {
-        Ok(self
+    async fn get_bucket(
+        &self,
+        name: &str,
+        identity: &ResolvedIdentity,
+        operation: &S3Operation,
+    ) -> Result<ResolvedBucket, ProxyError> {
+        let bucket_config = self
             .inner
             .config
             .buckets
             .iter()
             .find(|b| b.name == name)
-            .cloned())
+            .cloned()
+            .ok_or_else(|| {
+                tracing::warn!(bucket = %name, "bucket not found in config");
+                ProxyError::BucketNotFound(name.to_string())
+            })?;
+
+        auth::authorize(identity, operation, &bucket_config)?;
+
+        Ok(ResolvedBucket {
+            config: bucket_config,
+            list_rewrite: None,
+        })
     }
 
-    async fn get_role(&self, role_id: &str) -> Result<Option<RoleConfig>, ProxyError> {
+    async fn list_buckets(
+        &self,
+        _identity: &ResolvedIdentity,
+    ) -> Result<Vec<BucketEntry>, ProxyError> {
         Ok(self
             .inner
             .config
-            .roles
+            .buckets
             .iter()
-            .find(|r| r.role_id == role_id)
-            .cloned())
+            .map(|b| BucketEntry {
+                name: b.name.clone(),
+                creation_date: "2024-01-01T00:00:00.000Z".to_string(),
+            })
+            .collect())
     }
+}
 
+impl CredentialRegistry for StaticProvider {
     async fn get_credential(
         &self,
         access_key_id: &str,
@@ -213,6 +237,16 @@ impl ConfigProvider for StaticProvider {
             .credentials
             .iter()
             .find(|c| c.access_key_id == access_key_id)
+            .cloned())
+    }
+
+    async fn get_role(&self, role_id: &str) -> Result<Option<RoleConfig>, ProxyError> {
+        Ok(self
+            .inner
+            .config
+            .roles
+            .iter()
+            .find(|r| r.role_id == role_id)
             .cloned())
     }
 }

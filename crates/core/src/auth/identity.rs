@@ -4,8 +4,8 @@
 //! the signature, and returns the resolved identity.
 
 use super::sigv4::{constant_time_eq, parse_sigv4_auth, verify_sigv4_signature};
-use crate::config::ConfigProvider;
 use crate::error::ProxyError;
+use crate::registry::CredentialRegistry;
 use crate::sealed_token::TokenKey;
 use crate::types::ResolvedIdentity;
 use http::HeaderMap;
@@ -14,7 +14,7 @@ use http::HeaderMap;
 ///
 /// Parses the SigV4 Authorization header, looks up the credential, verifies
 /// the signature, and returns the resolved identity.
-pub async fn resolve_identity<C: ConfigProvider>(
+pub async fn resolve_identity<C: CredentialRegistry>(
     method: &http::Method,
     uri_path: &str,
     query_string: &str,

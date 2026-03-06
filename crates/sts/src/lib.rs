@@ -33,8 +33,8 @@ pub mod sts;
 
 use base64::Engine;
 pub use jwks::JwksCache;
-use multistore::config::ConfigProvider;
 use multistore::error::ProxyError;
+use multistore::registry::CredentialRegistry;
 use multistore::sealed_token::TokenKey;
 use multistore::types::TemporaryCredentials;
 pub use request::try_parse_sts_request;
@@ -47,7 +47,7 @@ pub use responses::{build_sts_error_response, build_sts_response};
 /// Requires a `TokenKey` — minted credentials are encrypted into the session
 /// token itself, so no server-side storage is needed. If `token_key` is `None`
 /// and an STS request arrives, an error response is returned.
-pub async fn try_handle_sts<C: ConfigProvider>(
+pub async fn try_handle_sts<C: CredentialRegistry>(
     query: Option<&str>,
     config: &C,
     jwks_cache: &JwksCache,
@@ -104,7 +104,7 @@ fn jwt_decode_unverified(
 ///
 /// Credentials are encrypted into a self-contained session token via `token_key`.
 /// No server-side credential storage is needed.
-pub async fn assume_role_with_web_identity<C: ConfigProvider>(
+pub async fn assume_role_with_web_identity<C: CredentialRegistry>(
     config: &C,
     sts_request: &StsRequest,
     key_prefix: &str,

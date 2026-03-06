@@ -1,96 +1,93 @@
-# Custom Request Resolver
+# Custom Bucket Registry
 
-The `RequestResolver` trait controls how incoming requests are parsed, authenticated, and authorized. Implement it for full control over the request handling pipeline.
+The `BucketRegistry` trait controls how virtual buckets are resolved and authorized. Implement it for custom namespace mapping, per-request authorization, or dynamic bucket configuration.
 
 ## The Trait
 
 ```rust
-use multistore::resolver::{RequestResolver, ResolvedAction};
+use multistore::registry::{BucketRegistry, ResolvedBucket};
+use multistore::api::response::BucketEntry;
 use multistore::error::ProxyError;
-use http::{Method, HeaderMap};
+use multistore::types::{BucketOwner, ResolvedIdentity, S3Operation};
 
-pub trait RequestResolver: Clone + Send + Sync + 'static {
-    fn resolve(
+pub trait BucketRegistry: Clone + Send + Sync + 'static {
+    fn get_bucket(
         &self,
-        method: &Method,
-        path: &str,
-        query: Option<&str>,
-        headers: &HeaderMap,
-    ) -> impl Future<Output = Result<ResolvedAction, ProxyError>> + Send;
+        name: &str,
+        identity: &ResolvedIdentity,
+        operation: &S3Operation,
+    ) -> impl Future<Output = Result<ResolvedBucket, ProxyError>> + Send;
+
+    fn list_buckets(
+        &self,
+        identity: &ResolvedIdentity,
+    ) -> impl Future<Output = Result<Vec<BucketEntry>, ProxyError>> + Send;
+
+    fn bucket_owner(&self) -> BucketOwner { /* default */ }
 }
 ```
 
-## ResolvedAction
+## ResolvedBucket
 
-The resolver returns one of two actions:
+The registry returns a `ResolvedBucket` containing the backend configuration:
 
 ```rust
-pub enum ResolvedAction {
-    /// Forward to a backend (standard proxy behavior)
-    Proxy {
-        operation: S3Operation,
-        bucket_config: BucketConfig,
-        list_rewrite: Option<ListRewrite>,
-    },
-    /// Return a synthetic response (e.g., virtual listing, redirect)
-    Response {
-        status: StatusCode,
-        headers: HeaderMap,
-        body: ProxyResponseBody,
-    },
+pub struct ResolvedBucket {
+    /// Backend configuration for this bucket.
+    pub config: BucketConfig,
+    /// Optional rewrite rule for list response XML.
+    pub list_rewrite: Option<ListRewrite>,
 }
 ```
 
-## Example: Custom Namespace
+## Example: API-Backed Registry
 
-A resolver that maps `/{account}/{repo}/{key}` to backend buckets:
+A registry that looks up buckets from an external API and authorizes per-request:
 
 ```rust
-use multistore::resolver::{RequestResolver, ResolvedAction};
-use multistore::s3::request::build_s3_operation;
+use multistore::registry::{BucketRegistry, ResolvedBucket};
+use multistore::api::response::BucketEntry;
 use multistore::error::ProxyError;
+use multistore::types::{BucketOwner, ResolvedIdentity, S3Operation};
 
 #[derive(Clone)]
-struct MyResolver {
+struct MyRegistry {
     api_client: ApiClient,
 }
 
-impl RequestResolver for MyResolver {
-    async fn resolve(
+impl BucketRegistry for MyRegistry {
+    async fn get_bucket(
         &self,
-        method: &Method,
-        path: &str,
-        query: Option<&str>,
-        headers: &HeaderMap,
-    ) -> Result<ResolvedAction, ProxyError> {
-        // Parse custom URL structure
-        let parts: Vec<&str> = path.trim_start_matches('/').splitn(3, '/').collect();
-        let (account, repo, key) = match parts.as_slice() {
-            [a, r, k] => (*a, *r, *k),
-            [a, r] => (*a, *r, ""),
-            _ => return Err(ProxyError::BucketNotFound),
-        };
-
+        name: &str,
+        identity: &ResolvedIdentity,
+        operation: &S3Operation,
+    ) -> Result<ResolvedBucket, ProxyError> {
         // Look up the backend config from an external API
         let bucket_config = self.api_client
-            .get_backend(account, repo)
+            .get_backend(name)
             .await
-            .map_err(|_| ProxyError::BucketNotFound)?;
+            .map_err(|_| ProxyError::BucketNotFound(name.to_string()))?;
 
-        // Authenticate via external service
-        self.api_client
-            .check_permissions(account, repo, headers)
-            .await
-            .map_err(|_| ProxyError::AccessDenied)?;
+        // Authorize via external service or built-in auth::authorize
+        multistore::auth::authorize(identity, operation, &bucket_config)?;
 
-        // Build the S3 operation from method + key
-        let operation = build_s3_operation(method, &bucket_config.name, key, query)?;
-
-        Ok(ResolvedAction::Proxy {
-            operation,
-            bucket_config,
+        Ok(ResolvedBucket {
+            config: bucket_config,
             list_rewrite: None,
         })
+    }
+
+    async fn list_buckets(
+        &self,
+        _identity: &ResolvedIdentity,
+    ) -> Result<Vec<BucketEntry>, ProxyError> {
+        let buckets = self.api_client.list_buckets().await
+            .map_err(|e| ProxyError::Internal(e.to_string()))?;
+
+        Ok(buckets.into_iter().map(|b| BucketEntry {
+            name: b.name,
+            creation_date: "2024-01-01T00:00:00.000Z".to_string(),
+        }).collect())
     }
 }
 ```
@@ -98,8 +95,9 @@ impl RequestResolver for MyResolver {
 ## Wiring Into the Gateway
 
 ```rust
-let resolver = MyResolver::new(api_client);
-let gateway = Gateway::new(backend, resolver);
+let registry = MyRegistry::new(api_client);
+let cred_registry = MyCredentialRegistry::new(/* ... */);
+let gateway = ProxyGateway::new(backend, registry, cred_registry, domain, token_key);
 
 // In your request handler:
 let req_info = RequestInfo {
@@ -116,17 +114,16 @@ match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
 
 ## ListRewrite
 
-The `ListRewrite` option in `ResolvedAction::Proxy` allows you to transform `<Key>` and `<Prefix>` values in LIST response XML:
+The `list_rewrite` field in `ResolvedBucket` allows you to transform `<Key>` and `<Prefix>` values in LIST response XML:
 
 ```rust
-ResolvedAction::Proxy {
-    operation,
-    bucket_config,
+Ok(ResolvedBucket {
+    config: bucket_config,
     list_rewrite: Some(ListRewrite {
         strip_prefix: "internal/mirror/".to_string(),
         add_prefix: "public/".to_string(),
     }),
-}
+})
 ```
 
 This is useful when the backend key structure differs from what clients expect.

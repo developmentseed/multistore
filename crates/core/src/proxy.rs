@@ -1,7 +1,7 @@
-//! The main proxy gateway that ties together resolution and backend forwarding.
+//! The main proxy gateway that ties together registry lookup and backend forwarding.
 //!
-//! [`Gateway`] is generic over the runtime's backend and request resolver.
-//! Incoming requests pass through two layers:
+//! [`ProxyGateway`] is generic over the runtime's backend, bucket registry,
+//! credential registry, and backend auth.
 //!
 //! ## Route handlers (pre-dispatch)
 //!
@@ -15,7 +15,8 @@
 //!
 //! If no route handler matches, the request enters the two-phase pipeline:
 //!
-//! 1. **`resolve_request`** — parses, authenticates, and decides the action:
+//! 1. **`resolve_request`** — parses the S3 operation, resolves identity,
+//!    authorizes via the bucket registry, and decides the action:
 //!    - GET/HEAD/PUT/DELETE → [`HandlerAction::Forward`] with a presigned URL
 //!    - LIST → [`HandlerAction::Response`] with XML body
 //!    - Multipart → [`HandlerAction::NeedsBody`] (body required)
@@ -25,7 +26,7 @@
 //!
 //! ## Runtime integration
 //!
-//! The recommended entry point is [`Gateway::handle_request`], which returns a
+//! The recommended entry point is [`ProxyGateway::handle_request`], which returns a
 //! two-variant [`GatewayResponse<B>`]:
 //!
 //! - **`Response`** — a fully formed response to send to the client
@@ -41,18 +42,22 @@
 //! }
 //! ```
 //!
-//! For lower-level control, use [`Gateway::handle`] which returns the
+//! For lower-level control, use [`ProxyGateway::handle`] which returns the
 //! three-variant [`HandlerAction`] directly.
 
 use crate::api::list::{build_list_prefix, build_list_xml, parse_list_query_params, ListXmlParams};
-use crate::api::response::ErrorResponse;
+use crate::api::list_rewrite::ListRewrite;
+use crate::api::request::{self, HostStyle};
+use crate::api::response::{BucketList, ErrorResponse, ListAllMyBucketsResult};
+use crate::auth;
 use crate::backend::auth::{BackendAuth, NoAuth};
 use crate::backend::multipart::{build_backend_url, sign_s3_request};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
-use crate::resolver::{ListRewrite, RequestResolver, ResolvedAction};
+use crate::registry::{BucketRegistry, CredentialRegistry};
 use crate::route_handler::{ProxyResponseBody, RequestInfo, RouteHandler};
+use crate::sealed_token::TokenKey;
 use crate::types::{BucketConfig, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
@@ -69,7 +74,7 @@ pub use crate::route_handler::{
     ForwardRequest, HandlerAction, PendingRequest, ProxyResult, RESPONSE_HEADER_ALLOWLIST,
 };
 
-/// Simplified two-variant result from [`Gateway::handle_request`].
+/// Simplified two-variant result from [`ProxyGateway::handle_request`].
 ///
 /// The gateway resolves `NeedsBody` internally via the body collection
 /// closure, so runtimes only need to handle `Response` and `Forward`.
@@ -85,47 +90,61 @@ pub enum GatewayResponse<B> {
 
 /// The core proxy gateway, generic over runtime primitives.
 ///
-/// Combines pluggable [`RouteHandler`]s (checked in registration order)
-/// with the two-phase resolve/dispatch pipeline.
+/// Owns S3 request parsing, identity resolution, and authorization via
+/// the [`BucketRegistry`] and [`CredentialRegistry`] traits. Combines
+/// pluggable [`RouteHandler`]s (checked in registration order) with the
+/// two-phase resolve/dispatch pipeline.
 ///
 /// # Type Parameters
 ///
 /// - `B`: The runtime's backend for object store creation, signing, and raw HTTP
-/// - `R`: The request resolver that decides what action to take for each request
+/// - `R`: The bucket registry for bucket lookup and authorization
+/// - `C`: The credential registry for credential and role lookup
 /// - `O`: Backend auth for resolving credentials before store/signer creation
-pub struct ProxyGateway<B, R, O = NoAuth> {
+pub struct ProxyGateway<B, R, C, O = NoAuth> {
     backend: B,
-    resolver: R,
+    bucket_registry: R,
+    credential_registry: C,
     backend_auth: O,
+    virtual_host_domain: Option<String>,
+    token_key: Option<TokenKey>,
     route_handlers: Vec<Box<dyn RouteHandler>>,
     /// When true, error responses include full internal details (for development).
     /// When false, server-side errors use generic messages.
     debug_errors: bool,
 }
 
-/// Backwards-compatible type alias.
-pub type ProxyHandler<B, R, O = NoAuth> = ProxyGateway<B, R, O>;
-
-impl<B, R> ProxyGateway<B, R>
+impl<B, R, C> ProxyGateway<B, R, C>
 where
     B: ProxyBackend,
-    R: RequestResolver,
+    R: BucketRegistry,
+    C: CredentialRegistry,
 {
-    pub fn new(backend: B, resolver: R) -> Self {
+    pub fn new(
+        backend: B,
+        bucket_registry: R,
+        credential_registry: C,
+        virtual_host_domain: Option<String>,
+        token_key: Option<TokenKey>,
+    ) -> Self {
         Self {
             backend,
-            resolver,
+            bucket_registry,
+            credential_registry,
             backend_auth: NoAuth,
+            virtual_host_domain,
+            token_key,
             route_handlers: Vec::new(),
             debug_errors: false,
         }
     }
 }
 
-impl<B, R, O> ProxyGateway<B, R, O>
+impl<B, R, C, O> ProxyGateway<B, R, C, O>
 where
     B: ProxyBackend,
-    R: RequestResolver,
+    R: BucketRegistry,
+    C: CredentialRegistry,
     O: BackendAuth,
 {
     /// Set the backend auth implementation.
@@ -133,11 +152,14 @@ where
     /// When configured, `dispatch_operation` calls `resolve_credentials`
     /// before accessing the backend — enabling credential resolution
     /// (e.g. OIDC token exchange) for buckets that require it.
-    pub fn with_backend_auth<O2: BackendAuth>(self, backend_auth: O2) -> ProxyGateway<B, R, O2> {
+    pub fn with_backend_auth<O2: BackendAuth>(self, backend_auth: O2) -> ProxyGateway<B, R, C, O2> {
         ProxyGateway {
             backend: self.backend,
-            resolver: self.resolver,
+            bucket_registry: self.bucket_registry,
+            credential_registry: self.credential_registry,
             backend_auth,
+            virtual_host_domain: self.virtual_host_domain,
+            token_key: self.token_key,
             route_handlers: self.route_handlers,
             debug_errors: self.debug_errors,
         }
@@ -225,12 +247,9 @@ where
 
     /// Phase 1: Resolve an incoming request into an action.
     ///
-    /// This is the main entry point. It:
-    /// 1. Resolves the request via the resolver (parse, auth, authorize)
-    /// 2. Determines what the runtime should do next:
-    ///    - `Forward` a presigned URL (GET/HEAD/PUT/DELETE)
-    ///    - Return a `Response` directly (LIST, errors, synthetic)
-    ///    - Request the body via `NeedsBody` (multipart)
+    /// Parses the S3 operation from the request, resolves the caller's
+    /// identity, authorizes via the bucket registry, and determines what
+    /// the runtime should do next.
     pub async fn resolve_request(
         &self,
         method: Method,
@@ -329,34 +348,70 @@ where
         headers: &HeaderMap,
         request_id: &str,
     ) -> Result<HandlerAction, ProxyError> {
-        let action = self.resolver.resolve(&method, path, query, headers).await?;
+        // Determine host style
+        let host_style = determine_host_style(headers, self.virtual_host_domain.as_deref());
 
-        match action {
-            ResolvedAction::Response {
-                status,
-                headers: resp_headers,
-                body: resp_body,
-            } => Ok(HandlerAction::Response(ProxyResult {
-                status,
-                headers: resp_headers,
-                body: ProxyResponseBody::from_bytes(resp_body),
-            })),
-            ResolvedAction::Proxy {
-                operation,
-                bucket_config,
-                list_rewrite,
-            } => {
-                self.dispatch_operation(
-                    &method,
-                    &operation,
-                    &bucket_config,
-                    headers,
-                    list_rewrite.as_ref(),
-                    request_id,
-                )
-                .await
+        // Parse the S3 operation
+        let operation = request::parse_s3_request(&method, path, query, headers, host_style)?;
+        tracing::debug!(operation = ?operation, "parsed S3 operation");
+
+        // Resolve identity
+        let identity = auth::resolve_identity(
+            &method,
+            path,
+            query.unwrap_or(""),
+            headers,
+            &self.credential_registry,
+            self.token_key.as_ref(),
+        )
+        .await?;
+        tracing::debug!(identity = ?identity, "resolved identity");
+
+        // Handle ListBuckets — returns virtual bucket list from registry, no backend call
+        if matches!(operation, S3Operation::ListBuckets) {
+            let buckets = self.bucket_registry.list_buckets(&identity).await?;
+            tracing::info!(count = buckets.len(), "listing virtual buckets");
+            let xml = ListAllMyBucketsResult {
+                owner: self.bucket_registry.bucket_owner(),
+                buckets: BucketList { buckets },
             }
+            .to_xml();
+
+            let mut resp_headers = HeaderMap::new();
+            resp_headers.insert("content-type", "application/xml".parse().unwrap());
+            return Ok(HandlerAction::Response(ProxyResult {
+                status: 200,
+                headers: resp_headers,
+                body: ProxyResponseBody::from_bytes(Bytes::from(xml)),
+            }));
         }
+
+        // Get bucket name and resolve via registry (includes authorization)
+        let bucket_name = operation
+            .bucket()
+            .ok_or_else(|| ProxyError::InvalidRequest("no bucket in request".into()))?;
+
+        let resolved = self
+            .bucket_registry
+            .get_bucket(bucket_name, &identity, &operation)
+            .await?;
+
+        tracing::debug!(
+            bucket = %bucket_name,
+            backend_type = %resolved.config.backend_type,
+            "resolved bucket config"
+        );
+        tracing::trace!("authorization passed");
+
+        self.dispatch_operation(
+            &method,
+            &operation,
+            &resolved.config,
+            headers,
+            resolved.list_rewrite.as_ref(),
+            request_id,
+        )
+        .await
     }
 
     async fn dispatch_operation(
@@ -629,6 +684,20 @@ where
             body: ProxyResponseBody::from_bytes(raw_resp.body),
         })
     }
+}
+
+fn determine_host_style(headers: &HeaderMap, virtual_host_domain: Option<&str>) -> HostStyle {
+    if let Some(domain) = virtual_host_domain {
+        if let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) {
+            let host = host.split(':').next().unwrap_or(host);
+            if let Some(bucket) = host.strip_suffix(&format!(".{}", domain)) {
+                return HostStyle::VirtualHosted {
+                    bucket: bucket.to_string(),
+                };
+            }
+        }
+    }
+    HostStyle::Path
 }
 
 fn error_response(err: &ProxyError, resource: &str, request_id: &str, debug: bool) -> ProxyResult {

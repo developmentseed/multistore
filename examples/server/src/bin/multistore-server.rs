@@ -62,5 +62,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         oidc_provider_issuer,
     };
 
-    run(config, server_config).await
+    run(config.clone(), config, server_config).await
 }

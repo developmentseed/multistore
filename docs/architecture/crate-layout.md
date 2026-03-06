@@ -4,7 +4,7 @@ The project is organized as a Cargo workspace with libraries (traits and logic) 
 
 ```
 crates/
-├── core/  (multistore)                 # Runtime-agnostic: traits, S3 parsing, SigV4, config
+├── core/  (multistore)                 # Runtime-agnostic: traits, S3 parsing, SigV4, registries
 ├── sts/   (multistore-sts)             # OIDC/STS token exchange (AssumeRoleWithWebIdentity)
 └── oidc-provider/                      # Outbound OIDC provider (JWT signing, JWKS, exchange)
 
@@ -18,10 +18,10 @@ examples/
 ### `multistore`
 
 The runtime-agnostic core. Contains:
-- `Gateway` — Route handler chain + two-phase request dispatch (`handle_request()` → `GatewayResponse`)
+- `ProxyGateway` — Route handler chain + S3 parsing + identity resolution + two-phase request dispatch (`handle_request()` → `GatewayResponse`)
 - `RouteHandler` trait — Pluggable pre-dispatch request interception
-- `RequestResolver` and `DefaultResolver` — Request parsing, SigV4 auth, authorization
-- `ConfigProvider` trait and implementations (static file)
+- `BucketRegistry` trait — Bucket lookup, authorization, and listing
+- `CredentialRegistry` trait — Credential and role storage
 - `ProxyBackend` trait — Runtime abstraction for store/signer/raw HTTP
 - S3 request parsing, XML response building, list prefix rewriting
 - SigV4 signature verification
@@ -57,7 +57,7 @@ The native server runtime (in `examples/server/`):
 - Tokio/Hyper HTTP server
 - `ServerBackend` implementing `ProxyBackend` with reqwest
 - Streaming via hyper `Incoming` bodies and reqwest `bytes_stream()`
-- Wires `Gateway` with `StsRouteHandler` and `OidcDiscoveryRouteHandler`
+- Wires `ProxyGateway` with `StsRouteHandler` and `OidcDiscoveryRouteHandler`
 - CLI argument parsing (`--config`, `--listen`, `--domain`, `--sts-config`)
 
 ### `multistore-cf-workers`
@@ -91,4 +91,4 @@ flowchart TD
     oidc --> core
 ```
 
-Libraries define trait abstractions. Runtimes implement `ProxyBackend` with platform-native primitives, register route handlers on the `Gateway`, and handle the two-variant `GatewayResponse`.
+Libraries define trait abstractions. Runtimes implement `ProxyBackend` with platform-native primitives, register route handlers on the `ProxyGateway`, and handle the two-variant `GatewayResponse`.

@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! Client -> Worker (web_sys::Request — body stream NOT locked)
-//!   -> resolve request (DefaultResolver with static config)
+//!   -> resolve request (ProxyGateway with static config registries)
 //!   -> Forward: web_sys::fetch with ReadableStream passthrough (zero-copy)
 //!   -> Response: LIST XML via object_store, errors, synthetic responses
 //!   -> NeedsBody: multipart operations via raw signed HTTP
@@ -27,7 +27,6 @@ mod tracing_layer;
 use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
 use multistore::config::static_file::{StaticConfig, StaticProvider};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::resolver::DefaultResolver;
 use multistore::route_handler::{ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo};
 use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
@@ -86,12 +85,18 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
 
     let config = load_static_config(&env)?;
     let virtual_host_domain = env.var("VIRTUAL_HOST_DOMAIN").ok().map(|v| v.to_string());
-    let resolver = DefaultResolver::new(config.clone(), virtual_host_domain, token_key.clone());
+    let sts_creds = config.clone();
 
     // Build the gateway with route handlers
-    let mut gateway = ProxyGateway::new(WorkerBackend, resolver)
-        .with_backend_auth(oidc_auth)
-        .with_route_handler(StsRouteHandler::new(config, jwks_cache, token_key));
+    let mut gateway = ProxyGateway::new(
+        WorkerBackend,
+        config.clone(),
+        config,
+        virtual_host_domain,
+        token_key.clone(),
+    )
+    .with_backend_auth(oidc_auth)
+    .with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
     if let Some(discovery) = oidc_discovery {
         gateway = gateway.with_route_handler(discovery);
     }

@@ -10,20 +10,20 @@ flowchart LR
 
     subgraph Proxy["multistore"]
         RouteHandlers["Route Handlers<br>(STS, OIDC discovery)"]
-        Resolver["Request Resolver<br>(parse, auth, authorize)"]
-        Gateway["Gateway<br>(dispatch operations)"]
+        Gateway["ProxyGateway<br>(parse, auth, dispatch)"]
         Backend["Proxy Backend<br>(runtime-specific I/O)"]
     end
 
-    Config["Config Provider<br>(Static, HTTP, DynamoDB, Postgres)"]
+    BucketReg["BucketRegistry<br>(bucket lookup + authz)"]
+    CredReg["CredentialRegistry<br>(credentials + roles)"]
     OIDC["OIDC Providers<br>(Auth0, GitHub, Keycloak)"]
     Stores["Object Stores<br>(S3, MinIO, R2, Azure, GCS)"]
 
     Clients <--> RouteHandlers
     RouteHandlers <--> Gateway
-    Gateway <--> Resolver
-    Resolver <--> Config
-    Resolver <--> OIDC
+    Gateway <--> BucketReg
+    Gateway <--> CredReg
+    CredReg <--> OIDC
     Gateway <--> Backend
     Backend <--> Stores
 ```
@@ -34,23 +34,23 @@ flowchart LR
 
 **Route handler chain** — Pluggable `RouteHandler` implementations intercept requests before the main proxy pipeline. STS and OIDC discovery are registered as route handlers, keeping protocol-specific logic out of runtimes.
 
-**Two-phase dispatch** — The `Gateway` separates request resolution from execution. `resolve_request()` determines what to do; the runtime executes it. This keeps streaming logic in runtime-specific code where it belongs.
+**Two-phase dispatch** — The `ProxyGateway` separates request resolution from execution. `resolve_request()` determines what to do; the runtime executes it. This keeps streaming logic in runtime-specific code where it belongs.
 
 **Presigned URLs for streaming** — GET, HEAD, PUT, and DELETE operations use presigned URLs. The runtime forwards the request directly to the backend — no buffering, no double-handling of bodies.
 
 **Pluggable traits** — Four trait boundaries enable customization:
 - `RouteHandler` — Pre-dispatch request interception (STS, OIDC discovery, custom endpoints)
-- `RequestResolver` — How requests are parsed, authenticated, and authorized
-- `ConfigProvider` — Where configuration comes from
+- `BucketRegistry` — Bucket lookup, authorization, and listing
+- `CredentialRegistry` — Credential and role storage
 - `ProxyBackend` — How the runtime interacts with backends
 
 ## Key Components
 
 | Component | Crate | Responsibility |
 |-----------|-------|---------------|
-| [Gateway](./request-lifecycle) | `multistore` | Route handler chain + two-phase dispatch (presigned URLs, LIST, multipart) |
-| [Request Resolver](./request-lifecycle#request-resolution) | `multistore` | Parse S3 requests, authenticate, authorize |
-| [Config Providers](/configuration/providers/) | `multistore` | Load buckets, roles, credentials |
+| [ProxyGateway](./request-lifecycle) | `multistore` | Route handler chain + S3 parsing + identity resolution + two-phase dispatch |
+| [BucketRegistry](./request-lifecycle#request-resolution) | `multistore` | Bucket lookup, authorization, listing |
+| [CredentialRegistry](/configuration/providers/) | `multistore` | Load credentials and roles |
 | [STS Route Handler](/auth/proxy-auth#oidcsts-temporary-credentials) | `multistore-sts` | OIDC token exchange, credential minting |
 | [OIDC Provider](/auth/backend-auth#oidc-backend-auth) | `multistore-oidc-provider` | Self-signed JWT minting, OIDC discovery, backend credential exchange |
 | [Server Runtime](./multi-runtime#server-runtime) | `multistore-server` | Tokio/Hyper HTTP server |

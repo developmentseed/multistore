@@ -10,12 +10,13 @@
 //!
 //! - [`route_handler::ProxyResponseBody`] — concrete response body type (Stream, Bytes, Empty)
 //! - [`backend::ProxyBackend`] — create object stores and send raw HTTP requests
-//! - [`config::ConfigProvider`] — retrieve bucket/role/credential configuration from any backend
+//! - [`registry::BucketRegistry`] — bucket lookup, authorization, and listing
+//! - [`registry::CredentialRegistry`] — credential and role storage
 //! - [`auth`] — SigV4 request verification and credential resolution
 //! - [`api::request`] — parse incoming S3 API requests into typed operations
 //! - [`api::response`] — serialize S3 XML responses
 //! - [`route_handler::RouteHandler`] — pluggable pre-dispatch request interception (OIDC, STS, etc.)
-//! - [`proxy::Gateway`] — the main request handler that ties everything together
+//! - [`proxy::ProxyGateway`] — the main request handler that ties everything together
 
 pub mod api;
 pub mod auth;
@@ -24,7 +25,7 @@ pub mod config;
 pub mod error;
 pub mod maybe_send;
 pub mod proxy;
-pub mod resolver;
+pub mod registry;
 pub mod route_handler;
 pub mod sealed_token;
 pub mod types;

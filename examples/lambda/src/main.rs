@@ -23,7 +23,6 @@ use client::{LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
 use multistore::config::static_file::StaticProvider;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::resolver::DefaultResolver;
 use multistore::route_handler::{
     ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
 };
@@ -38,7 +37,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 type OidcAuth = MaybeOidcAuth<ReqwestHttpExchange>;
-type Handler = ProxyGateway<LambdaBackend, DefaultResolver<StaticProvider>, OidcAuth>;
+type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider, OidcAuth>;
 
 struct AppState {
     handler: Handler,
@@ -70,8 +69,7 @@ async fn main() -> Result<(), Error> {
     let backend = LambdaBackend::new();
     let reqwest_client = backend.client().clone();
     let jwks_cache = JwksCache::new(reqwest_client.clone(), Duration::from_secs(900));
-    let sts_config = config.clone();
-    let resolver = DefaultResolver::new(config, domain, token_key.clone());
+    let sts_creds = config.clone();
 
     let oidc_provider_key = std::env::var("OIDC_PROVIDER_KEY").ok();
     let oidc_provider_issuer = std::env::var("OIDC_PROVIDER_ISSUER").ok();
@@ -97,11 +95,12 @@ async fn main() -> Result<(), Error> {
     };
 
     // Build the gateway with route handlers (OIDC discovery first, then STS).
-    let mut handler = ProxyGateway::new(backend, resolver).with_backend_auth(oidc_auth);
+    let mut handler = ProxyGateway::new(backend, config.clone(), config, domain, token_key.clone())
+        .with_backend_auth(oidc_auth);
     if let Some(discovery) = oidc_discovery {
         handler = handler.with_route_handler(discovery);
     }
-    handler = handler.with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
+    handler = handler.with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
 
     let _ = STATE.set(AppState {
         handler,

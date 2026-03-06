@@ -1,8 +1,6 @@
 use super::*;
 use crate::error::ProxyError;
-use crate::types::{
-    AccessScope, Action, BucketConfig, RoleConfig, StoredCredential, TemporaryCredentials,
-};
+use crate::types::{AccessScope, Action, RoleConfig, StoredCredential, TemporaryCredentials};
 use http::HeaderMap;
 use sha2::{Digest, Sha256};
 
@@ -39,16 +37,7 @@ impl MockConfig {
     }
 }
 
-impl crate::config::ConfigProvider for MockConfig {
-    async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError> {
-        Ok(vec![])
-    }
-    async fn get_bucket(&self, _: &str) -> Result<Option<BucketConfig>, ProxyError> {
-        Ok(None)
-    }
-    async fn get_role(&self, _: &str) -> Result<Option<RoleConfig>, ProxyError> {
-        Ok(None)
-    }
+impl crate::registry::CredentialRegistry for MockConfig {
     async fn get_credential(
         &self,
         access_key_id: &str,
@@ -58,6 +47,9 @@ impl crate::config::ConfigProvider for MockConfig {
             .iter()
             .find(|c| c.access_key_id == access_key_id)
             .cloned())
+    }
+    async fn get_role(&self, _: &str) -> Result<Option<RoleConfig>, ProxyError> {
+        Ok(None)
     }
 }
 

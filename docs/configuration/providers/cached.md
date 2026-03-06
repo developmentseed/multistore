@@ -1,11 +1,13 @@
 # Caching
 
-Wrap any config provider with `CachedProvider` to add in-memory TTL-based caching. This is recommended for all network-backed providers (HTTP, DynamoDB, PostgreSQL).
+Wrap any provider with `CachedProvider` to add in-memory TTL-based caching. This is recommended for all network-backed providers (HTTP, DynamoDB, PostgreSQL).
+
+`CachedProvider` implements both `BucketRegistry` and `CredentialRegistry` when the inner provider does. Credential and role lookups are cached; bucket resolution and listing are delegated directly (since they involve identity-aware authorization).
 
 ## Usage
 
 ```rust
-use multistore::config::cached::CachedProvider;
+use multistore_server::cached::CachedProvider;
 use std::time::Duration;
 
 let base = HttpProvider::new("https://config-api.internal".into(), None);
@@ -18,8 +20,8 @@ The first call hits the underlying provider; subsequent calls within the TTL ret
 
 - **Thread-safe**: Uses `RwLock` internally, safe for concurrent access
 - **Lazy eviction**: Expired entries are evicted on access, not proactively
-- **Per-entity caching**: Each bucket, role, and credential is cached independently
-- **Temporary credentials bypass**: Credential store/get operations for temporary credentials are not cached
+- **Per-entity caching**: Each role and credential is cached independently
+- **BucketRegistry pass-through**: `get_bucket` and `list_buckets` are always delegated to the inner provider (authorization must not be cached)
 
 ## Manual Invalidation
 

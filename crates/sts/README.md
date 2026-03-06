@@ -23,7 +23,7 @@ GitHub Actions (or any OIDC provider)
 │     (AccessKeyId,           │
 │      SecretAccessKey,       │
 │      SessionToken)          │
-│  6. Store via ConfigProvider│
+│  6. Return temp credentials │
 └─────────────────────────────┘
     │
     │  TemporaryCredentials

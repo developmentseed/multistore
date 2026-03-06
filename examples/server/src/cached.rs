@@ -1,12 +1,13 @@
-//! Caching wrapper for any [`ConfigProvider`].
+//! Caching wrapper for any [`BucketRegistry`] + [`CredentialRegistry`].
 //!
 //! Adds in-memory TTL-based caching over a delegate provider. This is
 //! recommended for network-backed providers to reduce latency and load
 //! on the config backend.
 
-use multistore::config::ConfigProvider;
+use multistore::api::response::BucketEntry;
 use multistore::error::ProxyError;
-use multistore::types::{BucketConfig, BucketOwner, RoleConfig, StoredCredential};
+use multistore::registry::{BucketRegistry, CredentialRegistry, ResolvedBucket};
+use multistore::types::{BucketOwner, ResolvedIdentity, RoleConfig, S3Operation, StoredCredential};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -24,9 +25,13 @@ impl<T: Clone> CacheEntry<T> {
     }
 }
 
-/// Wraps a [`ConfigProvider`] with in-memory TTL-based caching.
+/// Wraps a provider with in-memory TTL-based caching.
 ///
 /// Thread-safe via `RwLock`. Cache entries are evicted lazily on access.
+///
+/// Caching is applied to the [`CredentialRegistry`] methods (credential
+/// and role lookups). [`BucketRegistry`] methods are delegated directly
+/// since they involve identity-aware authorization that should not be cached.
 #[derive(Clone)]
 pub struct CachedProvider<P> {
     inner: P,
@@ -35,20 +40,16 @@ pub struct CachedProvider<P> {
 }
 
 struct CacheState {
-    buckets_list: RwLock<Option<CacheEntry<Vec<BucketConfig>>>>,
-    buckets: RwLock<HashMap<String, CacheEntry<Option<BucketConfig>>>>,
     roles: RwLock<HashMap<String, CacheEntry<Option<RoleConfig>>>>,
     credentials: RwLock<HashMap<String, CacheEntry<Option<StoredCredential>>>>,
 }
 
-impl<P: ConfigProvider> CachedProvider<P> {
+impl<P> CachedProvider<P> {
     /// Create a new caching wrapper with the given TTL.
     pub fn new(inner: P, ttl: Duration) -> Self {
         Self {
             inner,
             cache: Arc::new(CacheState {
-                buckets_list: RwLock::new(None),
-                buckets: RwLock::new(HashMap::new()),
                 roles: RwLock::new(HashMap::new()),
                 credentials: RwLock::new(HashMap::new()),
             }),
@@ -57,59 +58,29 @@ impl<P: ConfigProvider> CachedProvider<P> {
     }
 }
 
-impl<P: ConfigProvider> ConfigProvider for CachedProvider<P> {
+impl<P: BucketRegistry> BucketRegistry for CachedProvider<P> {
     fn bucket_owner(&self) -> BucketOwner {
         self.inner.bucket_owner()
     }
 
-    async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError> {
-        // Check cache
-        if let Ok(lock) = self.cache.buckets_list.read() {
-            if let Some(entry) = &*lock {
-                if !entry.is_expired(self.ttl) {
-                    return Ok(entry.value.clone());
-                }
-            }
-        }
-
-        // Cache miss — fetch from inner
-        let result = self.inner.list_buckets().await?;
-
-        if let Ok(mut lock) = self.cache.buckets_list.write() {
-            *lock = Some(CacheEntry {
-                value: result.clone(),
-                inserted_at: Instant::now(),
-            });
-        }
-
-        Ok(result)
+    async fn get_bucket(
+        &self,
+        name: &str,
+        identity: &ResolvedIdentity,
+        operation: &S3Operation,
+    ) -> Result<ResolvedBucket, ProxyError> {
+        self.inner.get_bucket(name, identity, operation).await
     }
 
-    async fn get_bucket(&self, name: &str) -> Result<Option<BucketConfig>, ProxyError> {
-        // Check cache
-        if let Ok(lock) = self.cache.buckets.read() {
-            if let Some(entry) = lock.get(name) {
-                if !entry.is_expired(self.ttl) {
-                    return Ok(entry.value.clone());
-                }
-            }
-        }
-
-        let result = self.inner.get_bucket(name).await?;
-
-        if let Ok(mut lock) = self.cache.buckets.write() {
-            lock.insert(
-                name.to_string(),
-                CacheEntry {
-                    value: result.clone(),
-                    inserted_at: Instant::now(),
-                },
-            );
-        }
-
-        Ok(result)
+    async fn list_buckets(
+        &self,
+        identity: &ResolvedIdentity,
+    ) -> Result<Vec<BucketEntry>, ProxyError> {
+        self.inner.list_buckets(identity).await
     }
+}
 
+impl<P: CredentialRegistry> CredentialRegistry for CachedProvider<P> {
     async fn get_role(&self, role_id: &str) -> Result<Option<RoleConfig>, ProxyError> {
         if let Ok(lock) = self.cache.roles.read() {
             if let Some(entry) = lock.get(role_id) {

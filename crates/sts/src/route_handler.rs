@@ -4,7 +4,7 @@
 //! and delegates to [`try_handle_sts`].
 
 use crate::{try_handle_sts, JwksCache};
-use multistore::config::ConfigProvider;
+use multistore::registry::CredentialRegistry;
 use multistore::route_handler::{
     HandlerAction, ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture,
 };
@@ -27,7 +27,7 @@ impl<C> StsRouteHandler<C> {
     }
 }
 
-impl<C: ConfigProvider> RouteHandler for StsRouteHandler<C> {
+impl<C: CredentialRegistry> RouteHandler for StsRouteHandler<C> {
     fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
         Box::pin(async move {
             let (status, xml) = try_handle_sts(

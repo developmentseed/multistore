@@ -1,86 +1,74 @@
-# Custom Config Provider
+# Custom Credential Registry
 
-The `ConfigProvider` trait defines how the proxy loads buckets, roles, and credentials. Implement it to plug in your own configuration backend.
+The `CredentialRegistry` trait defines how the proxy looks up credentials and roles for authentication. Implement it to plug in your own credential backend.
 
 ## The Trait
 
 ```rust
-use multistore::config::ConfigProvider;
+use multistore::registry::CredentialRegistry;
 use multistore::error::ProxyError;
 use multistore::types::*;
 
-pub trait ConfigProvider: Clone + Send + Sync + 'static {
-    async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError>;
-    async fn get_bucket(&self, name: &str) -> Result<Option<BucketConfig>, ProxyError>;
-    async fn get_role(&self, role_id: &str) -> Result<Option<RoleConfig>, ProxyError>;
+pub trait CredentialRegistry: Clone + Send + Sync + 'static {
     async fn get_credential(&self, access_key_id: &str)
         -> Result<Option<StoredCredential>, ProxyError>;
+    async fn get_role(&self, role_id: &str)
+        -> Result<Option<RoleConfig>, ProxyError>;
 }
 ```
 
 ## Example: Redis Provider
 
 ```rust
-use multistore::config::ConfigProvider;
+use multistore::registry::CredentialRegistry;
 use multistore::error::ProxyError;
 use multistore::types::*;
 
 #[derive(Clone)]
-struct RedisProvider {
+struct RedisCredentialRegistry {
     client: redis::Client,
 }
 
-impl ConfigProvider for RedisProvider {
-    async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError> {
+impl CredentialRegistry for RedisCredentialRegistry {
+    async fn get_credential(&self, access_key_id: &str)
+        -> Result<Option<StoredCredential>, ProxyError>
+    {
         let mut conn = self.client.get_async_connection().await
             .map_err(|e| ProxyError::Internal(e.to_string()))?;
 
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg("bucket:*")
+        let json: Option<String> = redis::cmd("GET")
+            .arg(format!("credential:{}", access_key_id))
             .query_async(&mut conn)
             .await
             .map_err(|e| ProxyError::Internal(e.to_string()))?;
 
-        let mut buckets = Vec::new();
-        for key in keys {
-            let json: String = redis::cmd("GET")
-                .arg(&key)
-                .query_async(&mut conn)
-                .await
-                .map_err(|e| ProxyError::Internal(e.to_string()))?;
-            let bucket: BucketConfig = serde_json::from_str(&json)
-                .map_err(|e| ProxyError::ConfigError(e.to_string()))?;
-            buckets.push(bucket);
+        match json {
+            Some(j) => Ok(Some(serde_json::from_str(&j)
+                .map_err(|e| ProxyError::ConfigError(e.to_string()))?)),
+            None => Ok(None),
         }
-        Ok(buckets)
-    }
-
-    async fn get_bucket(&self, name: &str) -> Result<Option<BucketConfig>, ProxyError> {
-        // Similar Redis GET with key "bucket:{name}"
-        todo!()
     }
 
     async fn get_role(&self, role_id: &str) -> Result<Option<RoleConfig>, ProxyError> {
-        todo!()
-    }
-
-    async fn get_credential(&self, access_key_id: &str)
-        -> Result<Option<StoredCredential>, ProxyError> {
+        // Similar Redis GET with key "role:{role_id}"
         todo!()
     }
 }
 ```
 
-## Using with DefaultResolver
+## Using with the Gateway
 
-Wrap your provider in `DefaultResolver` to get standard S3 proxy behavior (path/virtual-host parsing, SigV4 auth, scope-based authorization):
+Pass your credential registry directly to `ProxyGateway`. The gateway handles S3 request parsing and identity resolution internally:
 
 ```rust
-use multistore::resolver::DefaultResolver;
+let bucket_registry = MyBucketRegistry::new(/* ... */);
+let cred_registry = RedisCredentialRegistry::new(redis_client);
 
-// Create resolver with optional token key and domain
-let resolver = DefaultResolver::new(redis_provider, token_key, virtual_host_domain);
-
-// Wire into the gateway
-let gateway = Gateway::new(backend, resolver);
+let gateway = ProxyGateway::new(
+    backend,
+    bucket_registry,
+    cred_registry,
+    virtual_host_domain,
+    token_key,
+);
 ```

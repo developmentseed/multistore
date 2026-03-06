@@ -1,6 +1,6 @@
 # Request Lifecycle
 
-Every request flows through the `Gateway`: first through registered route handlers (STS, OIDC discovery), then into the two-phase proxy dispatch (resolve, then execute). The recommended entry point is `Gateway::handle_request`, which returns a two-variant `GatewayResponse` for simple runtime integration.
+Every request flows through the `ProxyGateway`: first through registered route handlers (STS, OIDC discovery), then into the two-phase proxy dispatch (resolve, then execute). The recommended entry point is `ProxyGateway::handle_request`, which returns a two-variant `GatewayResponse` for simple runtime integration.
 
 ## Overview
 
@@ -8,9 +8,10 @@ Every request flows through the `Gateway`: first through registered route handle
 sequenceDiagram
     participant Client
     participant Runtime as Runtime<br/>(Server, Lambda, or Workers)
-    participant Gateway as Gateway
+    participant Gateway as ProxyGateway
     participant RouteHandlers as Route Handlers<br/>(STS, OIDC)
-    participant Resolver as Request Resolver
+    participant BucketReg as BucketRegistry
+    participant CredReg as CredentialRegistry
     participant Backend as Backend Store
 
     Client->>Runtime: HTTP request
@@ -22,12 +23,18 @@ sequenceDiagram
         Runtime-->>Client: Return response
     else No route handler matches
         RouteHandlers-->>Gateway: None
-        Gateway->>Resolver: resolve(method, path, query, headers)
-        Resolver->>Resolver: Parse S3 operation
-        Resolver->>Resolver: Authenticate (SigV4)
-        Resolver->>Resolver: Authorize (check scopes)
-        Resolver-->>Gateway: ResolvedAction::Proxy
-        Gateway->>Gateway: Dispatch operation
+        Gateway->>Gateway: Parse S3 operation
+        Gateway->>CredReg: resolve_identity (SigV4 verification)
+        CredReg-->>Gateway: ResolvedIdentity
+        alt ListBuckets
+            Gateway->>BucketReg: list_buckets(identity)
+            BucketReg-->>Gateway: Vec<BucketEntry>
+            Gateway-->>Runtime: GatewayResponse::Response (XML)
+        else Bucket operation
+            Gateway->>BucketReg: get_bucket(name, identity, operation)
+            BucketReg-->>Gateway: ResolvedBucket (config + authz)
+            Gateway->>Gateway: Dispatch operation
+        end
 
         alt Forward (GET/HEAD/PUT/DELETE)
             Gateway-->>Runtime: GatewayResponse::Forward(fwd, body)
@@ -55,33 +62,31 @@ Built-in route handlers:
 - **`OidcDiscoveryRouteHandler`** (`multistore-oidc-provider`) — Serves `/.well-known/openid-configuration` and `/.well-known/jwks.json`
 - **`StsRouteHandler`** (`multistore-sts`) — Intercepts `AssumeRoleWithWebIdentity` STS requests
 
-Handlers are registered via builder methods on the `Gateway`:
+Handlers are registered via builder methods on the `ProxyGateway`:
 
 ```rust
-let gateway = Gateway::new(backend, resolver)
-    .with_oidc_auth(oidc_auth)
+let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain, token_key)
+    .with_backend_auth(oidc_auth)
     .with_route_handler(oidc_discovery)
-    .with_route_handler(StsRouteHandler::new(sts_config, jwks_cache, token_key));
+    .with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
 ```
 
 ## Phase 1: Request Resolution
 
-The `RequestResolver` determines what to do with an incoming request. The `DefaultResolver` handles standard S3 proxy behavior:
+The `ProxyGateway` owns S3 request parsing, identity resolution, and bucket authorization:
 
 1. **Parse the S3 operation** from the HTTP method, path, query, and headers
    - Path-style: `GET /bucket/key` → GetObject on `bucket` with key `key`
    - Virtual-hosted: `GET /key` with `Host: bucket.s3.example.com` → same operation
-2. **Authenticate** the request by verifying the SigV4 signature against stored or sealed credentials
-3. **Authorize** by checking the caller's access scopes against the requested bucket, key prefix, and operation
-4. **Return** a `ResolvedAction`:
-   - `Proxy { operation, bucket_config, list_rewrite }` — forward to a backend
-   - `Response { status, headers, body }` — return a synthetic response (e.g., `ListBuckets`)
+2. **Resolve identity** via the `CredentialRegistry` — verifies SigV4 signatures against stored or sealed credentials
+3. **Resolve bucket** via the `BucketRegistry` — looks up the bucket config and authorizes the caller
+4. **Dispatch** the operation based on type (forward, list, or multipart)
 
-Custom resolvers can implement entirely different routing, authentication, and namespace mapping.
+Custom `BucketRegistry` implementations can provide entirely different authorization logic, namespace mapping, or dynamic bucket configuration.
 
 ## Phase 2: Proxy Dispatch
 
-The `Gateway` takes the resolved action and dispatches it based on the S3 operation type. When using `handle_request`, the three internal action types are collapsed into a two-variant `GatewayResponse`:
+The gateway takes the resolved bucket config and dispatches it based on the S3 operation type. When using `handle_request`, the three internal action types are collapsed into a two-variant `GatewayResponse`:
 
 ### `Forward(ForwardRequest)`
 
@@ -106,7 +111,7 @@ Used for: **CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMul
 
 Multipart operations need the request body (e.g., the XML body for `CompleteMultipartUpload`). When using `handle_request`, this is resolved internally — the gateway calls the `collect_body` closure provided by the runtime and returns the result as `GatewayResponse::Response`. Runtimes never see this variant.
 
-For lower-level control, `Gateway::handle` returns the raw three-variant `HandlerAction`, and runtimes call `handle_with_body()` themselves.
+For lower-level control, `ProxyGateway::handle` returns the raw three-variant `HandlerAction`, and runtimes call `handle_with_body()` themselves.
 
 > [!WARNING]
 > Multipart uploads are only supported for `backend_type = "s3"`. Non-S3 backends should use single PUT requests (object_store handles chunking internally).
