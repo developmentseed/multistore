@@ -1136,7 +1136,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
- "toml",
  "tracing",
  "url",
  "uuid",
@@ -1159,6 +1158,7 @@ dependencies = [
  "js-sys",
  "multistore",
  "multistore-oidc-provider",
+ "multistore-static-config",
  "multistore-sts",
  "object_store",
  "quick-xml 0.37.5",
@@ -1183,6 +1183,7 @@ dependencies = [
  "lambda_http",
  "multistore",
  "multistore-oidc-provider",
+ "multistore-static-config",
  "multistore-sts",
  "object_store",
  "reqwest",
@@ -1223,6 +1224,7 @@ dependencies = [
  "http-body-util",
  "multistore",
  "multistore-oidc-provider",
+ "multistore-static-config",
  "multistore-sts",
  "object_store",
  "reqwest",
@@ -1233,6 +1235,18 @@ dependencies = [
  "tower-service",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "multistore-static-config"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "multistore",
+ "serde",
+ "serde_json",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

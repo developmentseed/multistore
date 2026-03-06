@@ -12,5 +12,5 @@
 mod bucket;
 mod credential;
 
-pub use bucket::{BucketRegistry, ResolvedBucket};
+pub use bucket::{BucketRegistry, ResolvedBucket, DEFAULT_BUCKET_OWNER};
 pub use credential::CredentialRegistry;

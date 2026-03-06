@@ -10,6 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 multistore.workspace = true
+multistore-static-config.workspace = true
 multistore-sts.workspace = true
 multistore-oidc-provider.workspace = true
 bytes.workspace = true

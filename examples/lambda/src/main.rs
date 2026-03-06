@@ -21,7 +21,6 @@ mod client;
 
 use client::{LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
-use multistore::config::static_file::StaticProvider;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{
     ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
@@ -31,6 +30,7 @@ use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
 use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
 use multistore_oidc_provider::OidcCredentialProvider;
+use multistore_static_config::StaticProvider;
 use multistore_sts::route_handler::StsRouteHandler;
 use multistore_sts::JwksCache;
 use std::sync::OnceLock;

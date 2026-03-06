@@ -1,0 +1,15 @@
+[package]
+name = "multistore-static-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Static file-based configuration provider for multistore"
+publish = false
+
+[dependencies]
+multistore.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+chrono.workspace = true

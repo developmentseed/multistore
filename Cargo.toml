@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/static-config",
     "crates/sts",
     "crates/oidc-provider",
     "examples/server",
@@ -9,6 +10,7 @@ members = [
 ]
 default-members = [
     "crates/core",
+    "crates/static-config",
     "crates/sts",
     "crates/oidc-provider",
     "examples/server",
@@ -91,5 +93,6 @@ lambda_http = "0.13"
 
 # Internal crates
 multistore = { path = "crates/core" }
+multistore-static-config = { path = "crates/static-config" }
 multistore-sts = { path = "crates/sts" }
 multistore-oidc-provider = { path = "crates/oidc-provider" }

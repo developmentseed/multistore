@@ -21,7 +21,6 @@
 pub mod api;
 pub mod auth;
 pub mod backend;
-pub mod config;
 pub mod error;
 pub mod maybe_send;
 pub mod proxy;

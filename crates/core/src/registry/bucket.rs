@@ -2,10 +2,12 @@
 
 use crate::api::list_rewrite::ListRewrite;
 use crate::api::response::BucketEntry;
-use crate::config::DEFAULT_BUCKET_OWNER;
 use crate::error::ProxyError;
 use crate::types::{BucketConfig, BucketOwner, ResolvedIdentity, S3Operation};
 use std::future::Future;
+
+/// Default owner name used in `ListAllMyBucketsResult` responses.
+pub const DEFAULT_BUCKET_OWNER: &str = "multistore-proxy";
 
 /// The result of resolving a bucket from the registry.
 ///

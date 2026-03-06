@@ -62,7 +62,7 @@ struct AppState<R: BucketRegistry, C: CredentialRegistry> {
 /// # Example
 ///
 /// ```rust,ignore
-/// use multistore::config::static_file::StaticProvider;
+/// use multistore_static_config::StaticProvider;
 /// use multistore_server::server::{run, ServerConfig};
 ///
 /// #[tokio::main]

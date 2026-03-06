@@ -3,11 +3,13 @@
 //! Loads configuration from a TOML or JSON file at startup.
 //! Suitable for simple deployments or development.
 
-use crate::api::response::BucketEntry;
-use crate::auth;
-use crate::error::ProxyError;
-use crate::registry::{BucketRegistry, CredentialRegistry, ResolvedBucket};
-use crate::types::{
+use multistore::api::response::BucketEntry;
+use multistore::auth;
+use multistore::error::ProxyError;
+use multistore::registry::{
+    BucketRegistry, CredentialRegistry, ResolvedBucket, DEFAULT_BUCKET_OWNER,
+};
+use multistore::types::{
     BucketConfig, BucketOwner, ResolvedIdentity, RoleConfig, S3Operation, StoredCredential,
 };
 use serde::Deserialize;
@@ -166,20 +168,19 @@ impl StaticProvider {
 
 impl BucketRegistry for StaticProvider {
     fn bucket_owner(&self) -> BucketOwner {
-        let default_owner = super::DEFAULT_BUCKET_OWNER;
         BucketOwner {
             id: self
                 .inner
                 .config
                 .owner_id
                 .clone()
-                .unwrap_or_else(|| default_owner.to_string()),
+                .unwrap_or_else(|| DEFAULT_BUCKET_OWNER.to_string()),
             display_name: self
                 .inner
                 .config
                 .owner_display_name
                 .clone()
-                .unwrap_or_else(|| default_owner.to_string()),
+                .unwrap_or_else(|| DEFAULT_BUCKET_OWNER.to_string()),
         }
     }
 

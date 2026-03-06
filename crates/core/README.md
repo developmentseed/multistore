@@ -12,9 +12,9 @@ The core defines four trait boundaries that runtime crates implement:
 
 **`ProxyBackend`** — Provides three capabilities: `create_paginated_store()` returns a `PaginatedListStore` for LIST, `create_signer()` returns a `Signer` for presigned URL generation (GET/HEAD/PUT/DELETE), and `send_raw()` sends signed HTTP requests for multipart operations. Both runtimes delegate to `build_signer()` which uses `object_store`'s built-in signer for authenticated backends and `UnsignedUrlSigner` for anonymous backends (avoiding `Instant::now()` which panics on WASM). For `create_paginated_store()`, the server runtime uses default connectors + reqwest; the worker runtime uses a custom `FetchConnector`.
 
-**`BucketRegistry`** — Identity-aware bucket resolution and listing. Given a bucket name, identity, and S3 operation, `get_bucket()` returns a `ResolvedBucket` (config + optional list rewrite) or an authorization error. `list_buckets()` returns the buckets visible to a given identity. Ships with `StaticProvider` (TOML/JSON files).
+**`BucketRegistry`** — Identity-aware bucket resolution and listing. Given a bucket name, identity, and S3 operation, `get_bucket()` returns a `ResolvedBucket` (config + optional list rewrite) or an authorization error. `list_buckets()` returns the buckets visible to a given identity. See `multistore-static-config` for a file-based implementation.
 
-**`CredentialRegistry`** — Credential and role lookup for authentication infrastructure. Provides `get_credential()` for SigV4 verification and `get_role()` for STS role assumption. Ships with `StaticProvider` (TOML/JSON files).
+**`CredentialRegistry`** — Credential and role lookup for authentication infrastructure. Provides `get_credential()` for SigV4 verification and `get_role()` for STS role assumption. See `multistore-static-config` for a file-based implementation.
 
 Any provider implementing these traits can be wrapped with `CachedProvider` for in-memory TTL caching of credential/role lookups (bucket resolution is always delegated directly since it involves authorization).
 
@@ -35,12 +35,9 @@ src/
 ├── backend/
 │   ├── mod.rs           ProxyBackend trait, Signer/StoreBuilder, S3RequestSigner (multipart)
 │   └── auth.rs          BackendAuth trait, NoAuth default impl
-├── config/
-│   ├── mod.rs           DEFAULT_BUCKET_OWNER constant
-│   └── static_file.rs   StaticProvider (TOML/JSON), implements BucketRegistry + CredentialRegistry
 ├── registry/
 │   ├── mod.rs           Re-exports
-│   ├── bucket.rs        BucketRegistry trait, ResolvedBucket
+│   ├── bucket.rs        BucketRegistry trait, ResolvedBucket, DEFAULT_BUCKET_OWNER
 │   └── credential.rs    CredentialRegistry trait
 ├── error.rs             ProxyError with S3-compatible error codes
 ├── proxy.rs             ProxyGateway — the main request handler
@@ -57,7 +54,7 @@ This crate is not used directly. Runtime crates depend on it and provide concret
 
 ```rust
 use multistore::proxy::ProxyGateway;
-use multistore::config::static_file::StaticProvider;
+use multistore_static_config::StaticProvider;
 
 let backend = MyBackend::new();
 let config = StaticProvider::from_file("config.toml")?;
@@ -140,6 +137,5 @@ Note: because scopes are sealed into the token at mint time, changes to a role's
 
 All optional — the default build has zero network dependencies:
 
-- `config-http` — enables `HttpProvider` (adds `reqwest`)
-- `config-dynamodb` — enables `DynamoDbProvider` (adds `aws-sdk-dynamodb`, `tokio`)
-- `config-postgres` — enables `PostgresProvider` (adds `sqlx`)
+- `azure` — enables Azure Blob Storage backend support
+- `gcp` — enables Google Cloud Storage backend support

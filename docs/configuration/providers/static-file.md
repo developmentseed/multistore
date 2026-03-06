@@ -5,7 +5,7 @@ The static file provider loads configuration from a TOML or JSON file at startup
 ## Usage
 
 ```rust
-use multistore::config::static_file::StaticProvider;
+use multistore_static_config::StaticProvider;
 
 // From a TOML file
 let provider = StaticProvider::from_file("config.toml")?;
