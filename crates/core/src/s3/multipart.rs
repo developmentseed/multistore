@@ -5,7 +5,7 @@
 //! AbortMultipartUpload operations.
 
 use crate::error::ProxyError;
-use crate::s3::signer::S3RequestSigner;
+use crate::s3::request_signer::S3RequestSigner;
 use crate::types::{BucketConfig, S3Operation};
 use http::{HeaderMap, Method};
 use url::Url;

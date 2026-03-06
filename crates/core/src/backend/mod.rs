@@ -10,11 +10,11 @@
 //! 3. **`send_raw()`** — send a pre-signed HTTP request for operations not
 //!    covered by `ObjectStore` (multipart uploads).
 //!
-//! The [`signer`] submodule handles `object_store` signer construction.
-//! Outbound SigV4 request signing lives in [`crate::signer`].
+//! The [`url_signer`] submodule handles `object_store` signer construction.
+//! Outbound SigV4 request signing lives in [`crate::s3::request_signer`].
 
-pub mod signer;
-pub use signer::build_signer;
+pub mod url_signer;
+pub use url_signer::build_signer;
 
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
