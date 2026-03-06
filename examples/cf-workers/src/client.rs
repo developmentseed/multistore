@@ -8,7 +8,7 @@ use crate::fetch_connector::FetchConnector;
 use bytes::Bytes;
 use http::HeaderMap;
 use multistore::backend::{
-    build_paginated_list_store, build_signer, ProxyBackend, RawResponse, StoreBuilder,
+    build_object_store, build_signer, ProxyBackend, RawResponse, StoreBuilder,
 };
 use multistore::error::ProxyError;
 use multistore::types::BucketConfig;
@@ -30,7 +30,7 @@ impl ProxyBackend for WorkerBackend {
         &self,
         config: &BucketConfig,
     ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        build_paginated_list_store(config, |b| match b {
+        build_object_store(config, |b| match b {
             StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(FetchConnector)),
         })
     }

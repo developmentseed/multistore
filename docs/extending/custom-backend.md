@@ -40,7 +40,7 @@ Returns a `Box<dyn PaginatedListStore>` used for LIST operations with backend-si
 fn create_paginated_store(&self, config: &BucketConfig)
     -> Result<Box<dyn PaginatedListStore>, ProxyError>
 {
-    build_paginated_list_store(config, |builder| {
+    build_object_store(config, |builder| {
         match builder {
             StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(MyConnector)),
             other => other,
@@ -92,7 +92,7 @@ async fn send_raw(
 
 The `backend` module provides shared helpers:
 
-- **`build_paginated_list_store(config, connector_fn)`** — Dispatches on `backend_type` ("s3", "az", "gcs"), iterates `backend_options` with `with_config()`, and applies the connector function
+- **`build_object_store(config, connector_fn)`** — Dispatches on `backend_type` ("s3", "az", "gcs"), iterates `backend_options` with `with_config()`, and applies the connector function
 - **`build_signer(config)`** — Returns the appropriate signer: `object_store`'s built-in signer for authenticated backends, or `UnsignedUrlSigner` for anonymous backends
 
 These handle the multi-provider dispatch logic so your backend implementation only needs to provide the HTTP transport layer.

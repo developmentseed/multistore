@@ -27,7 +27,6 @@ use http::HeaderMap;
 use object_store::aws::AmazonS3Builder;
 use object_store::list::PaginatedListStore;
 use object_store::signer::Signer;
-use object_store::ObjectStore;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -79,7 +78,7 @@ pub struct RawResponse {
 
 /// Wrapper around provider-specific `object_store` builders.
 ///
-/// Runtimes use [`build_object_store`] and inject their HTTP connector
+/// Runtimes use [`build_object_store`] to inject their HTTP connector
 /// via a closure that receives this enum.
 pub enum StoreBuilder {
     S3(AmazonS3Builder),
@@ -90,25 +89,8 @@ pub enum StoreBuilder {
 }
 
 impl StoreBuilder {
-    /// Build the final `ObjectStore`.
-    pub fn build(self) -> Result<Arc<dyn ObjectStore>, ProxyError> {
-        match self {
-            StoreBuilder::S3(b) => Ok(Arc::new(b.build().map_err(|e| {
-                ProxyError::ConfigError(format!("failed to build S3 store: {}", e))
-            })?)),
-            #[cfg(feature = "azure")]
-            StoreBuilder::Azure(b) => Ok(Arc::new(b.build().map_err(|e| {
-                ProxyError::ConfigError(format!("failed to build Azure store: {}", e))
-            })?)),
-            #[cfg(feature = "gcp")]
-            StoreBuilder::Gcs(b) => Ok(Arc::new(b.build().map_err(|e| {
-                ProxyError::ConfigError(format!("failed to build GCS store: {}", e))
-            })?)),
-        }
-    }
-
     /// Build a `PaginatedListStore` for backend-side paginated listing.
-    pub fn build_paginated(self) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
+    pub fn build(self) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
         match self {
             StoreBuilder::S3(b) => Ok(Box::new(b.build().map_err(|e| {
                 ProxyError::ConfigError(format!("failed to build S3 paginated store: {}", e))
@@ -192,7 +174,7 @@ pub(crate) fn create_builder(config: &BucketConfig) -> Result<StoreBuilder, Prox
     }
 }
 
-/// Build an `ObjectStore` from a [`BucketConfig`], dispatching on `backend_type`.
+/// Build a [`PaginatedListStore`] from a [`BucketConfig`], dispatching on `backend_type`.
 ///
 /// The `configure` closure lets each runtime inject its HTTP connector:
 /// - Server runtime passes `|b| b` (default connector)
@@ -200,22 +182,9 @@ pub(crate) fn create_builder(config: &BucketConfig) -> Result<StoreBuilder, Prox
 pub fn build_object_store<F>(
     config: &BucketConfig,
     configure: F,
-) -> Result<Arc<dyn ObjectStore>, ProxyError>
-where
-    F: FnOnce(StoreBuilder) -> StoreBuilder,
-{
-    configure(create_builder(config)?).build()
-}
-
-/// Build a [`PaginatedListStore`] from a [`BucketConfig`], dispatching on `backend_type`.
-///
-/// Like [`build_object_store`], accepts a configure closure for HTTP connector injection.
-pub fn build_paginated_list_store<F>(
-    config: &BucketConfig,
-    configure: F,
 ) -> Result<Box<dyn PaginatedListStore>, ProxyError>
 where
     F: FnOnce(StoreBuilder) -> StoreBuilder,
 {
-    configure(create_builder(config)?).build_paginated()
+    configure(create_builder(config)?).build()
 }

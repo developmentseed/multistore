@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use http::HeaderMap;
-use multistore::backend::{build_paginated_list_store, build_signer, ProxyBackend, RawResponse};
+use multistore::backend::{build_object_store, build_signer, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
@@ -39,7 +39,7 @@ impl ProxyBackend for LambdaBackend {
         &self,
         config: &BucketConfig,
     ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        build_paginated_list_store(config, |b| b)
+        build_object_store(config, |b| b)
     }
 
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {

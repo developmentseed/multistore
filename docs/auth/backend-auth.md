@@ -129,7 +129,7 @@ When a request arrives for a bucket with `auth_type=oidc`:
 3. The proxy sends the JWT to the cloud provider's STS endpoint along with the target IAM role ARN
 4. The cloud provider fetches the proxy's JWKS, verifies the JWT signature, evaluates the role's trust policy, and returns temporary credentials
 5. The proxy caches the credentials (keyed by role ARN) and injects them into the bucket config
-6. The existing `build_paginated_list_store()` / `build_signer()` pipeline consumes the credentials normally
+6. The existing `build_object_store()` / `build_signer()` pipeline consumes the credentials normally
 
 On subsequent requests, cached credentials are reused until they expire.
 

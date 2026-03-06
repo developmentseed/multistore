@@ -8,19 +8,12 @@
 
 use super::create_builder;
 use crate::error::ProxyError;
-use crate::types::{BackendType, BucketConfig};
+use crate::types::BucketConfig;
 use object_store::signer::Signer;
 use std::sync::Arc;
 
 /// Build a [`Signer`] from a [`BucketConfig`], dispatching on `backend_type`.
 pub fn build_signer(config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
-    let backend_type = config.parsed_backend_type().ok_or_else(|| {
-        ProxyError::ConfigError(format!(
-            "unsupported backend_type: '{}'",
-            config.backend_type
-        ))
-    })?;
-
     // Check for credentials — if absent, return unsigned signer to avoid
     // InstanceCredentialProvider which uses Instant::now() (panics on WASM).
     let has_creds = !config.option("access_key_id").unwrap_or("").is_empty()
@@ -30,21 +23,7 @@ pub fn build_signer(config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError
         return Ok(Arc::new(UnsignedUrlSigner::from_config(config)?));
     }
 
-    match backend_type {
-        BackendType::S3 => create_builder(config)?.build_signer(),
-        #[cfg(feature = "azure")]
-        BackendType::Azure => create_builder(config)?.build_signer(),
-        #[cfg(not(feature = "azure"))]
-        BackendType::Azure => Err(ProxyError::ConfigError(
-            "Azure backend support not enabled (requires 'azure' feature)".into(),
-        )),
-        #[cfg(feature = "gcp")]
-        BackendType::Gcs => create_builder(config)?.build_signer(),
-        #[cfg(not(feature = "gcp"))]
-        BackendType::Gcs => Err(ProxyError::ConfigError(
-            "GCS backend support not enabled (requires 'gcp' feature)".into(),
-        )),
-    }
+    create_builder(config)?.build_signer()
 }
 
 /// Signer for anonymous/credential-less backends.
