@@ -93,7 +93,7 @@ pub enum GatewayResponse<B> {
 /// - `B`: The runtime's backend for object store creation, signing, and raw HTTP
 /// - `R`: The request resolver that decides what action to take for each request
 /// - `O`: Backend auth for resolving credentials before store/signer creation
-pub struct Gateway<B, R, O = NoAuth> {
+pub struct ProxyGateway<B, R, O = NoAuth> {
     backend: B,
     resolver: R,
     backend_auth: O,
@@ -104,9 +104,9 @@ pub struct Gateway<B, R, O = NoAuth> {
 }
 
 /// Backwards-compatible type alias.
-pub type ProxyHandler<B, R, O = NoAuth> = Gateway<B, R, O>;
+pub type ProxyHandler<B, R, O = NoAuth> = ProxyGateway<B, R, O>;
 
-impl<B, R> Gateway<B, R>
+impl<B, R> ProxyGateway<B, R>
 where
     B: ProxyBackend,
     R: RequestResolver,
@@ -122,7 +122,7 @@ where
     }
 }
 
-impl<B, R, O> Gateway<B, R, O>
+impl<B, R, O> ProxyGateway<B, R, O>
 where
     B: ProxyBackend,
     R: RequestResolver,
@@ -133,8 +133,8 @@ where
     /// When configured, `dispatch_operation` calls `resolve_credentials`
     /// before accessing the backend — enabling credential resolution
     /// (e.g. OIDC token exchange) for buckets that require it.
-    pub fn with_backend_auth<O2: BackendAuth>(self, backend_auth: O2) -> Gateway<B, R, O2> {
-        Gateway {
+    pub fn with_backend_auth<O2: BackendAuth>(self, backend_auth: O2) -> ProxyGateway<B, R, O2> {
+        ProxyGateway {
             backend: self.backend,
             resolver: self.resolver,
             backend_auth,

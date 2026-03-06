@@ -26,7 +26,7 @@ mod tracing_layer;
 
 use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
 use multistore::config::static_file::{StaticConfig, StaticProvider};
-use multistore::proxy::{Gateway, GatewayResponse};
+use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::resolver::DefaultResolver;
 use multistore::route_handler::{ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo};
 use multistore::sealed_token::TokenKey;
@@ -89,7 +89,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     let resolver = DefaultResolver::new(config.clone(), virtual_host_domain, token_key.clone());
 
     // Build the gateway with route handlers
-    let mut gateway = Gateway::new(WorkerBackend, resolver)
+    let mut gateway = ProxyGateway::new(WorkerBackend, resolver)
         .with_backend_auth(oidc_auth)
         .with_route_handler(StsRouteHandler::new(config, jwks_cache, token_key));
     if let Some(discovery) = oidc_discovery {

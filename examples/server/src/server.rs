@@ -10,7 +10,7 @@ use futures::TryStreamExt;
 use http::HeaderMap;
 use http_body_util::BodyStream;
 use multistore::config::ConfigProvider;
-use multistore::proxy::{Gateway, GatewayResponse};
+use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::resolver::DefaultResolver;
 use multistore::route_handler::{ForwardRequest, RequestInfo, RESPONSE_HEADER_ALLOWLIST};
 use multistore::sealed_token::TokenKey;
@@ -54,7 +54,7 @@ impl Default for ServerConfig {
 type OidcAuth = MaybeOidcAuth<ReqwestHttpExchange>;
 
 struct AppState<P: ConfigProvider> {
-    handler: Gateway<ServerBackend, DefaultResolver<P>, OidcAuth>,
+    handler: ProxyGateway<ServerBackend, DefaultResolver<P>, OidcAuth>,
     reqwest_client: reqwest::Client,
 }
 
@@ -117,7 +117,7 @@ where
     };
 
     // Build the gateway with route handlers (OIDC discovery first, then STS).
-    let mut handler = Gateway::new(backend, resolver).with_backend_auth(oidc_auth);
+    let mut handler = ProxyGateway::new(backend, resolver).with_backend_auth(oidc_auth);
     if let Some(discovery) = oidc_discovery {
         handler = handler.with_route_handler(discovery);
     }

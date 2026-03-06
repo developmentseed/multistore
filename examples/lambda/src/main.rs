@@ -22,7 +22,7 @@ mod client;
 use client::{LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
 use multistore::config::static_file::StaticProvider;
-use multistore::proxy::{Gateway, GatewayResponse};
+use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::resolver::DefaultResolver;
 use multistore::route_handler::{
     ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
@@ -38,7 +38,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 type OidcAuth = MaybeOidcAuth<ReqwestHttpExchange>;
-type Handler = Gateway<LambdaBackend, DefaultResolver<StaticProvider>, OidcAuth>;
+type Handler = ProxyGateway<LambdaBackend, DefaultResolver<StaticProvider>, OidcAuth>;
 
 struct AppState {
     handler: Handler,
@@ -97,7 +97,7 @@ async fn main() -> Result<(), Error> {
     };
 
     // Build the gateway with route handlers (OIDC discovery first, then STS).
-    let mut handler = Gateway::new(backend, resolver).with_backend_auth(oidc_auth);
+    let mut handler = ProxyGateway::new(backend, resolver).with_backend_auth(oidc_auth);
     if let Some(discovery) = oidc_discovery {
         handler = handler.with_route_handler(discovery);
     }
