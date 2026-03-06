@@ -18,8 +18,6 @@
 //! - [`proxy::Gateway`] — the main request handler that ties everything together
 
 pub mod auth;
-#[cfg(feature = "axum")]
-pub mod axum;
 pub mod backend;
 pub mod config;
 pub mod error;

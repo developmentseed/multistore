@@ -1,5 +1,6 @@
 //! HTTP server using axum, wiring everything together.
 
+use crate::axum_helpers::{build_proxy_response, error_response};
 use crate::client::{ReqwestHttpExchange, ServerBackend};
 use axum::body::Body;
 use axum::extract::State;
@@ -8,7 +9,6 @@ use axum::Router;
 use futures::TryStreamExt;
 use http::HeaderMap;
 use http_body_util::BodyStream;
-use multistore::axum::{build_proxy_response, error_response};
 use multistore::config::ConfigProvider;
 use multistore::proxy::{ForwardRequest, Gateway, GatewayResponse, RESPONSE_HEADER_ALLOWLIST};
 use multistore::resolver::DefaultResolver;

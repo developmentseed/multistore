@@ -1706,7 +1706,6 @@ dependencies = [
  "aes-gcm",
  "async-trait",
  "aws-sdk-dynamodb",
- "axum",
  "base64",
  "bytes",
  "chrono",

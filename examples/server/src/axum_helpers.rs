@@ -1,13 +1,10 @@
-//! Axum response helpers shared across runtimes.
-//!
-//! Gated behind the `axum` feature flag so the core crate remains usable
-//! without pulling in axum.
+//! Axum response helpers for converting core proxy types into axum responses.
 
-use ::axum::body::Body;
-use ::axum::response::Response;
+use axum::body::Body;
+use axum::response::Response;
 
-use crate::proxy::ProxyResult;
-use crate::response_body::ProxyResponseBody;
+use multistore::proxy::ProxyResult;
+use multistore::response_body::ProxyResponseBody;
 
 /// Convert a [`ProxyResult`] to an axum [`Response`].
 pub fn build_proxy_response(result: ProxyResult) -> Response {

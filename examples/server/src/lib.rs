@@ -6,5 +6,6 @@
 //! - [`client::ServerBackend`] — implements `ProxyBackend` using reqwest + object_store
 //! - [`server::run`] — starts the axum HTTP server
 
+mod axum_helpers;
 pub mod client;
 pub mod server;
