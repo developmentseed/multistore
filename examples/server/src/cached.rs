@@ -1,29 +1,13 @@
 //! Caching wrapper for any [`ConfigProvider`].
 //!
 //! Adds in-memory TTL-based caching over a delegate provider. This is
-//! recommended for network-backed providers (HTTP, DynamoDB, Postgres)
-//! to reduce latency and load on the config backend.
-//!
-//! # Example
-//!
-//! ```rust,ignore
-//! use multistore::config::cached::CachedProvider;
-//! use std::time::Duration;
-//!
-//! // Wrap any provider with a 5-minute cache
-//! let provider = CachedProvider::new(my_http_provider, Duration::from_secs(300));
-//!
-//! // First call hits the backend
-//! let bucket = provider.get_bucket("my-bucket").await?;
-//!
-//! // Subsequent calls within 5 minutes return the cached value
-//! let bucket_again = provider.get_bucket("my-bucket").await?;
-//! ```
+//! recommended for network-backed providers to reduce latency and load
+//! on the config backend.
 
-use crate::config::ConfigProvider;
-use crate::error::ProxyError;
-use crate::s3::response::BucketOwner;
-use crate::types::{BucketConfig, RoleConfig, StoredCredential};
+use multistore::config::ConfigProvider;
+use multistore::error::ProxyError;
+use multistore::s3::response::BucketOwner;
+use multistore::types::{BucketConfig, RoleConfig, StoredCredential};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -70,33 +54,6 @@ impl<P: ConfigProvider> CachedProvider<P> {
                 credentials: RwLock::new(HashMap::new()),
             }),
             ttl,
-        }
-    }
-
-    /// Invalidate all cached entries.
-    pub fn invalidate_all(&self) {
-        if let Ok(mut lock) = self.cache.buckets_list.write() {
-            *lock = None;
-        }
-        if let Ok(mut lock) = self.cache.buckets.write() {
-            lock.clear();
-        }
-        if let Ok(mut lock) = self.cache.roles.write() {
-            lock.clear();
-        }
-        if let Ok(mut lock) = self.cache.credentials.write() {
-            lock.clear();
-        }
-    }
-
-    /// Invalidate a specific bucket entry.
-    pub fn invalidate_bucket(&self, name: &str) {
-        if let Ok(mut lock) = self.cache.buckets.write() {
-            lock.remove(name);
-        }
-        // Also invalidate the list since it may contain stale data
-        if let Ok(mut lock) = self.cache.buckets_list.write() {
-            *lock = None;
         }
     }
 }

@@ -21,7 +21,7 @@ The runtime-agnostic core. Contains:
 - `Gateway` — Route handler chain + two-phase request dispatch (`handle_request()` → `GatewayResponse`)
 - `RouteHandler` trait — Pluggable pre-dispatch request interception
 - `RequestResolver` and `DefaultResolver` — Request parsing, SigV4 auth, authorization
-- `ConfigProvider` trait and implementations (static file, HTTP, DynamoDB, Postgres)
+- `ConfigProvider` trait and implementations (static file)
 - `ProxyBackend` trait — Runtime abstraction for store/signer/raw HTTP
 - S3 request parsing, XML response building, list prefix rewriting
 - SigV4 signature verification
@@ -29,9 +29,6 @@ The runtime-agnostic core. Contains:
 - Type definitions (`BucketConfig`, `RoleConfig`, `AccessScope`, etc.)
 
 **Feature flags:**
-- `config-http` — HTTP API config provider
-- `config-dynamodb` — DynamoDB config provider
-- `config-postgres` — PostgreSQL config provider
 - `azure` — Azure Blob Storage support
 - `gcp` — Google Cloud Storage support
 

@@ -7,5 +7,6 @@
 //! - [`server::run`] — starts the axum HTTP server
 
 mod axum_helpers;
+pub mod cached;
 pub mod client;
 pub mod server;

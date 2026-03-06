@@ -7,9 +7,6 @@ description = "Runtime-agnostic core library for the S3 proxy gateway"
 
 [features]
 default = []
-config-dynamodb = ["aws-sdk-dynamodb", "tokio"]
-config-postgres = ["sqlx"]
-config-http = ["reqwest"]
 azure = ["object_store/azure"]
 gcp = ["object_store/gcp"]
 
@@ -33,9 +30,3 @@ quick-xml.workspace = true
 tracing.workspace = true
 object_store.workspace = true
 futures.workspace = true
-
-# Optional config backend deps
-aws-sdk-dynamodb = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true }
-sqlx = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true }

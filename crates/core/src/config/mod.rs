@@ -10,35 +10,11 @@
 //! | Provider | Feature Flag | Use Case |
 //! |----------|-------------|----------|
 //! | [`StaticProvider`](static_file::StaticProvider) | *(always available)* | TOML/JSON config files, baked-in config |
-//! | [`HttpProvider`](http::HttpProvider) | `config-http` | Centralized config API |
-//! | [`DynamoDbProvider`](dynamodb::DynamoDbProvider) | `config-dynamodb` | AWS-native deployments |
-//! | [`PostgresProvider`](postgres::PostgresProvider) | `config-postgres` | Database-backed config |
 //!
-//! # Caching
-//!
-//! Wrap any provider with [`CachedProvider`](cached::CachedProvider) to add
-//! in-memory TTL-based caching. This is recommended for providers that make
-//! network calls (HTTP, DynamoDB, Postgres).
-//!
-//! ```rust,ignore
-//! use multistore::config::{cached::CachedProvider, static_file::StaticProvider};
-//! use std::time::Duration;
-//!
-//! let base = StaticProvider::from_file("config.toml").unwrap();
-//! let cached = CachedProvider::new(base, Duration::from_secs(300));
-//! ```
+//! The [`ConfigProvider`] trait makes it straightforward to implement custom
+//! backends (Redis, HTTP APIs, databases, etc.) — see the docs for examples.
 
-pub mod cached;
 pub mod static_file;
-
-#[cfg(feature = "config-http")]
-pub mod http;
-
-#[cfg(feature = "config-dynamodb")]
-pub mod dynamodb;
-
-#[cfg(feature = "config-postgres")]
-pub mod postgres;
 
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};

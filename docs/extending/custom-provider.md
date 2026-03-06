@@ -77,28 +77,10 @@ Wrap your provider in `DefaultResolver` to get standard S3 proxy behavior (path/
 
 ```rust
 use multistore::resolver::DefaultResolver;
-use multistore::config::cached::CachedProvider;
-use std::time::Duration;
-
-// Optional: wrap with caching
-let cached = CachedProvider::new(redis_provider, Duration::from_secs(60));
 
 // Create resolver with optional token key and domain
-let resolver = DefaultResolver::new(cached, token_key, virtual_host_domain);
+let resolver = DefaultResolver::new(redis_provider, token_key, virtual_host_domain);
 
 // Wire into the gateway
 let gateway = Gateway::new(backend, resolver);
 ```
-
-## Using with CachedProvider
-
-For network-backed providers, wrap with `CachedProvider` to reduce latency:
-
-```rust
-use multistore::config::cached::CachedProvider;
-use std::time::Duration;
-
-let provider = CachedProvider::new(redis_provider, Duration::from_secs(120));
-```
-
-See [Caching](/configuration/providers/cached) for cache behavior details.

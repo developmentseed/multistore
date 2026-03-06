@@ -53,10 +53,6 @@ quick-xml = { version = "0.37", features = ["serialize"] }
 # Auth
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
-# Config backends
-aws-sdk-dynamodb = "1"
-sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono"] }
-
 # HTTP body
 http-body = "1"
 
