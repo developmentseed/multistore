@@ -7,3 +7,21 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy --fix
+        entry: cargo clippy --fix --allow-dirty --allow-staged
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-check-wasm
+        name: cargo check (wasm)
+        entry: cargo check -p multistore-cf-workers --target wasm32-unknown-unknown
+        language: system
+        types: [rust]
+        pass_filenames: false
