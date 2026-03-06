@@ -5,8 +5,7 @@
 
 use crate::config::ConfigProvider;
 use crate::error::ProxyError;
-use crate::s3::response::BucketOwner;
-use crate::types::{BucketConfig, RoleConfig, StoredCredential};
+use crate::types::{BucketConfig, BucketOwner, RoleConfig, StoredCredential};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::Arc;

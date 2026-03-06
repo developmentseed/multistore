@@ -5,8 +5,9 @@
 
 use crate::{try_handle_sts, JwksCache};
 use multistore::config::ConfigProvider;
-use multistore::proxy::{HandlerAction, ProxyResult};
-use multistore::route_handler::{RequestInfo, RouteHandler, RouteHandlerFuture};
+use multistore::route_handler::{
+    HandlerAction, ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture,
+};
 use multistore::sealed_token::TokenKey;
 
 /// Route handler that intercepts STS `AssumeRoleWithWebIdentity` requests.

@@ -5,6 +5,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
+/// Owner identity for S3 ListBuckets responses.
+#[derive(Debug, Clone, Serialize)]
+pub struct BucketOwner {
+    #[serde(rename = "ID")]
+    pub id: String,
+    #[serde(rename = "DisplayName")]
+    pub display_name: String,
+}
+
 /// Configuration for a virtual bucket exposed by the proxy.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BucketConfig {

@@ -6,8 +6,9 @@
 use crate::discovery::openid_configuration_json;
 use crate::jwks::jwks_json;
 use crate::jwt::JwtSigner;
-use multistore::proxy::{HandlerAction, ProxyResult};
-use multistore::route_handler::{RequestInfo, RouteHandler, RouteHandlerFuture};
+use multistore::route_handler::{
+    HandlerAction, ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture,
+};
 
 /// Serves OIDC discovery documents for the proxy's identity provider.
 pub struct OidcDiscoveryRouteHandler {

@@ -22,10 +22,11 @@ mod client;
 use client::{LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
 use multistore::config::static_file::StaticProvider;
-use multistore::proxy::{ForwardRequest, Gateway, GatewayResponse, RESPONSE_HEADER_ALLOWLIST};
+use multistore::proxy::{Gateway, GatewayResponse};
 use multistore::resolver::DefaultResolver;
-use multistore::response_body::ProxyResponseBody;
-use multistore::route_handler::RequestInfo;
+use multistore::route_handler::{
+    ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
+};
 use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
@@ -145,7 +146,7 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
 }
 
 /// Convert a `ProxyResult` to a Lambda `Response`.
-fn build_lambda_response(result: multistore::proxy::ProxyResult) -> Response<Body> {
+fn build_lambda_response(result: ProxyResult) -> Response<Body> {
     let body = match result.body {
         ProxyResponseBody::Bytes(b) => Body::Binary(b.to_vec()),
         ProxyResponseBody::Empty => Body::Empty,

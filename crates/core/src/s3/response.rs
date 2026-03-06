@@ -4,6 +4,7 @@ use quick_xml::se::to_string as xml_to_string;
 use serde::Serialize;
 
 use crate::error::ProxyError;
+pub use crate::types::BucketOwner;
 
 /// S3 Error response XML.
 #[derive(Debug, Serialize)]
@@ -121,14 +122,6 @@ pub struct ListAllMyBucketsResult {
     pub owner: BucketOwner,
     #[serde(rename = "Buckets")]
     pub buckets: BucketList,
-}
-
-#[derive(Debug, Serialize)]
-pub struct BucketOwner {
-    #[serde(rename = "ID")]
-    pub id: String,
-    #[serde(rename = "DisplayName")]
-    pub display_name: String,
 }
 
 #[derive(Debug, Serialize)]

@@ -18,8 +18,7 @@ pub mod static_file;
 
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
-use crate::s3::response::BucketOwner;
-use crate::types::{BucketConfig, RoleConfig, StoredCredential};
+use crate::types::{BucketConfig, BucketOwner, RoleConfig, StoredCredential};
 use std::future::Future;
 
 /// Default owner name used in `ListAllMyBucketsResult` responses.

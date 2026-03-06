@@ -8,7 +8,7 @@
 //!
 //! ## Key Abstractions
 //!
-//! - [`response_body::ProxyResponseBody`] — concrete response body type (Stream, Bytes, Empty)
+//! - [`route_handler::ProxyResponseBody`] — concrete response body type (Stream, Bytes, Empty)
 //! - [`backend::ProxyBackend`] — create object stores and send raw HTTP requests
 //! - [`config::ConfigProvider`] — retrieve bucket/role/credential configuration from any backend
 //! - [`auth`] — SigV4 request verification and credential resolution
@@ -25,7 +25,6 @@ pub mod maybe_send;
 pub mod oidc_backend;
 pub mod proxy;
 pub mod resolver;
-pub mod response_body;
 pub mod route_handler;
 pub mod s3;
 pub mod sealed_token;

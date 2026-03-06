@@ -3,8 +3,7 @@
 use axum::body::Body;
 use axum::response::Response;
 
-use multistore::proxy::ProxyResult;
-use multistore::response_body::ProxyResponseBody;
+use multistore::route_handler::{ProxyResponseBody, ProxyResult};
 
 /// Convert a [`ProxyResult`] to an axum [`Response`].
 pub fn build_proxy_response(result: ProxyResult) -> Response {

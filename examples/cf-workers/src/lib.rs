@@ -26,10 +26,9 @@ mod tracing_layer;
 
 use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
 use multistore::config::static_file::{StaticConfig, StaticProvider};
-use multistore::proxy::{ForwardRequest, Gateway, GatewayResponse, ProxyResult};
+use multistore::proxy::{Gateway, GatewayResponse};
 use multistore::resolver::DefaultResolver;
-use multistore::response_body::ProxyResponseBody;
-use multistore::route_handler::RequestInfo;
+use multistore::route_handler::{ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo};
 use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;

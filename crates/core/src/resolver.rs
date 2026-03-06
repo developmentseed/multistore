@@ -9,6 +9,7 @@ use crate::auth;
 use crate::config::ConfigProvider;
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
+pub use crate::s3::list_rewrite::ListRewrite;
 use crate::s3::request::{self, HostStyle};
 use crate::s3::response::{BucketEntry, BucketList, ListAllMyBucketsResult};
 use crate::sealed_token::TokenKey;
@@ -46,15 +47,6 @@ pub enum ResolvedAction {
         headers: HeaderMap,
         body: Bytes,
     },
-}
-
-/// Describes how to rewrite `<Key>` and `<Prefix>` values in list response XML.
-#[derive(Debug, Clone)]
-pub struct ListRewrite {
-    /// Prefix to strip from the beginning of values.
-    pub strip_prefix: String,
-    /// Prefix to add after stripping.
-    pub add_prefix: String,
 }
 
 /// Default resolver backed by a [`ConfigProvider`].

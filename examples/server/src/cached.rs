@@ -6,8 +6,7 @@
 
 use multistore::config::ConfigProvider;
 use multistore::error::ProxyError;
-use multistore::s3::response::BucketOwner;
-use multistore::types::{BucketConfig, RoleConfig, StoredCredential};
+use multistore::types::{BucketConfig, BucketOwner, RoleConfig, StoredCredential};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
