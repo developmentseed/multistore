@@ -108,7 +108,7 @@ where
                 "sts.amazonaws.com".into(),
             );
             let auth = MaybeOidcAuth::Enabled(Box::new(
-                multistore_oidc_provider::backend_auth::AwsOidcBackendAuth::new(provider),
+                multistore_oidc_provider::backend_auth::AwsBackendAuth::new(provider),
             ));
             let discovery = OidcDiscoveryRouteHandler::new(issuer.clone(), signer);
             (auth, Some(discovery))
@@ -117,7 +117,7 @@ where
     };
 
     // Build the gateway with route handlers (OIDC discovery first, then STS).
-    let mut handler = Gateway::new(backend, resolver).with_oidc_auth(oidc_auth);
+    let mut handler = Gateway::new(backend, resolver).with_backend_auth(oidc_auth);
     if let Some(discovery) = oidc_discovery {
         handler = handler.with_route_handler(discovery);
     }

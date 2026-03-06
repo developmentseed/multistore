@@ -5,26 +5,29 @@
 //! via the cloud provider's STS. The resolved credentials are injected back
 //! into the config so the existing builder pipeline works unmodified.
 
+use multistore::backend::auth::BackendAuth;
 use multistore::error::ProxyError;
-use multistore::oidc_backend::OidcBackendAuth;
 use multistore::types::BucketConfig;
-use std::borrow::Cow;
+use std::collections::HashMap;
 
 use crate::exchange::aws::AwsExchange;
 use crate::{HttpExchange, OidcCredentialProvider};
 
 /// AWS OIDC backend auth — exchanges a self-signed JWT for temporary
 /// AWS credentials via `AssumeRoleWithWebIdentity`.
-pub struct AwsOidcBackendAuth<H: HttpExchange> {
+pub struct AwsBackendAuth<H: HttpExchange> {
     provider: OidcCredentialProvider<H>,
 }
 
-impl<H: HttpExchange> AwsOidcBackendAuth<H> {
+impl<H: HttpExchange> AwsBackendAuth<H> {
     pub fn new(provider: OidcCredentialProvider<H>) -> Self {
         Self { provider }
     }
 
-    async fn resolve_aws(&self, config: &BucketConfig) -> Result<BucketConfig, ProxyError> {
+    async fn resolve_aws(
+        &self,
+        config: &BucketConfig,
+    ) -> Result<HashMap<String, String>, ProxyError> {
         let role_arn = config.option("oidc_role_arn").ok_or_else(|| {
             ProxyError::ConfigError(
                 "auth_type=oidc requires 'oidc_role_arn' in backend_options".into(),
@@ -38,38 +41,32 @@ impl<H: HttpExchange> AwsOidcBackendAuth<H> {
             .get_credentials(role_arn, &exchange, subject, &[])
             .await?;
 
-        let mut resolved = config.clone();
-        resolved
-            .backend_options
-            .insert("access_key_id".into(), creds.access_key_id.clone());
-        resolved
-            .backend_options
-            .insert("secret_access_key".into(), creds.secret_access_key.clone());
-        resolved
-            .backend_options
-            .insert("token".into(), creds.session_token.clone());
+        let mut options = config.backend_options.clone();
+        options.insert("access_key_id".into(), creds.access_key_id.clone());
+        options.insert("secret_access_key".into(), creds.secret_access_key.clone());
+        options.insert("token".into(), creds.session_token.clone());
 
         // Remove OIDC-specific keys so they don't confuse the builder.
-        resolved.backend_options.remove("auth_type");
-        resolved.backend_options.remove("oidc_role_arn");
-        resolved.backend_options.remove("oidc_subject");
+        options.remove("auth_type");
+        options.remove("oidc_role_arn");
+        options.remove("oidc_subject");
 
-        Ok(resolved)
+        Ok(options)
     }
 }
 
-impl<H: HttpExchange> OidcBackendAuth for AwsOidcBackendAuth<H> {
-    async fn resolve_credentials<'a>(
-        &'a self,
-        config: &'a BucketConfig,
-    ) -> Result<Cow<'a, BucketConfig>, ProxyError> {
+impl<H: HttpExchange> BackendAuth for AwsBackendAuth<H> {
+    async fn resolve_credentials(
+        &self,
+        config: &BucketConfig,
+    ) -> Result<Option<HashMap<String, String>>, ProxyError> {
         if config.option("auth_type") != Some("oidc") {
-            return Ok(Cow::Borrowed(config));
+            return Ok(None);
         }
 
         // TODO: dispatch on backend_type for Azure/GCP when those exchanges are wired up.
         match config.backend_type.as_str() {
-            "s3" => self.resolve_aws(config).await.map(Cow::Owned),
+            "s3" => self.resolve_aws(config).await.map(Some),
             other => Err(ProxyError::ConfigError(format!(
                 "OIDC backend auth not yet supported for backend_type '{other}'"
             ))),
@@ -81,17 +78,17 @@ impl<H: HttpExchange> OidcBackendAuth for AwsOidcBackendAuth<H> {
 ///
 /// `Enabled` holds the live OIDC provider; `Disabled` is the no-op fallback.
 /// When disabled and a bucket specifies `auth_type=oidc`, a `ConfigError`
-/// is returned (same as `NoOidcAuth`).
+/// is returned (same as `NoAuth`).
 pub enum MaybeOidcAuth<H: HttpExchange> {
-    Enabled(Box<AwsOidcBackendAuth<H>>),
+    Enabled(Box<AwsBackendAuth<H>>),
     Disabled,
 }
 
-impl<H: HttpExchange> OidcBackendAuth for MaybeOidcAuth<H> {
-    async fn resolve_credentials<'a>(
-        &'a self,
-        config: &'a BucketConfig,
-    ) -> Result<Cow<'a, BucketConfig>, ProxyError> {
+impl<H: HttpExchange> BackendAuth for MaybeOidcAuth<H> {
+    async fn resolve_credentials(
+        &self,
+        config: &BucketConfig,
+    ) -> Result<Option<HashMap<String, String>>, ProxyError> {
         match self {
             MaybeOidcAuth::Enabled(auth) => auth.resolve_credentials(config).await,
             MaybeOidcAuth::Disabled => {
@@ -100,7 +97,7 @@ impl<H: HttpExchange> OidcBackendAuth for MaybeOidcAuth<H> {
                         "bucket requires auth_type=oidc but no OIDC provider is configured".into(),
                     ))
                 } else {
-                    Ok(Cow::Borrowed(config))
+                    Ok(None)
                 }
             }
         }
@@ -113,7 +110,6 @@ mod tests {
     use crate::jwt::JwtSigner;
     use crate::OidcProviderError;
     use chrono::{Duration, Utc};
-    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -209,16 +205,16 @@ mod tests {
             "https://issuer.example.com".into(),
             "sts.amazonaws.com".into(),
         );
-        let auth = AwsOidcBackendAuth::new(provider);
+        let auth = AwsBackendAuth::new(provider);
 
         let config = oidc_bucket_config();
-        let resolved = auth.resolve_credentials(&config).await.unwrap();
+        let resolved = auth.resolve_credentials(&config).await.unwrap().unwrap();
 
-        assert_eq!(resolved.option("access_key_id"), Some("AKID_OIDC"));
-        assert_eq!(resolved.option("secret_access_key"), Some("secret_oidc"));
-        assert_eq!(resolved.option("token"), Some("token_oidc"));
-        assert!(resolved.option("auth_type").is_none());
-        assert!(resolved.option("oidc_role_arn").is_none());
+        assert_eq!(resolved.get("access_key_id").unwrap(), "AKID_OIDC");
+        assert_eq!(resolved.get("secret_access_key").unwrap(), "secret_oidc");
+        assert_eq!(resolved.get("token").unwrap(), "token_oidc");
+        assert!(!resolved.contains_key("auth_type"));
+        assert!(!resolved.contains_key("oidc_role_arn"));
     }
 
     #[tokio::test]
@@ -230,12 +226,12 @@ mod tests {
             "https://issuer.example.com".into(),
             "sts.amazonaws.com".into(),
         );
-        let auth = AwsOidcBackendAuth::new(provider);
+        let auth = AwsBackendAuth::new(provider);
 
         let config = static_bucket_config();
         let resolved = auth.resolve_credentials(&config).await.unwrap();
 
-        assert_eq!(resolved.option("access_key_id"), Some("AKID_STATIC"));
+        assert!(resolved.is_none());
         assert_eq!(http.call_count.load(Ordering::SeqCst), 0);
     }
 
@@ -252,6 +248,6 @@ mod tests {
         let auth: MaybeOidcAuth<MockHttp> = MaybeOidcAuth::Disabled;
         let config = static_bucket_config();
         let resolved = auth.resolve_credentials(&config).await.unwrap();
-        assert_eq!(resolved.option("access_key_id"), Some("AKID_STATIC"));
+        assert!(resolved.is_none());
     }
 }

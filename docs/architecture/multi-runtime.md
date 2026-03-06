@@ -26,7 +26,7 @@ The solution is conditional trait aliases defined in `multistore`:
 - On native targets: `MaybeSend` resolves to `Send`, `MaybeSync` resolves to `Sync`
 - On `wasm32`: `MaybeSend` and `MaybeSync` are blanket traits that every type implements
 
-Only traits whose wasm implementations use `!Send` types need `MaybeSend + MaybeSync`: `ProxyBackend`, `RouteHandler`, `OidcBackendAuth`, `HttpExchange`, and `CredentialExchange`. Other traits like `ConfigProvider` and `RequestResolver` use plain `Send + Sync`.
+Only traits whose wasm implementations use `!Send` types need `MaybeSend + MaybeSync`: `ProxyBackend`, `RouteHandler`, `BackendAuth`, `HttpExchange`, and `CredentialExchange`. Other traits like `ConfigProvider` and `RequestResolver` use plain `Send + Sync`.
 
 The `Signer` trait from `object_store` requires real `Send + Sync`, which works because `UnsignedUrlSigner` only holds `String` fields, and `object_store`'s built-in store types are `Send + Sync`.
 

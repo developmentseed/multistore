@@ -27,14 +27,16 @@ Any provider can be wrapped with `CachedProvider` for in-memory TTL caching.
 
 `DefaultResolver<P: ConfigProvider>` implements the standard S3 proxy flow: parse the S3 operation, look up the bucket in config, authenticate via SigV4, and authorize. Custom resolvers can implement entirely different routing and auth schemes.
 
-**`OidcBackendAuth`** — Resolves backend credentials via OIDC token exchange. Called at the top of `dispatch_operation()` before the config reaches `create_store()`/`create_signer()`. When a bucket's `backend_options` contains `auth_type=oidc`, the implementation mints a self-signed JWT and exchanges it for temporary cloud credentials, injecting them into the config. The default `NoOidcAuth` passes configs through unchanged (and errors if `auth_type=oidc` is set without a provider). The `oidc-provider` crate provides `AwsOidcBackendAuth` and `MaybeOidcAuth` as concrete implementations.
+**`BackendAuth`** — Resolves backend credentials via OIDC token exchange. Called at the top of `dispatch_operation()` before the config reaches `create_store()`/`create_signer()`. When a bucket's `backend_options` contains `auth_type=oidc`, the implementation mints a self-signed JWT and exchanges it for temporary cloud credentials, injecting them into the config. The default `NoAuth` passes configs through unchanged (and errors if `auth_type=oidc` is set without a provider). The `oidc-provider` crate provides `AwsBackendAuth` and `MaybeOidcAuth` as concrete implementations.
 
 ## Module Overview
 
 ```
 src/
 ├── auth.rs          SigV4 verification, identity resolution, authorization
-├── backend.rs       ProxyBackend trait, Signer/StoreBuilder, S3RequestSigner (multipart)
+├── backend/
+│   ├── mod.rs       ProxyBackend trait, Signer/StoreBuilder, S3RequestSigner (multipart)
+│   ├── auth.rs      BackendAuth trait, NoAuth default impl
 ├── config/
 │   ├── mod.rs       ConfigProvider trait definition
 │   ├── cached.rs    TTL caching wrapper for any provider
@@ -43,7 +45,6 @@ src/
 │   ├── dynamodb.rs  DynamoDB provider (feature: config-dynamodb)
 │   └── postgres.rs  PostgreSQL provider (feature: config-postgres)
 ├── error.rs         ProxyError with S3-compatible error codes
-├── oidc_backend.rs  OidcBackendAuth trait, NoOidcAuth default impl
 ├── proxy.rs         ProxyHandler — the main request handler
 ├── resolver.rs      RequestResolver trait, ResolvedAction, DefaultResolver
 ├── sealed_token.rs  AES-256-GCM encrypted session tokens (TokenKey)
@@ -78,7 +79,7 @@ let resolver = DefaultResolver::new(config, Some("s3.example.com".into()), token
 
 let handler = ProxyHandler::new(backend, resolver);
 // Optional: enable OIDC-based backend credential resolution.
-// let handler = handler.with_oidc_auth(oidc_auth);
+// let handler = handler.with_backend_auth(oidc_auth);
 
 // In your HTTP handler:
 let action = handler.resolve_request(method, path, query, &headers).await;

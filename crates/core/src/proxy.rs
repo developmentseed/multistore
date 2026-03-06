@@ -46,11 +46,11 @@
 
 use crate::api::list::{build_list_prefix, build_list_xml, parse_list_query_params, ListXmlParams};
 use crate::api::response::ErrorResponse;
+use crate::backend::auth::{BackendAuth, NoAuth};
 use crate::backend::multipart::{build_backend_url, sign_s3_request};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
-use crate::oidc_backend::{NoOidcAuth, OidcBackendAuth};
 use crate::resolver::{ListRewrite, RequestResolver, ResolvedAction};
 use crate::route_handler::{ProxyResponseBody, RequestInfo, RouteHandler};
 use crate::types::{BucketConfig, S3Operation};
@@ -92,11 +92,11 @@ pub enum GatewayResponse<B> {
 ///
 /// - `B`: The runtime's backend for object store creation, signing, and raw HTTP
 /// - `R`: The request resolver that decides what action to take for each request
-/// - `O`: OIDC backend auth for resolving credentials via token exchange
-pub struct Gateway<B, R, O = NoOidcAuth> {
+/// - `O`: Backend auth for resolving credentials before store/signer creation
+pub struct Gateway<B, R, O = NoAuth> {
     backend: B,
     resolver: R,
-    oidc_auth: O,
+    backend_auth: O,
     route_handlers: Vec<Box<dyn RouteHandler>>,
     /// When true, error responses include full internal details (for development).
     /// When false, server-side errors use generic messages.
@@ -104,7 +104,7 @@ pub struct Gateway<B, R, O = NoOidcAuth> {
 }
 
 /// Backwards-compatible type alias.
-pub type ProxyHandler<B, R, O = NoOidcAuth> = Gateway<B, R, O>;
+pub type ProxyHandler<B, R, O = NoAuth> = Gateway<B, R, O>;
 
 impl<B, R> Gateway<B, R>
 where
@@ -115,7 +115,7 @@ where
         Self {
             backend,
             resolver,
-            oidc_auth: NoOidcAuth,
+            backend_auth: NoAuth,
             route_handlers: Vec::new(),
             debug_errors: false,
         }
@@ -126,18 +126,18 @@ impl<B, R, O> Gateway<B, R, O>
 where
     B: ProxyBackend,
     R: RequestResolver,
-    O: OidcBackendAuth,
+    O: BackendAuth,
 {
-    /// Set the OIDC backend auth implementation.
+    /// Set the backend auth implementation.
     ///
     /// When configured, `dispatch_operation` calls `resolve_credentials`
-    /// before accessing the backend — enabling OIDC-based credential
-    /// resolution for buckets with `auth_type=oidc`.
-    pub fn with_oidc_auth<O2: OidcBackendAuth>(self, oidc_auth: O2) -> Gateway<B, R, O2> {
+    /// before accessing the backend — enabling credential resolution
+    /// (e.g. OIDC token exchange) for buckets that require it.
+    pub fn with_backend_auth<O2: BackendAuth>(self, backend_auth: O2) -> Gateway<B, R, O2> {
         Gateway {
             backend: self.backend,
             resolver: self.resolver,
-            oidc_auth,
+            backend_auth,
             route_handlers: self.route_handlers,
             debug_errors: self.debug_errors,
         }
@@ -368,17 +368,27 @@ where
         list_rewrite: Option<&ListRewrite>,
         request_id: &str,
     ) -> Result<HandlerAction, ProxyError> {
-        // Resolve OIDC credentials if auth_type=oidc is configured.
-        // Returns Cow::Borrowed for non-OIDC buckets (zero-copy),
-        // Cow::Owned for OIDC buckets (with injected temporary credentials).
-        let bucket_config = self.oidc_auth.resolve_credentials(bucket_config).await?;
+        // Resolve backend credentials if needed (e.g. OIDC token exchange).
+        // Returns None for buckets with static credentials (zero-copy path),
+        // Some(options) with replacement backend_options for dynamic credentials.
+        let resolved_config;
+        let bucket_config = match self.backend_auth.resolve_credentials(bucket_config).await? {
+            Some(options) => {
+                resolved_config = BucketConfig {
+                    backend_options: options,
+                    ..bucket_config.clone()
+                };
+                &resolved_config
+            }
+            None => bucket_config,
+        };
 
         match operation {
             S3Operation::GetObject { key, .. } => {
                 let fwd = self
                     .build_forward(
                         Method::GET,
-                        &bucket_config,
+                        bucket_config,
                         key,
                         original_headers,
                         &[
@@ -397,7 +407,7 @@ where
                 let fwd = self
                     .build_forward(
                         Method::HEAD,
-                        &bucket_config,
+                        bucket_config,
                         key,
                         original_headers,
                         &[
@@ -415,7 +425,7 @@ where
                 let fwd = self
                     .build_forward(
                         Method::PUT,
-                        &bucket_config,
+                        bucket_config,
                         key,
                         original_headers,
                         &["content-type", "content-length", "content-md5"],
@@ -426,14 +436,14 @@ where
             }
             S3Operation::DeleteObject { key, .. } => {
                 let fwd = self
-                    .build_forward(Method::DELETE, &bucket_config, key, original_headers, &[])
+                    .build_forward(Method::DELETE, bucket_config, key, original_headers, &[])
                     .await?;
                 tracing::debug!(path = fwd.url.path(), "DELETE via presigned URL");
                 Ok(HandlerAction::Forward(fwd))
             }
             S3Operation::ListBucket { raw_query, .. } => {
                 let result = self
-                    .handle_list(&bucket_config, raw_query.as_deref(), list_rewrite)
+                    .handle_list(bucket_config, raw_query.as_deref(), list_rewrite)
                     .await?;
                 Ok(HandlerAction::Response(result))
             }
@@ -451,7 +461,7 @@ where
                 Ok(HandlerAction::NeedsBody(PendingRequest {
                     method: method.clone(),
                     operation: operation.clone(),
-                    bucket_config: bucket_config.into_owned(),
+                    bucket_config: bucket_config.clone(),
                     original_headers: original_headers.clone(),
                     request_id: request_id.to_string(),
                 }))

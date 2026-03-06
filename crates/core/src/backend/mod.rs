@@ -14,6 +14,7 @@
 //! The [`request_signer`] submodule handles outbound SigV4 request signing.
 //! The [`multipart`] submodule builds URLs and signs multipart upload requests.
 
+pub mod auth;
 pub mod multipart;
 pub mod request_signer;
 pub mod url_signer;

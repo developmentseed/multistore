@@ -90,7 +90,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
 
     // Build the gateway with route handlers
     let mut gateway = Gateway::new(WorkerBackend, resolver)
-        .with_oidc_auth(oidc_auth)
+        .with_backend_auth(oidc_auth)
         .with_route_handler(StsRouteHandler::new(config, jwks_cache, token_key));
     if let Some(discovery) = oidc_discovery {
         gateway = gateway.with_route_handler(discovery);
@@ -344,7 +344,7 @@ fn load_oidc_auth(env: &Env) -> Result<(OidcAuth, Option<OidcDiscoveryRouteHandl
                 "sts.amazonaws.com".into(),
             );
             let auth = MaybeOidcAuth::Enabled(Box::new(
-                multistore_oidc_provider::backend_auth::AwsOidcBackendAuth::new(provider),
+                multistore_oidc_provider::backend_auth::AwsBackendAuth::new(provider),
             ));
             let discovery = OidcDiscoveryRouteHandler::new(issuer, signer);
             Ok((auth, Some(discovery)))

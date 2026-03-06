@@ -120,7 +120,7 @@ When OIDC provider keys are configured, the proxy serves two well-known endpoint
 
 When a request arrives for a bucket with `auth_type=oidc`:
 
-1. The `OidcBackendAuth` handler detects `auth_type=oidc` in the bucket's `backend_options`
+1. The `BackendAuth` handler detects `auth_type=oidc` in the bucket's `backend_options`
 2. It mints a short-lived JWT signed with the proxy's RSA private key:
    - `iss`: the configured `OIDC_PROVIDER_ISSUER`
    - `sub`: a connection identifier (from `oidc_subject` option, or a default)
