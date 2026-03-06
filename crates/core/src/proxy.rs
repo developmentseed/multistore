@@ -128,8 +128,6 @@ pub struct Gateway<B, R, O = NoOidcAuth> {
     debug_errors: bool,
 }
 
-/// Backwards-compatible type alias.
-pub type ProxyHandler<B, R, O = NoOidcAuth> = Gateway<B, R, O>;
 
 impl<B, R> Gateway<B, R>
 where
