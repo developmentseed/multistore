@@ -5,7 +5,7 @@ The proxy loads its configuration (buckets, roles, credentials) through the `Con
 ## ConfigProvider Trait
 
 ```rust
-pub trait ConfigProvider: Clone + MaybeSend + MaybeSync + 'static {
+pub trait ConfigProvider: Clone + Send + Sync + 'static {
     async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError>;
     async fn get_bucket(&self, name: &str) -> Result<Option<BucketConfig>, ProxyError>;
     async fn get_role(&self, role_id: &str) -> Result<Option<RoleConfig>, ProxyError>;

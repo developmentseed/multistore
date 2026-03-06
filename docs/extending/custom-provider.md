@@ -9,7 +9,7 @@ use multistore::config::ConfigProvider;
 use multistore::error::ProxyError;
 use multistore::types::*;
 
-pub trait ConfigProvider: Clone + MaybeSend + MaybeSync + 'static {
+pub trait ConfigProvider: Clone + Send + Sync + 'static {
     async fn list_buckets(&self) -> Result<Vec<BucketConfig>, ProxyError>;
     async fn get_bucket(&self, name: &str) -> Result<Option<BucketConfig>, ProxyError>;
     async fn get_role(&self, role_id: &str) -> Result<Option<RoleConfig>, ProxyError>;

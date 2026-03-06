@@ -11,7 +11,6 @@ use crate::api::response::{BucketEntry, BucketList, ListAllMyBucketsResult};
 use crate::auth;
 use crate::config::ConfigProvider;
 use crate::error::ProxyError;
-use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::sealed_token::TokenKey;
 use crate::types::{BucketConfig, S3Operation};
 use bytes::Bytes;
@@ -22,14 +21,14 @@ use std::future::Future;
 ///
 /// Implementations encapsulate namespace mapping, authentication, authorization,
 /// and any request rewriting logic specific to a product or deployment mode.
-pub trait RequestResolver: Clone + MaybeSend + MaybeSync + 'static {
+pub trait RequestResolver: Clone + Send + Sync + 'static {
     fn resolve(
         &self,
         method: &Method,
         path: &str,
         query: Option<&str>,
         headers: &HeaderMap,
-    ) -> impl Future<Output = Result<ResolvedAction, ProxyError>> + MaybeSend;
+    ) -> impl Future<Output = Result<ResolvedAction, ProxyError>> + Send;
 }
 
 /// The action the proxy handler should take after resolution.

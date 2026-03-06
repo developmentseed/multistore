@@ -26,7 +26,7 @@ The solution is conditional trait aliases defined in `multistore`:
 - On native targets: `MaybeSend` resolves to `Send`, `MaybeSync` resolves to `Sync`
 - On `wasm32`: `MaybeSend` and `MaybeSync` are blanket traits that every type implements
 
-All core traits (`ProxyBackend`, `RequestResolver`, `ConfigProvider`) use `MaybeSend + MaybeSync` instead of `Send + Sync`, so they compile on both targets.
+Only traits whose wasm implementations use `!Send` types need `MaybeSend + MaybeSync`: `ProxyBackend`, `RouteHandler`, `OidcBackendAuth`, `HttpExchange`, and `CredentialExchange`. Other traits like `ConfigProvider` and `RequestResolver` use plain `Send + Sync`.
 
 The `Signer` trait from `object_store` requires real `Send + Sync`, which works because `UnsignedUrlSigner` only holds `String` fields, and `object_store`'s built-in store types are `Send + Sync`.
 
@@ -35,14 +35,14 @@ The `Signer` trait from `object_store` requires real `Send + Sync`, which works 
 Core traits use return-position `impl Trait` in trait (RPITIT) for async methods instead of `#[async_trait]`:
 
 ```rust
-pub trait RequestResolver: Clone + MaybeSend + MaybeSync + 'static {
-    fn resolve(
+pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
+    fn send_raw(
         &self,
-        method: &Method,
-        path: &str,
-        query: Option<&str>,
-        headers: &HeaderMap,
-    ) -> impl Future<Output = Result<ResolvedAction, ProxyError>> + MaybeSend;
+        method: http::Method,
+        url: String,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> impl Future<Output = Result<RawResponse, ProxyError>> + MaybeSend;
 }
 ```
 

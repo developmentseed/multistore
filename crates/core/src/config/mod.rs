@@ -17,7 +17,6 @@
 pub mod static_file;
 
 use crate::error::ProxyError;
-use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::types::{BucketConfig, BucketOwner, RoleConfig, StoredCredential};
 use std::future::Future;
 
@@ -28,32 +27,26 @@ pub const DEFAULT_BUCKET_OWNER: &str = "multistore-proxy";
 ///
 /// Implementations should be cheap to clone (wrap inner state in `Arc`).
 ///
-/// Methods use [`MaybeSend`] bounds — on native targets this resolves to `Send`
-/// (required by Tokio's task spawning), on WASM it's a no-op (allowing `!Send`
-/// JS interop types).
-///
 /// Temporary credentials are not stored via this trait — they are encrypted
 /// into self-contained session tokens using [`TokenKey`](crate::sealed_token::TokenKey).
-pub trait ConfigProvider: Clone + MaybeSend + MaybeSync + 'static {
-    fn list_buckets(
-        &self,
-    ) -> impl Future<Output = Result<Vec<BucketConfig>, ProxyError>> + MaybeSend;
+pub trait ConfigProvider: Clone + Send + Sync + 'static {
+    fn list_buckets(&self) -> impl Future<Output = Result<Vec<BucketConfig>, ProxyError>> + Send;
 
     fn get_bucket(
         &self,
         name: &str,
-    ) -> impl Future<Output = Result<Option<BucketConfig>, ProxyError>> + MaybeSend;
+    ) -> impl Future<Output = Result<Option<BucketConfig>, ProxyError>> + Send;
 
     fn get_role(
         &self,
         role_id: &str,
-    ) -> impl Future<Output = Result<Option<RoleConfig>, ProxyError>> + MaybeSend;
+    ) -> impl Future<Output = Result<Option<RoleConfig>, ProxyError>> + Send;
 
     /// Look up a long-lived credential by its access key ID.
     fn get_credential(
         &self,
         access_key_id: &str,
-    ) -> impl Future<Output = Result<Option<StoredCredential>, ProxyError>> + MaybeSend;
+    ) -> impl Future<Output = Result<Option<StoredCredential>, ProxyError>> + Send;
 
     /// The owner identity returned in `ListAllMyBucketsResult` responses.
     ///

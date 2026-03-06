@@ -10,7 +10,7 @@
 //! provider is configured.
 
 use crate::error::ProxyError;
-use crate::maybe_send::MaybeSend;
+use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::types::BucketConfig;
 use std::borrow::Cow;
 use std::future::Future;
@@ -20,7 +20,7 @@ use std::future::Future;
 /// Called at the top of `dispatch_operation()` before the config reaches
 /// `create_store()` / `create_signer()`. Implementations may return the
 /// config unchanged (no `auth_type=oidc`) or inject temporary credentials.
-pub trait OidcBackendAuth: MaybeSend + 'static {
+pub trait OidcBackendAuth: MaybeSend + MaybeSync + 'static {
     fn resolve_credentials<'a>(
         &'a self,
         config: &'a BucketConfig,

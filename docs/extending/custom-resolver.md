@@ -9,14 +9,14 @@ use multistore::resolver::{RequestResolver, ResolvedAction};
 use multistore::error::ProxyError;
 use http::{Method, HeaderMap};
 
-pub trait RequestResolver: Clone + MaybeSend + MaybeSync + 'static {
+pub trait RequestResolver: Clone + Send + Sync + 'static {
     fn resolve(
         &self,
         method: &Method,
         path: &str,
         query: Option<&str>,
         headers: &HeaderMap,
-    ) -> impl Future<Output = Result<ResolvedAction, ProxyError>> + MaybeSend;
+    ) -> impl Future<Output = Result<ResolvedAction, ProxyError>> + Send;
 }
 ```
 

@@ -1,24 +1,14 @@
-//! Conditional `Send`/`Sync` bounds for multi-runtime compatibility.
+//! Conditional `Send`/`Sync` bounds for traits whose wasm implementations
+//! use `!Send` types (JS interop via `Rc<RefCell<...>>`, `JsValue`, etc.).
 //!
-//! On native targets (x86_64, aarch64, etc.), `MaybeSend` resolves to `Send`
-//! and `MaybeSync` resolves to `Sync`. This satisfies Tokio's requirement
-//! that spawned futures are `Send`.
+//! On native targets, `MaybeSend` resolves to `Send` and `MaybeSync` to
+//! `Sync`. On `wasm32` targets, both are no-ops.
 //!
-//! On `wasm32` targets, these traits are no-ops — blanket-implemented for all
-//! types. This allows Cloudflare Workers code to use `!Send` JS interop types
-//! (`Rc<RefCell<...>>`, `JsValue`, etc.) without constraint violations.
-//!
-//! ## Usage
-//!
-//! Use `MaybeSend` instead of `Send` in trait bounds throughout the core:
-//!
-//! ```rust,ignore
-//! use multistore::maybe_send::MaybeSend;
-//!
-//! pub trait MyTrait: MaybeSend {
-//!     fn do_work(&self) -> impl Future<Output = ()> + MaybeSend;
-//! }
-//! ```
+//! Only used for traits that genuinely need it: [`ProxyBackend`](crate::backend::ProxyBackend),
+//! [`OidcBackendAuth`](crate::oidc_backend::OidcBackendAuth),
+//! [`RouteHandler`](crate::route_handler::RouteHandler), and the
+//! `oidc-provider` crate's [`HttpExchange`] / [`CredentialExchange`] traits.
+//! Other traits use plain `Send + Sync`.
 
 // --- Native targets: MaybeSend = Send, MaybeSync = Sync ---
 
