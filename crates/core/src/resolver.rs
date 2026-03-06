@@ -5,13 +5,13 @@
 //! etc.) implements its own resolver. The proxy handler simply calls
 //! `resolver.resolve()` and acts on the [`ResolvedAction`].
 
+pub use crate::api::list_rewrite::ListRewrite;
+use crate::api::request::{self, HostStyle};
+use crate::api::response::{BucketEntry, BucketList, ListAllMyBucketsResult};
 use crate::auth;
 use crate::config::ConfigProvider;
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
-pub use crate::s3::list_rewrite::ListRewrite;
-use crate::s3::request::{self, HostStyle};
-use crate::s3::response::{BucketEntry, BucketList, ListAllMyBucketsResult};
 use crate::sealed_token::TokenKey;
 use crate::types::{BucketConfig, S3Operation};
 use bytes::Bytes;

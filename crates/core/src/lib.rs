@@ -12,11 +12,12 @@
 //! - [`backend::ProxyBackend`] — create object stores and send raw HTTP requests
 //! - [`config::ConfigProvider`] — retrieve bucket/role/credential configuration from any backend
 //! - [`auth`] — SigV4 request verification and credential resolution
-//! - [`s3::request`] — parse incoming S3 API requests into typed operations
-//! - [`s3::response`] — serialize S3 XML responses
+//! - [`api::request`] — parse incoming S3 API requests into typed operations
+//! - [`api::response`] — serialize S3 XML responses
 //! - [`route_handler::RouteHandler`] — pluggable pre-dispatch request interception (OIDC, STS, etc.)
 //! - [`proxy::Gateway`] — the main request handler that ties everything together
 
+pub mod api;
 pub mod auth;
 pub mod backend;
 pub mod config;
@@ -26,6 +27,5 @@ pub mod oidc_backend;
 pub mod proxy;
 pub mod resolver;
 pub mod route_handler;
-pub mod s3;
 pub mod sealed_token;
 pub mod types;

@@ -2,9 +2,9 @@
 //!
 //! Extracted from `proxy.rs` to keep the gateway focused on orchestration.
 
+use crate::api::list_rewrite::ListRewrite;
+use crate::api::response::{ListBucketResult, ListCommonPrefix, ListContents};
 use crate::error::ProxyError;
-use crate::s3::list_rewrite::ListRewrite;
-use crate::s3::response::{ListBucketResult, ListCommonPrefix, ListContents};
 use crate::types::BucketConfig;
 
 /// Parameters for building the S3 ListObjectsV2 XML response.

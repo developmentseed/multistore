@@ -6,8 +6,8 @@
 
 use base64::Engine;
 
+use crate::api::response::{ListCommonPrefix, ListContents};
 use crate::error::ProxyError;
-use crate::s3::response::{ListCommonPrefix, ListContents};
 
 const DEFAULT_MAX_KEYS: usize = 1000;
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;

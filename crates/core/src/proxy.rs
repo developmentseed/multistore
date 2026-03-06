@@ -44,15 +44,15 @@
 //! For lower-level control, use [`Gateway::handle`] which returns the
 //! three-variant [`HandlerAction`] directly.
 
+use crate::api::list::{build_list_prefix, build_list_xml, parse_list_query_params, ListXmlParams};
+use crate::api::response::ErrorResponse;
+use crate::backend::multipart::{build_backend_url, sign_s3_request};
+use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
 use crate::oidc_backend::{NoOidcAuth, OidcBackendAuth};
 use crate::resolver::{ListRewrite, RequestResolver, ResolvedAction};
 use crate::route_handler::{ProxyResponseBody, RequestInfo, RouteHandler};
-use crate::s3::list::{build_list_prefix, build_list_xml, parse_list_query_params, ListXmlParams};
-use crate::s3::multipart::{build_backend_url, sign_s3_request};
-use crate::s3::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
-use crate::s3::response::ErrorResponse;
 use crate::types::{BucketConfig, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
