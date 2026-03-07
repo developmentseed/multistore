@@ -2,12 +2,12 @@
 [[buckets]]
 name = "harvard-lil"
 backend_type = "s3"
+backend_prefix = "harvard-lil/"
 anonymous_access = true
 allowed_roles = []
 
 [buckets.backend_options]
-endpoint = "https://data.source.coop"
-bucket_name = "harvard-lil"
+bucket_name = "us-west-2.opendata.source.coop" 
 region = "us-west-2"
 skip_signature = "true"
 
@@ -15,12 +15,12 @@ skip_signature = "true"
 [[buckets]]
 name = "cholmes"
 backend_type = "s3"
+backend_prefix = "cholmes/"
 anonymous_access = false
 allowed_roles = ["github-actions"]
 
 [buckets.backend_options]
-endpoint = "https://data.source.coop"
-bucket_name = "cholmes"
+bucket_name = "us-west-2.opendata.source.coop" 
 region = "us-east-1"
 skip_signature = "true"
 
