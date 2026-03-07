@@ -190,6 +190,7 @@ impl BucketRegistry for StaticProvider {
         identity: &ResolvedIdentity,
         operation: &S3Operation,
     ) -> Result<ResolvedBucket, ProxyError> {
+        // TODO: only return buckets the identity has access to (currently returns any bucket in the config regardless of permissions)
         let bucket_config = self
             .inner
             .config
@@ -214,6 +215,7 @@ impl BucketRegistry for StaticProvider {
         &self,
         _identity: &ResolvedIdentity,
     ) -> Result<Vec<BucketEntry>, ProxyError> {
+        // TODO: filter buckets based on identity permissions (currently returns all buckets regardless of permissions)
         Ok(self
             .inner
             .config
