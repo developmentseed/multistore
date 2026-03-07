@@ -12,13 +12,13 @@ use http_body_util::BodyStream;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::registry::{BucketRegistry, CredentialRegistry};
 use multistore::route_handler::{ForwardRequest, RequestInfo, RESPONSE_HEADER_ALLOWLIST};
-use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
 use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
 use multistore_oidc_provider::OidcCredentialProvider;
 use multistore_sts::route_handler::StsRouteHandler;
 use multistore_sts::JwksCache;
+use multistore_sts::TokenKey;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -121,9 +121,11 @@ where
         bucket_registry,
         credential_registry,
         server_config.virtual_host_domain,
-        token_key.clone(),
     )
     .with_backend_auth(oidc_auth);
+    if let Some(ref resolver) = token_key {
+        handler = handler.with_credential_resolver(resolver.clone());
+    }
     if let Some(discovery) = oidc_discovery {
         handler = handler.with_route_handler(discovery);
     }

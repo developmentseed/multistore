@@ -17,11 +17,12 @@
 //! - **Key rotation**: Tokens sealed with an old key will fail to decrypt (`Ok(None)`), causing
 //!   the client to re-authenticate. No explicit revocation mechanism is needed.
 
-use crate::error::ProxyError;
-use crate::types::TemporaryCredentials;
 use aes_gcm::aead::{Aead, OsRng};
 use aes_gcm::{AeadCore, Aes256Gcm, KeyInit};
 use base64::Engine;
+use multistore::auth::TemporaryCredentialResolver;
+use multistore::error::ProxyError;
+use multistore::types::TemporaryCredentials;
 use std::sync::Arc;
 
 const NONCE_LEN: usize = 12;
@@ -103,10 +104,16 @@ impl TokenKey {
     }
 }
 
+impl TemporaryCredentialResolver for TokenKey {
+    fn resolve(&self, token: &str) -> Result<Option<TemporaryCredentials>, ProxyError> {
+        self.unseal(token)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::AccessScope;
+    use multistore::types::AccessScope;
 
     fn make_key() -> TokenKey {
         let key_bytes = [0x42u8; 32];
@@ -123,7 +130,7 @@ mod tests {
             allowed_scopes: vec![AccessScope {
                 bucket: "test-bucket".into(),
                 prefixes: vec![],
-                actions: vec![crate::types::Action::GetObject],
+                actions: vec![multistore::types::Action::GetObject],
             }],
             assumed_role_id: "role-1".into(),
             source_identity: "test".into(),

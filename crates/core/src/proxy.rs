@@ -50,6 +50,7 @@ use crate::api::list_rewrite::ListRewrite;
 use crate::api::request::{self, HostStyle};
 use crate::api::response::{BucketList, ErrorResponse, ListAllMyBucketsResult};
 use crate::auth;
+use crate::auth::TemporaryCredentialResolver;
 use crate::backend::auth::{BackendAuth, NoAuth};
 use crate::backend::multipart::{build_backend_url, sign_s3_request};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
@@ -57,7 +58,6 @@ use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
 use crate::registry::{BucketRegistry, CredentialRegistry};
 use crate::route_handler::{ProxyResponseBody, RequestInfo, RouteHandler};
-use crate::sealed_token::TokenKey;
 use crate::types::{BucketConfig, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
@@ -107,7 +107,7 @@ pub struct ProxyGateway<B, R, C, O = NoAuth> {
     credential_registry: C,
     backend_auth: O,
     virtual_host_domain: Option<String>,
-    token_key: Option<TokenKey>,
+    credential_resolver: Option<Box<dyn TemporaryCredentialResolver>>,
     route_handlers: Vec<Box<dyn RouteHandler>>,
     /// When true, error responses include full internal details (for development).
     /// When false, server-side errors use generic messages.
@@ -125,7 +125,6 @@ where
         bucket_registry: R,
         credential_registry: C,
         virtual_host_domain: Option<String>,
-        token_key: Option<TokenKey>,
     ) -> Self {
         Self {
             backend,
@@ -133,7 +132,7 @@ where
             credential_registry,
             backend_auth: NoAuth,
             virtual_host_domain,
-            token_key,
+            credential_resolver: None,
             route_handlers: Vec::new(),
             debug_errors: false,
         }
@@ -159,10 +158,22 @@ where
             credential_registry: self.credential_registry,
             backend_auth,
             virtual_host_domain: self.virtual_host_domain,
-            token_key: self.token_key,
+            credential_resolver: self.credential_resolver,
             route_handlers: self.route_handlers,
             debug_errors: self.debug_errors,
         }
+    }
+
+    /// Set the temporary credential resolver for session token verification.
+    ///
+    /// When configured, requests with `x-amz-security-token` headers are
+    /// resolved via this resolver during identity resolution.
+    pub fn with_credential_resolver(
+        mut self,
+        resolver: impl TemporaryCredentialResolver + 'static,
+    ) -> Self {
+        self.credential_resolver = Some(Box::new(resolver));
+        self
     }
 
     /// Register a route handler that is checked before proxy dispatch.
@@ -362,7 +373,7 @@ where
             query.unwrap_or(""),
             headers,
             &self.credential_registry,
-            self.token_key.as_ref(),
+            self.credential_resolver.as_deref(),
         )
         .await?;
         tracing::debug!(identity = ?identity, "resolved identity");

@@ -97,7 +97,7 @@ impl BucketRegistry for MyRegistry {
 ```rust
 let registry = MyRegistry::new(api_client);
 let cred_registry = MyCredentialRegistry::new(/* ... */);
-let gateway = ProxyGateway::new(backend, registry, cred_registry, domain, token_key);
+let gateway = ProxyGateway::new(backend, registry, cred_registry, domain);
 
 // In your request handler:
 let req_info = RequestInfo {

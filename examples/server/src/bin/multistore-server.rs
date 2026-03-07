@@ -3,10 +3,10 @@
 //! Usage:
 //!     multistore-server --config config.toml [--listen 0.0.0.0:8080] [--domain s3.local]
 
-use multistore::sealed_token::TokenKey;
 use multistore_server::cached::CachedProvider;
 use multistore_server::server::{run, ServerConfig};
 use multistore_static_config::StaticProvider;
+use multistore_sts::TokenKey;
 use std::net::SocketAddr;
 use std::time::Duration;
 

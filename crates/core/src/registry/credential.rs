@@ -8,8 +8,8 @@ use std::future::Future;
 ///
 /// Implementations should be cheap to clone (wrap inner state in `Arc`).
 ///
-/// Temporary credentials are not stored via this trait — they are encrypted
-/// into self-contained session tokens using [`TokenKey`](crate::sealed_token::TokenKey).
+/// Temporary credentials are resolved via a [`TemporaryCredentialResolver`](crate::auth::TemporaryCredentialResolver)
+/// rather than stored here.
 pub trait CredentialRegistry: Clone + Send + Sync + 'static {
     /// Look up a long-lived credential by its access key ID.
     fn get_credential(

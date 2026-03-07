@@ -1,4 +1,5 @@
 use super::*;
+use crate::auth::TemporaryCredentialResolver;
 use crate::error::ProxyError;
 use crate::types::{AccessScope, Action, RoleConfig, StoredCredential, TemporaryCredentials};
 use http::HeaderMap;
@@ -333,17 +334,30 @@ fn unknown_access_key_is_rejected() {
 }
 
 #[test]
-fn sealed_token_wrong_session_token_is_rejected() {
-    use crate::sealed_token::TokenKey;
-
+fn temporary_credential_wrong_session_token_is_rejected() {
     run(async {
-        let key_bytes = [0x42u8; 32];
-        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_bytes);
-        let token_key = TokenKey::from_base64(&encoded).unwrap();
         let config = MockConfig::empty();
 
         let secret = "TempSecretKey1234567890EXAMPLE000000000000";
-        let wrong_token = "NOT_A_SEALED_TOKEN_AT_ALL";
+        let wrong_token = "NOT_A_VALID_TOKEN";
+
+        // Resolver only accepts "VALID_TOKEN", so "NOT_A_VALID_TOKEN" returns None
+        let resolver = MockResolver {
+            expected_token: "VALID_TOKEN".into(),
+            creds: TemporaryCredentials {
+                access_key_id: "ASIATEMP1234EXAMPLE".into(),
+                secret_access_key: secret.into(),
+                session_token: "VALID_TOKEN".into(),
+                expiration: chrono::Utc::now() + chrono::Duration::hours(1),
+                allowed_scopes: vec![AccessScope {
+                    bucket: "test-bucket".into(),
+                    prefixes: vec![],
+                    actions: vec![Action::GetObject],
+                }],
+                assumed_role_id: "role-1".into(),
+                source_identity: "test".into(),
+            },
+        };
 
         let date_stamp = "20240101";
         let amz_date = "20240101T000000Z";
@@ -381,7 +395,7 @@ fn sealed_token_wrong_session_token_is_rejected() {
             "",
             &headers,
             &config,
-            Some(&token_key),
+            Some(&resolver as &dyn TemporaryCredentialResolver),
         )
         .await
         .unwrap_err();
@@ -391,32 +405,29 @@ fn sealed_token_wrong_session_token_is_rejected() {
 }
 
 #[test]
-fn sealed_token_wrong_signature_is_rejected() {
-    use crate::sealed_token::TokenKey;
-    use crate::types::AccessScope;
-
+fn temporary_credential_wrong_signature_is_rejected() {
     run(async {
-        let key_bytes = [0x42u8; 32];
-        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_bytes);
-        let token_key = TokenKey::from_base64(&encoded).unwrap();
-
         let real_secret = "TempSecretKey1234567890EXAMPLE000000000000";
         let wrong_secret = "WRONGSECRETKEYWRONGSECRETSECRET00000000000";
-        let creds = TemporaryCredentials {
-            access_key_id: "ASIATEMP1234EXAMPLE".into(),
-            secret_access_key: real_secret.into(),
-            session_token: String::new(),
-            expiration: chrono::Utc::now() + chrono::Duration::hours(1),
-            allowed_scopes: vec![AccessScope {
-                bucket: "test-bucket".into(),
-                prefixes: vec![],
-                actions: vec![Action::GetObject],
-            }],
-            assumed_role_id: "role-1".into(),
-            source_identity: "test".into(),
+        let mock_token = "MOCK_SESSION_TOKEN";
+
+        let resolver = MockResolver {
+            expected_token: mock_token.into(),
+            creds: TemporaryCredentials {
+                access_key_id: "ASIATEMP1234EXAMPLE".into(),
+                secret_access_key: real_secret.into(),
+                session_token: mock_token.into(),
+                expiration: chrono::Utc::now() + chrono::Duration::hours(1),
+                allowed_scopes: vec![AccessScope {
+                    bucket: "test-bucket".into(),
+                    prefixes: vec![],
+                    actions: vec![Action::GetObject],
+                }],
+                assumed_role_id: "role-1".into(),
+                source_identity: "test".into(),
+            },
         };
 
-        let sealed = token_key.seal(&creds).unwrap();
         let config = MockConfig::empty();
 
         let date_stamp = "20240101";
@@ -427,9 +438,9 @@ fn sealed_token_wrong_signature_is_rejected() {
         headers.insert("host", "s3.example.com".parse().unwrap());
         headers.insert("x-amz-date", amz_date.parse().unwrap());
         headers.insert("x-amz-content-sha256", payload_hash.parse().unwrap());
-        headers.insert("x-amz-security-token", sealed.parse().unwrap());
+        headers.insert("x-amz-security-token", mock_token.parse().unwrap());
 
-        // Sign with wrong secret — sealed token is valid but sig won't match
+        // Sign with wrong secret — resolver returns valid creds but sig won't match
         let auth = sign_request(
             &http::Method::GET,
             "/test-bucket/key.txt",
@@ -456,7 +467,7 @@ fn sealed_token_wrong_signature_is_rejected() {
             "",
             &headers,
             &config,
-            Some(&token_key),
+            Some(&resolver as &dyn TemporaryCredentialResolver),
         )
         .await
         .unwrap_err();
@@ -629,23 +640,38 @@ fn sigv4_list_objects_with_security_token_and_port() {
     );
 }
 
-// ── Sealed token tests ──────────────────────────────────────────
+// ── Mock credential resolver ────────────────────────────────────
+
+/// A mock `TemporaryCredentialResolver` that returns fixed credentials
+/// when the token matches a known value, or `None` otherwise.
+struct MockResolver {
+    /// The token string to match against.
+    expected_token: String,
+    /// The credentials to return when the token matches.
+    creds: TemporaryCredentials,
+}
+
+impl TemporaryCredentialResolver for MockResolver {
+    fn resolve(&self, token: &str) -> Result<Option<TemporaryCredentials>, ProxyError> {
+        if token == self.expected_token {
+            Ok(Some(self.creds.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+// ── Temporary credential resolver tests ─────────────────────────
 
 #[test]
-fn sealed_token_round_trip() {
-    use crate::sealed_token::TokenKey;
-    use crate::types::AccessScope;
-
+fn temporary_credential_round_trip() {
     run(async {
-        let key_bytes = [0x42u8; 32];
-        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_bytes);
-        let token_key = TokenKey::from_base64(&encoded).unwrap();
-
         let secret = "TempSecretKey1234567890EXAMPLE000000000000";
+        let mock_token = "MOCK_SESSION_TOKEN";
         let creds = TemporaryCredentials {
             access_key_id: "ASIATEMP1234EXAMPLE".into(),
             secret_access_key: secret.into(),
-            session_token: String::new(), // will be replaced by seal
+            session_token: mock_token.into(),
             expiration: chrono::Utc::now() + chrono::Duration::hours(1),
             allowed_scopes: vec![AccessScope {
                 bucket: "test-bucket".into(),
@@ -656,7 +682,10 @@ fn sealed_token_round_trip() {
             source_identity: "test".into(),
         };
 
-        let sealed = token_key.seal(&creds).unwrap();
+        let resolver = MockResolver {
+            expected_token: mock_token.into(),
+            creds,
+        };
         let config = MockConfig::empty();
 
         let date_stamp = "20240101";
@@ -667,7 +696,7 @@ fn sealed_token_round_trip() {
         headers.insert("host", "s3.example.com".parse().unwrap());
         headers.insert("x-amz-date", amz_date.parse().unwrap());
         headers.insert("x-amz-content-sha256", payload_hash.parse().unwrap());
-        headers.insert("x-amz-security-token", sealed.parse().unwrap());
+        headers.insert("x-amz-security-token", mock_token.parse().unwrap());
 
         let auth = sign_request(
             &http::Method::GET,
@@ -695,7 +724,7 @@ fn sealed_token_round_trip() {
             "",
             &headers,
             &config,
-            Some(&token_key),
+            Some(&resolver as &dyn TemporaryCredentialResolver),
         )
         .await
         .unwrap();

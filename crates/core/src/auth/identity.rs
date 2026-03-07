@@ -4,9 +4,9 @@
 //! the signature, and returns the resolved identity.
 
 use super::sigv4::{constant_time_eq, parse_sigv4_auth, verify_sigv4_signature};
+use super::TemporaryCredentialResolver;
 use crate::error::ProxyError;
 use crate::registry::CredentialRegistry;
-use crate::sealed_token::TokenKey;
 use crate::types::ResolvedIdentity;
 use http::HeaderMap;
 
@@ -20,7 +20,7 @@ pub async fn resolve_identity<C: CredentialRegistry>(
     query_string: &str,
     headers: &HeaderMap,
     config: &C,
-    token_key: Option<&TokenKey>,
+    credential_resolver: Option<&dyn TemporaryCredentialResolver>,
 ) -> Result<ResolvedIdentity, ProxyError> {
     let auth_header = match headers.get("authorization").and_then(|v| v.to_str().ok()) {
         Some(h) => h,
@@ -38,23 +38,23 @@ pub async fn resolve_identity<C: CredentialRegistry>(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("UNSIGNED-PAYLOAD");
 
-    // Temporary credentials: decrypt the session token to recover credentials
+    // Temporary credentials: resolve the session token to recover credentials
     if let Some(session_token) = headers
         .get("x-amz-security-token")
         .and_then(|v| v.to_str().ok())
     {
-        let key = token_key.ok_or_else(|| {
-            tracing::warn!("session token present but no token_key configured");
+        let resolver = credential_resolver.ok_or_else(|| {
+            tracing::warn!("session token present but no credential resolver configured");
             ProxyError::AccessDenied
         })?;
 
-        match key.unseal(session_token)? {
+        match resolver.resolve(session_token)? {
             Some(creds) => {
                 if !constant_time_eq(sig.access_key_id.as_bytes(), creds.access_key_id.as_bytes()) {
                     tracing::warn!(
                         header_key = %sig.access_key_id,
-                        sealed_key = %creds.access_key_id,
-                        "access key mismatch between auth header and sealed token"
+                        resolved_key = %creds.access_key_id,
+                        "access key mismatch between auth header and session token"
                     );
                     return Err(ProxyError::AccessDenied);
                 }
@@ -73,7 +73,7 @@ pub async fn resolve_identity<C: CredentialRegistry>(
                     access_key = %creds.access_key_id,
                     role = %creds.assumed_role_id,
                     scopes = ?creds.allowed_scopes,
-                    "sealed token identity resolved"
+                    "temporary credential identity resolved"
                 );
                 return Ok(ResolvedIdentity::Temporary { credentials: creds });
             }
@@ -81,7 +81,7 @@ pub async fn resolve_identity<C: CredentialRegistry>(
                 tracing::warn!(
                     access_key_id = %sig.access_key_id,
                     token_len = session_token.len(),
-                    "session token could not be unsealed — possible key mismatch, token corruption, or expired key rotation"
+                    "session token could not be resolved — possible key mismatch, token corruption, or expired key rotation"
                 );
                 return Err(ProxyError::AccessDenied);
             }

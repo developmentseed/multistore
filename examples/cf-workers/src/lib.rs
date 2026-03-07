@@ -27,7 +27,6 @@ mod tracing_layer;
 use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo};
-use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
 use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
@@ -35,6 +34,7 @@ use multistore_oidc_provider::OidcCredentialProvider;
 use multistore_static_config::{StaticConfig, StaticProvider};
 use multistore_sts::route_handler::StsRouteHandler;
 use multistore_sts::JwksCache;
+use multistore_sts::TokenKey;
 
 use bytes::Bytes;
 use http::HeaderMap;
@@ -88,15 +88,12 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     let sts_creds = config.clone();
 
     // Build the gateway with route handlers
-    let mut gateway = ProxyGateway::new(
-        WorkerBackend,
-        config.clone(),
-        config,
-        virtual_host_domain,
-        token_key.clone(),
-    )
-    .with_backend_auth(oidc_auth)
-    .with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
+    let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)
+        .with_backend_auth(oidc_auth);
+    if let Some(ref resolver) = token_key {
+        gateway = gateway.with_credential_resolver(resolver.clone());
+    }
+    gateway = gateway.with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
     if let Some(discovery) = oidc_discovery {
         gateway = gateway.with_route_handler(discovery);
     }

@@ -69,6 +69,5 @@ let gateway = ProxyGateway::new(
     bucket_registry,
     cred_registry,
     virtual_host_domain,
-    token_key,
 );
 ```

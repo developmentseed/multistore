@@ -26,5 +26,4 @@ pub mod maybe_send;
 pub mod proxy;
 pub mod registry;
 pub mod route_handler;
-pub mod sealed_token;
 pub mod types;

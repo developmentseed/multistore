@@ -65,7 +65,8 @@ Built-in route handlers:
 Handlers are registered via builder methods on the `ProxyGateway`:
 
 ```rust
-let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain, token_key)
+let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
+    .with_credential_resolver(token_key)
     .with_backend_auth(oidc_auth)
     .with_route_handler(oidc_discovery)
     .with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));

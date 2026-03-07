@@ -25,7 +25,6 @@ use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{
     ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
 };
-use multistore::sealed_token::TokenKey;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
 use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
@@ -33,6 +32,7 @@ use multistore_oidc_provider::OidcCredentialProvider;
 use multistore_static_config::StaticProvider;
 use multistore_sts::route_handler::StsRouteHandler;
 use multistore_sts::JwksCache;
+use multistore_sts::TokenKey;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -95,8 +95,11 @@ async fn main() -> Result<(), Error> {
     };
 
     // Build the gateway with route handlers (OIDC discovery first, then STS).
-    let mut handler = ProxyGateway::new(backend, config.clone(), config, domain, token_key.clone())
-        .with_backend_auth(oidc_auth);
+    let mut handler =
+        ProxyGateway::new(backend, config.clone(), config, domain).with_backend_auth(oidc_auth);
+    if let Some(resolver) = token_key.clone() {
+        handler = handler.with_credential_resolver(resolver);
+    }
     if let Some(discovery) = oidc_discovery {
         handler = handler.with_route_handler(discovery);
     }

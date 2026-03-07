@@ -3,12 +3,11 @@
 //! Intercepts STS queries before they reach the proxy dispatch pipeline
 //! and delegates to [`try_handle_sts`].
 
-use crate::{try_handle_sts, JwksCache};
+use crate::{try_handle_sts, JwksCache, TokenKey};
 use multistore::registry::CredentialRegistry;
 use multistore::route_handler::{
     HandlerAction, ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture,
 };
-use multistore::sealed_token::TokenKey;
 
 /// Route handler that intercepts STS `AssumeRoleWithWebIdentity` requests.
 pub struct StsRouteHandler<C> {

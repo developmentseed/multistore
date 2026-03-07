@@ -2,6 +2,8 @@
 
 When the proxy mints temporary credentials via STS, it needs a way to recognize those credentials on subsequent requests. Sealed session tokens solve this by encrypting the full credential set into the session token itself — no server-side storage required.
 
+The `TokenKey` type lives in the `multistore-sts` crate (`multistore_sts::TokenKey`) and implements the core `TemporaryCredentialResolver` trait.
+
 ## Why Sealed Tokens?
 
 Traditional credential stores keep a mapping from access key ID to credentials on the server. This requires either a database or in-memory state, which is impractical for stateless runtimes like Cloudflare Workers.
@@ -24,14 +26,15 @@ When `AssumeRoleWithWebIdentity` mints temporary credentials:
 
 When a request arrives with an `x-amz-security-token` header:
 
-1. The proxy base64url-decodes the session token
-2. It extracts the nonce (first 12 bytes) and ciphertext (remainder)
-3. It decrypts using AES-256-GCM with the configured key
-4. The JSON is deserialized back to `TemporaryCredentials`
-5. The proxy checks that the credentials haven't expired
-6. The proxy verifies the request's SigV4 signature against the decrypted secret key
+1. The proxy calls the registered `TemporaryCredentialResolver` (which delegates to `TokenKey::unseal`)
+2. `TokenKey` base64url-decodes the session token
+3. It extracts the nonce (first 12 bytes) and ciphertext (remainder)
+4. It decrypts using AES-256-GCM with the configured key
+5. The JSON is deserialized back to `TemporaryCredentials`
+6. The proxy checks that the credentials haven't expired
+7. The proxy verifies the request's SigV4 signature against the decrypted secret key
 
-If the token doesn't look like a sealed token (e.g., not valid base64url), the proxy falls back to looking up credentials from the config provider.
+If the token doesn't look like a sealed token (e.g., not valid base64url), the resolver returns `None` and the proxy rejects the request.
 
 ## Configuration
 

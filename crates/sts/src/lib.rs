@@ -29,17 +29,18 @@ pub mod jwks;
 pub mod request;
 pub mod responses;
 pub mod route_handler;
+pub mod sealed_token;
 pub mod sts;
 
 use base64::Engine;
 pub use jwks::JwksCache;
 use multistore::error::ProxyError;
 use multistore::registry::CredentialRegistry;
-use multistore::sealed_token::TokenKey;
 use multistore::types::TemporaryCredentials;
 pub use request::try_parse_sts_request;
 use request::StsRequest;
 pub use responses::{build_sts_error_response, build_sts_response};
+pub use sealed_token::TokenKey;
 
 /// Try to handle an STS request. Returns `Some((status, xml))` if the query
 /// contained an STS action, or `None` if it wasn't an STS request.

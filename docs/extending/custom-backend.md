@@ -101,7 +101,7 @@ These handle the multi-provider dispatch logic so your backend implementation on
 
 ```rust
 let backend = MyBackend::new(http_client);
-let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain, token_key)
+let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
     .with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
 
 // In your request handler, use handle_request for a two-variant match:

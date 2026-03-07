@@ -42,7 +42,6 @@ src/
 ├── error.rs             ProxyError with S3-compatible error codes
 ├── proxy.rs             ProxyGateway — the main request handler
 ├── route_handler.rs     RouteHandler trait, ProxyResponseBody
-├── sealed_token.rs      AES-256-GCM encrypted session tokens (TokenKey)
 └── types.rs             BucketConfig, RoleConfig, StoredCredential, etc.
 ```
 
@@ -58,16 +57,15 @@ use multistore_static_config::StaticProvider;
 
 let backend = MyBackend::new();
 let config = StaticProvider::from_file("config.toml")?;
-// Optional: enable sealed session tokens for STS temporary credentials.
-let token_key = None; // or Some(TokenKey::from_base64(&key_b64)?)
 
 let gateway = ProxyGateway::new(
     backend,
     config.clone(),       // as BucketRegistry
     config,               // as CredentialRegistry
     Some("s3.example.com".into()),
-    token_key,
 );
+// Optional: enable session token verification for STS temporary credentials.
+// let gateway = gateway.with_credential_resolver(token_key);
 // Optional: register route handlers for STS, OIDC discovery, etc.
 // let gateway = gateway.with_route_handler(sts_handler);
 // Optional: enable OIDC-based backend credential resolution.
@@ -123,15 +121,11 @@ impl BucketRegistry for MyBucketRegistry {
 }
 ```
 
-## Sealed Session Tokens
+## Temporary Credential Resolution
 
-The `sealed_token` module provides stateless temporary credential verification using AES-256-GCM. When a `TokenKey` is configured (via `SESSION_TOKEN_KEY`), the STS handler encrypts the full `TemporaryCredentials` struct into the session token itself. On subsequent requests, `resolve_identity()` decrypts the token to recover the credentials — no server-side storage or config lookup is needed.
+The core defines a `TemporaryCredentialResolver` trait for resolving session tokens (from `x-amz-security-token`) into `TemporaryCredentials`. The core proxy calls this during identity resolution without knowing the token format.
 
-This is critical for stateless runtimes like Cloudflare Workers where in-memory state does not persist across invocations. The `TokenKey` wraps `Arc<Aes256Gcm>` and is `Clone + Send + Sync`.
-
-Token format: `base64url(nonce[12] || ciphertext + tag)`. Expired tokens return `Err(ExpiredCredentials)`. Tokens that fail decryption (wrong key, not a sealed token) return `Ok(None)` allowing graceful rejection.
-
-Note: because scopes are sealed into the token at mint time, changes to a role's `allowed_scopes` in config only take effect for newly minted credentials — existing tokens retain the scopes they were issued with.
+The `multistore-sts` crate provides `TokenKey`, a sealed-token implementation using AES-256-GCM. Register it via `ProxyGateway::with_credential_resolver()`. See the [sealed tokens documentation](../docs/auth/sealed-tokens.md) for details.
 
 ## Feature Flags
 
