@@ -7,8 +7,8 @@
 //! 3. **OIDC discovery** — generate `.well-known/openid-configuration` responses
 //! 4. **Credential exchange** — trade self-signed JWTs for cloud provider
 //!    credentials (AWS STS, Azure AD, GCP STS)
-//! 5. **Route handler** — [`route_handler::OidcDiscoveryRouteHandler`] serves
-//!    `.well-known` endpoints as a pluggable [`RouteHandler`](multistore::route_handler::RouteHandler)
+//! 5. **Route handler** — [`route_handler::OidcRouterExt`] registers
+//!    `.well-known` endpoint closures on a [`Router`](multistore::router::Router)
 //!
 //! The crate is runtime-agnostic: HTTP calls are abstracted behind an
 //! [`HttpExchange`] trait so that each runtime (reqwest, Fetch API, etc.)

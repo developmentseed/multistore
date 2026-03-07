@@ -3,13 +3,13 @@
 //! [`ProxyGateway`] is generic over the runtime's backend, bucket registry,
 //! credential registry, and backend auth.
 //!
-//! ## Route handlers (pre-dispatch)
+//! ## Router (pre-dispatch)
 //!
-//! Pluggable [`RouteHandler`] implementations are checked in registration order
-//! before the proxy dispatch pipeline runs. Each handler inspects the
-//! [`RequestInfo`] and may short-circuit with a [`HandlerAction`]. Built-in
-//! handlers include OIDC discovery (`OidcDiscoveryRouteHandler`) and STS
-//! (`StsRouteHandler`).
+//! A [`Router`] maps URL path patterns to [`RouteHandler`](crate::route_handler::RouteHandler)
+//! implementations using `matchit` for efficient matching. Exact paths take
+//! priority over catch-all patterns, so OIDC discovery endpoints are matched
+//! before a catch-all STS handler. Extension crates provide `Router` extension
+//! traits for one-call registration.
 //!
 //! ## Proxy dispatch (two-phase)
 //!
@@ -57,7 +57,8 @@ use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
 use crate::registry::{BucketRegistry, CredentialRegistry};
-use crate::route_handler::{ProxyResponseBody, RequestInfo, RouteHandler};
+use crate::route_handler::{ProxyResponseBody, RequestInfo};
+use crate::router::Router;
 use crate::types::{BucketConfig, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
@@ -92,8 +93,8 @@ pub enum GatewayResponse<B> {
 ///
 /// Owns S3 request parsing, identity resolution, and authorization via
 /// the [`BucketRegistry`] and [`CredentialRegistry`] traits. Combines
-/// pluggable [`RouteHandler`]s (checked in registration order) with the
-/// two-phase resolve/dispatch pipeline.
+/// a [`Router`] for path-based pre-dispatch with the two-phase
+/// resolve/dispatch pipeline.
 ///
 /// # Type Parameters
 ///
@@ -108,7 +109,7 @@ pub struct ProxyGateway<B, R, C, O = NoAuth> {
     backend_auth: O,
     virtual_host_domain: Option<String>,
     credential_resolver: Option<Box<dyn TemporaryCredentialResolver>>,
-    route_handlers: Vec<Box<dyn RouteHandler>>,
+    router: Router,
     /// When true, error responses include full internal details (for development).
     /// When false, server-side errors use generic messages.
     debug_errors: bool,
@@ -133,7 +134,7 @@ where
             backend_auth: NoAuth,
             virtual_host_domain,
             credential_resolver: None,
-            route_handlers: Vec::new(),
+            router: Router::new(),
             debug_errors: false,
         }
     }
@@ -159,7 +160,7 @@ where
             backend_auth,
             virtual_host_domain: self.virtual_host_domain,
             credential_resolver: self.credential_resolver,
-            route_handlers: self.route_handlers,
+            router: self.router,
             debug_errors: self.debug_errors,
         }
     }
@@ -176,13 +177,14 @@ where
         self
     }
 
-    /// Register a route handler that is checked before proxy dispatch.
+    /// Set the router for path-based request dispatch.
     ///
-    /// Handlers are checked in registration order. The first handler to
-    /// return `Some(action)` wins — subsequent handlers and the proxy
-    /// dispatch are skipped.
-    pub fn with_route_handler(mut self, handler: impl RouteHandler + 'static) -> Self {
-        self.route_handlers.push(Box::new(handler));
+    /// The router is consulted before the proxy dispatch pipeline.
+    /// If a route matches and the handler returns an action, that action
+    /// is used directly. Otherwise the request falls through to proxy
+    /// dispatch.
+    pub fn with_router(mut self, router: Router) -> Self {
+        self.router = router;
         self
     }
 
@@ -204,10 +206,8 @@ where
     /// Returns a three-variant [`HandlerAction`]. For a simpler two-variant
     /// API, use [`handle_request`](Self::handle_request) instead.
     pub async fn handle(&self, req: &RequestInfo<'_>) -> HandlerAction {
-        for handler in &self.route_handlers {
-            if let Some(action) = handler.handle(req).await {
-                return action;
-            }
+        if let Some(action) = self.router.dispatch(req).await {
+            return action;
         }
         self.resolve_request(req.method.clone(), req.path, req.query, req.headers)
             .await

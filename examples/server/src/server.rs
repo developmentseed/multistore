@@ -12,11 +12,12 @@ use http_body_util::BodyStream;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::registry::{BucketRegistry, CredentialRegistry};
 use multistore::route_handler::{ForwardRequest, RequestInfo, RESPONSE_HEADER_ALLOWLIST};
+use multistore::router::Router as ProxyRouter;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
-use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
+use multistore_oidc_provider::route_handler::OidcRouterExt;
 use multistore_oidc_provider::OidcCredentialProvider;
-use multistore_sts::route_handler::StsRouteHandler;
+use multistore_sts::route_handler::StsRouterExt;
 use multistore_sts::JwksCache;
 use multistore_sts::TokenKey;
 use std::net::SocketAddr;
@@ -92,7 +93,7 @@ where
     let sts_creds = credential_registry.clone();
 
     // Build OIDC provider if both key and issuer are configured.
-    let (oidc_auth, oidc_discovery) = match (
+    let (oidc_auth, oidc_signer, oidc_issuer) = match (
         &server_config.oidc_provider_key,
         &server_config.oidc_provider_issuer,
     ) {
@@ -109,27 +110,30 @@ where
             let auth = MaybeOidcAuth::Enabled(Box::new(
                 multistore_oidc_provider::backend_auth::AwsBackendAuth::new(provider),
             ));
-            let discovery = OidcDiscoveryRouteHandler::new(issuer.clone(), signer);
-            (auth, Some(discovery))
+            (auth, Some(signer), Some(issuer.clone()))
         }
-        _ => (MaybeOidcAuth::Disabled, None),
+        _ => (MaybeOidcAuth::Disabled, None, None),
     };
 
-    // Build the gateway with route handlers (OIDC discovery first, then STS).
+    // Build router with OIDC discovery (if configured) and STS.
+    let mut proxy_router = ProxyRouter::new();
+    if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
+        proxy_router = proxy_router.with_oidc_discovery(issuer, signer);
+    }
+    proxy_router = proxy_router.with_sts(sts_creds, jwks_cache, token_key.clone());
+
+    // Build the gateway with the router.
     let mut handler = ProxyGateway::new(
         backend,
         bucket_registry,
         credential_registry,
         server_config.virtual_host_domain,
     )
-    .with_backend_auth(oidc_auth);
+    .with_backend_auth(oidc_auth)
+    .with_router(proxy_router);
     if let Some(ref resolver) = token_key {
         handler = handler.with_credential_resolver(resolver.clone());
     }
-    if let Some(discovery) = oidc_discovery {
-        handler = handler.with_route_handler(discovery);
-    }
-    handler = handler.with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
 
     let state = Arc::new(AppState {
         handler,
@@ -169,6 +173,7 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
         path: &path,
         query: query.as_deref(),
         headers: &headers,
+        params: Default::default(),
     };
 
     match state

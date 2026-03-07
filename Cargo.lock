@@ -1129,6 +1129,7 @@ dependencies = [
  "hex",
  "hmac",
  "http",
+ "matchit 0.8.4",
  "object_store",
  "quick-xml 0.37.5",
  "serde",

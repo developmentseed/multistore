@@ -6,35 +6,49 @@
 use crate::discovery::openid_configuration_json;
 use crate::jwks::jwks_json;
 use crate::jwt::JwtSigner;
-use multistore::route_handler::{
-    HandlerAction, ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture,
-};
+use multistore::route_handler::{ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture};
+use multistore::router::Router;
 
-/// Serves OIDC discovery documents for the proxy's identity provider.
-pub struct OidcDiscoveryRouteHandler {
+/// Handler that serves the OpenID Connect discovery document.
+struct OidcConfigHandler {
     issuer: String,
-    signer: JwtSigner,
+    jwks_uri: String,
 }
 
-impl OidcDiscoveryRouteHandler {
-    pub fn new(issuer: String, signer: JwtSigner) -> Self {
-        Self { issuer, signer }
+impl RouteHandler for OidcConfigHandler {
+    fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        let json = openid_configuration_json(&self.issuer, &self.jwks_uri);
+        Box::pin(async move { Some(ProxyResult::json(200, json)) })
     }
 }
 
-impl RouteHandler for OidcDiscoveryRouteHandler {
-    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
-        Box::pin(async move {
-            let json = match req.path {
-                "/.well-known/openid-configuration" => {
-                    let jwks_uri = format!("{}/.well-known/jwks.json", self.issuer);
-                    openid_configuration_json(&self.issuer, &jwks_uri)
-                }
-                "/.well-known/jwks.json" => jwks_json(self.signer.public_key(), self.signer.kid()),
-                _ => return None,
-            };
+/// Handler that serves the JWKS (JSON Web Key Set) document.
+struct OidcJwksHandler {
+    signer: JwtSigner,
+}
 
-            Some(HandlerAction::Response(ProxyResult::json(200, json)))
-        })
+impl RouteHandler for OidcJwksHandler {
+    fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        let json = jwks_json(self.signer.public_key(), self.signer.kid());
+        Box::pin(async move { Some(ProxyResult::json(200, json)) })
+    }
+}
+
+/// Extension trait for registering OIDC discovery routes on a [`Router`].
+pub trait OidcRouterExt {
+    /// Register `/.well-known/openid-configuration` and `/.well-known/jwks.json`
+    /// routes backed by the given issuer and signer.
+    fn with_oidc_discovery(self, issuer: String, signer: JwtSigner) -> Self;
+}
+
+impl OidcRouterExt for Router {
+    fn with_oidc_discovery(self, issuer: String, signer: JwtSigner) -> Self {
+        let jwks_uri = format!("{}/.well-known/jwks.json", issuer);
+
+        self.route(
+            "/.well-known/openid-configuration",
+            OidcConfigHandler { issuer, jwks_uri },
+        )
+        .route("/.well-known/jwks.json", OidcJwksHandler { signer })
     }
 }

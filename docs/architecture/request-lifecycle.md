@@ -1,6 +1,6 @@
 # Request Lifecycle
 
-Every request flows through the `ProxyGateway`: first through registered route handlers (STS, OIDC discovery), then into the two-phase proxy dispatch (resolve, then execute). The recommended entry point is `ProxyGateway::handle_request`, which returns a two-variant `GatewayResponse` for simple runtime integration.
+Every request flows through the `ProxyGateway`: first through the `Router` (which maps paths to handlers for STS, OIDC discovery, etc.), then into the two-phase proxy dispatch (resolve, then execute). The recommended entry point is `ProxyGateway::handle_request`, which returns a two-variant `GatewayResponse` for simple runtime integration.
 
 ## Overview
 
@@ -9,20 +9,20 @@ sequenceDiagram
     participant Client
     participant Runtime as Runtime<br/>(Server, Lambda, or Workers)
     participant Gateway as ProxyGateway
-    participant RouteHandlers as Route Handlers<br/>(STS, OIDC)
+    participant Router as Router<br/>(STS, OIDC)
     participant BucketReg as BucketRegistry
     participant CredReg as CredentialRegistry
     participant Backend as Backend Store
 
     Client->>Runtime: HTTP request
     Runtime->>Gateway: handle_request(req_info, body, collect_body)
-    Gateway->>RouteHandlers: handle(req_info)
-    alt Route handler matches (STS, OIDC discovery)
-        RouteHandlers-->>Gateway: Some(Response)
+    Gateway->>Router: dispatch(req_info)
+    alt Router matches (STS, OIDC discovery)
+        Router-->>Gateway: Some(Response)
         Gateway-->>Runtime: GatewayResponse::Response
         Runtime-->>Client: Return response
-    else No route handler matches
-        RouteHandlers-->>Gateway: None
+    else No route matches
+        Router-->>Gateway: None
         Gateway->>Gateway: Parse S3 operation
         Gateway->>CredReg: resolve_identity (SigV4 verification)
         CredReg-->>Gateway: ResolvedIdentity
@@ -54,22 +54,53 @@ sequenceDiagram
     end
 ```
 
-## Route Handlers
+## Router
 
-Before the proxy dispatch pipeline runs, registered `RouteHandler` implementations are checked in order. Each handler inspects the `RequestInfo` (method, path, query, headers) and either returns a response or passes through.
+Before the proxy dispatch pipeline runs, the `Router` matches the request path against registered routes using `matchit`. Exact paths take priority over catch-all patterns, so OIDC discovery endpoints (`/.well-known/*`) are matched before the STS catch-all (`/{*path}`).
+
+When a route matches, the router extracts path parameters from the pattern and populates `RequestInfo::params`. Handlers access parameters by name via `params.get("name")`.
 
 Built-in route handlers:
-- **`OidcDiscoveryRouteHandler`** (`multistore-oidc-provider`) — Serves `/.well-known/openid-configuration` and `/.well-known/jwks.json`
-- **`StsRouteHandler`** (`multistore-sts`) — Intercepts `AssumeRoleWithWebIdentity` STS requests
 
-Handlers are registered via builder methods on the `ProxyGateway`:
+- **`OidcRouterExt`** (`multistore-oidc-provider`) — Registers handlers for `/.well-known/openid-configuration` and `/.well-known/jwks.json`
+- **`StsRouterExt`** (`multistore-sts`) — Registers a handler that intercepts `AssumeRoleWithWebIdentity` STS requests
+
+### Method routing
+
+Handlers implement the `RouteHandler` trait and override individual HTTP method handlers (`get`, `post`, `put`, `delete`, `head`) for method-specific behavior, or override `handle` directly for method-agnostic handlers:
 
 ```rust
+use multistore::router::Router;
+
+struct HealthCheck;
+
+impl RouteHandler for HealthCheck {
+    fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        Box::pin(async { Some(ProxyResult::json(200, r#"{"ok":true}"#)) })
+    }
+}
+
+let router = Router::new()
+    .route("/api/health", HealthCheck);
+```
+
+### Extension traits
+
+Extension crates provide `Router` extension traits for one-call registration:
+
+```rust
+use multistore::router::Router;
+use multistore_oidc_provider::route_handler::OidcRouterExt;
+use multistore_sts::route_handler::StsRouterExt;
+
+let router = Router::new()
+    .with_oidc_discovery(issuer, signer)
+    .with_sts(sts_creds, jwks_cache, token_key);
+
 let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
     .with_credential_resolver(token_key)
     .with_backend_auth(oidc_auth)
-    .with_route_handler(oidc_discovery)
-    .with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
+    .with_router(router);
 ```
 
 ## Phase 1: Request Resolution

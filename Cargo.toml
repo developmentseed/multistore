@@ -38,6 +38,7 @@ base64 = "0.22"
 rand = "0.8"
 hex = "0.4"
 url = "2"
+matchit = "0.8"
 
 # Crypto
 hmac = "0.12"

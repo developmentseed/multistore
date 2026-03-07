@@ -27,12 +27,13 @@ mod tracing_layer;
 use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo};
+use multistore::router::Router;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
-use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
+use multistore_oidc_provider::route_handler::OidcRouterExt;
 use multistore_oidc_provider::OidcCredentialProvider;
 use multistore_static_config::{StaticConfig, StaticProvider};
-use multistore_sts::route_handler::StsRouteHandler;
+use multistore_sts::route_handler::StsRouterExt;
 use multistore_sts::JwksCache;
 use multistore_sts::TokenKey;
 
@@ -69,6 +70,28 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     let jwks_cache = JwksCache::new(reqwest_client.clone(), std::time::Duration::from_secs(900));
     let token_key = load_token_key(&env)?;
 
+    // Build OIDC backend auth from env secrets/vars.
+    let (oidc_auth, oidc_signer, oidc_issuer) = load_oidc_auth(&env)?;
+
+    let config = load_static_config(&env)?;
+    let virtual_host_domain = env.var("VIRTUAL_HOST_DOMAIN").ok().map(|v| v.to_string());
+    let sts_creds = config.clone();
+
+    // Build router with OIDC discovery (if configured) and STS.
+    let mut router = Router::new();
+    if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
+        router = router.with_oidc_discovery(issuer, signer);
+    }
+    router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
+
+    // Build the gateway with the router.
+    let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)
+        .with_backend_auth(oidc_auth)
+        .with_router(router);
+    if let Some(ref resolver) = token_key {
+        gateway = gateway.with_credential_resolver(resolver.clone());
+    }
+
     // Extract body stream BEFORE any wrapping — no lock, zero-cost ref.
     let js_body = JsBody(req.body());
 
@@ -80,29 +103,12 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     let query = uri.query().map(|q| q.to_string());
     let headers = convert_ws_headers(&req.headers());
 
-    // Build OIDC backend auth from env secrets/vars.
-    let (oidc_auth, oidc_discovery) = load_oidc_auth(&env)?;
-
-    let config = load_static_config(&env)?;
-    let virtual_host_domain = env.var("VIRTUAL_HOST_DOMAIN").ok().map(|v| v.to_string());
-    let sts_creds = config.clone();
-
-    // Build the gateway with route handlers
-    let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)
-        .with_backend_auth(oidc_auth);
-    if let Some(ref resolver) = token_key {
-        gateway = gateway.with_credential_resolver(resolver.clone());
-    }
-    gateway = gateway.with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
-    if let Some(discovery) = oidc_discovery {
-        gateway = gateway.with_route_handler(discovery);
-    }
-
     let req_info = RequestInfo {
         method: &method,
         path: &path,
         query: query.as_deref(),
         headers: &headers,
+        params: Default::default(),
     };
 
     Ok(
@@ -326,8 +332,9 @@ type OidcAuth = MaybeOidcAuth<FetchHttpExchange>;
 /// Load OIDC provider config from env secrets/vars.
 ///
 /// Returns `MaybeOidcAuth::Enabled` if both `OIDC_PROVIDER_KEY` (secret) and
-/// `OIDC_PROVIDER_ISSUER` (var) are set; otherwise `Disabled`.
-fn load_oidc_auth(env: &Env) -> Result<(OidcAuth, Option<OidcDiscoveryRouteHandler>)> {
+/// `OIDC_PROVIDER_ISSUER` (var) are set; otherwise `Disabled`. Also returns
+/// the signer and issuer for router registration.
+fn load_oidc_auth(env: &Env) -> Result<(OidcAuth, Option<JwtSigner>, Option<String>)> {
     let key_pem = match env.secret("OIDC_PROVIDER_KEY") {
         Ok(val) => Some(val.to_string()),
         Err(_) => None,
@@ -348,9 +355,8 @@ fn load_oidc_auth(env: &Env) -> Result<(OidcAuth, Option<OidcDiscoveryRouteHandl
             let auth = MaybeOidcAuth::Enabled(Box::new(
                 multistore_oidc_provider::backend_auth::AwsBackendAuth::new(provider),
             ));
-            let discovery = OidcDiscoveryRouteHandler::new(issuer, signer);
-            Ok((auth, Some(discovery)))
+            Ok((auth, Some(signer), Some(issuer)))
         }
-        _ => Ok((MaybeOidcAuth::Disabled, None)),
+        _ => Ok((MaybeOidcAuth::Disabled, None, None)),
     }
 }

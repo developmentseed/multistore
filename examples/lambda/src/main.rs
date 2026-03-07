@@ -25,12 +25,13 @@ use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{
     ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
 };
+use multistore::router::Router;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
-use multistore_oidc_provider::route_handler::OidcDiscoveryRouteHandler;
+use multistore_oidc_provider::route_handler::OidcRouterExt;
 use multistore_oidc_provider::OidcCredentialProvider;
 use multistore_static_config::StaticProvider;
-use multistore_sts::route_handler::StsRouteHandler;
+use multistore_sts::route_handler::StsRouterExt;
 use multistore_sts::JwksCache;
 use multistore_sts::TokenKey;
 use std::sync::OnceLock;
@@ -74,7 +75,7 @@ async fn main() -> Result<(), Error> {
     let oidc_provider_key = std::env::var("OIDC_PROVIDER_KEY").ok();
     let oidc_provider_issuer = std::env::var("OIDC_PROVIDER_ISSUER").ok();
 
-    let (oidc_auth, oidc_discovery) = match (&oidc_provider_key, &oidc_provider_issuer) {
+    let (oidc_auth, oidc_signer, oidc_issuer) = match (&oidc_provider_key, &oidc_provider_issuer) {
         (Some(key_pem), Some(issuer)) => {
             let signer = JwtSigner::from_pem(key_pem, "proxy-key-1".into(), 300)
                 .map_err(|e| format!("failed to create OIDC JWT signer: {e}"))?;
@@ -88,22 +89,25 @@ async fn main() -> Result<(), Error> {
             let auth = MaybeOidcAuth::Enabled(Box::new(
                 multistore_oidc_provider::backend_auth::AwsBackendAuth::new(provider),
             ));
-            let discovery = OidcDiscoveryRouteHandler::new(issuer.clone(), signer);
-            (auth, Some(discovery))
+            (auth, Some(signer), Some(issuer.clone()))
         }
-        _ => (MaybeOidcAuth::Disabled, None),
+        _ => (MaybeOidcAuth::Disabled, None, None),
     };
 
-    // Build the gateway with route handlers (OIDC discovery first, then STS).
-    let mut handler =
-        ProxyGateway::new(backend, config.clone(), config, domain).with_backend_auth(oidc_auth);
-    if let Some(resolver) = token_key.clone() {
+    // Build router with OIDC discovery (if configured) and STS.
+    let mut router = Router::new();
+    if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
+        router = router.with_oidc_discovery(issuer, signer);
+    }
+    router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
+
+    // Build the gateway with the router.
+    let mut handler = ProxyGateway::new(backend, config.clone(), config, domain)
+        .with_backend_auth(oidc_auth)
+        .with_router(router);
+    if let Some(resolver) = token_key {
         handler = handler.with_credential_resolver(resolver);
     }
-    if let Some(discovery) = oidc_discovery {
-        handler = handler.with_route_handler(discovery);
-    }
-    handler = handler.with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
 
     let _ = STATE.set(AppState {
         handler,
@@ -129,6 +133,7 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
         path: &path,
         query: query.as_deref(),
         headers: &headers,
+        params: Default::default(),
     };
 
     Ok(

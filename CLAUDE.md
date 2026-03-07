@@ -4,6 +4,7 @@
 
 - Group logic into modules with high cohesion
 - Add conceptual documentation for public structs, traits, and functions that would be used by integrators building their own APIs
+- This codebase is still in development. No need to support legacy
 
 ## Workflow
 

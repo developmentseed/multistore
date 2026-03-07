@@ -16,6 +16,7 @@
 //! - [`api::request`] — parse incoming S3 API requests into typed operations
 //! - [`api::response`] — serialize S3 XML responses
 //! - [`route_handler::RouteHandler`] — pluggable pre-dispatch request interception (OIDC, STS, etc.)
+//! - [`router::Router`] — path-based route matching via `matchit` for efficient dispatch
 //! - [`proxy::ProxyGateway`] — the main request handler that ties everything together
 
 pub mod api;
@@ -26,4 +27,5 @@ pub mod maybe_send;
 pub mod proxy;
 pub mod registry;
 pub mod route_handler;
+pub mod router;
 pub mod types;

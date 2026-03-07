@@ -100,9 +100,15 @@ These handle the multi-provider dispatch logic so your backend implementation on
 ## Wiring Into the Gateway
 
 ```rust
+use multistore::router::Router;
+use multistore_sts::route_handler::StsRouterExt;
+
+let router = Router::new()
+    .with_sts(sts_creds, jwks_cache, token_key);
+
 let backend = MyBackend::new(http_client);
 let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
-    .with_route_handler(StsRouteHandler::new(sts_creds, jwks_cache, token_key));
+    .with_router(router);
 
 // In your request handler, use handle_request for a two-variant match:
 let req_info = RequestInfo {
@@ -110,6 +116,7 @@ let req_info = RequestInfo {
     path: &path,
     query: query.as_deref(),
     headers: &headers,
+    params: Default::default(),
 };
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => {

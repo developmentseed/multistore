@@ -6,12 +6,13 @@
 //!
 //! # Integration
 //!
-//! Register [`route_handler::StsRouteHandler`] with the gateway to intercept
-//! STS requests automatically:
+//! Register STS routes via [`route_handler::StsRouterExt`]:
 //!
 //! ```rust,ignore
-//! let gateway = Gateway::new(backend, resolver)
-//!     .with_route_handler(StsRouteHandler::new(config, jwks_cache, token_key));
+//! use multistore_sts::route_handler::StsRouterExt;
+//!
+//! let router = Router::new()
+//!     .with_sts(config, jwks_cache, token_key);
 //! ```
 //!
 //! # Flow

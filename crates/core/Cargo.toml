@@ -28,3 +28,4 @@ quick-xml.workspace = true
 tracing.workspace = true
 object_store.workspace = true
 futures.workspace = true
+matchit.workspace = true

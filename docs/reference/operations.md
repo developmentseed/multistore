@@ -23,7 +23,7 @@
 
 ## STS Operations
 
-Handled by `StsRouteHandler` (registered as a route handler on the `Gateway`).
+Handled by an STS closure (registered on the `Router` via `StsRouterExt`).
 
 | Operation | HTTP Method | Description |
 |-----------|------------|-------------|
@@ -31,7 +31,7 @@ Handled by `StsRouteHandler` (registered as a route handler on the `Gateway`).
 
 ## OIDC Discovery Endpoints
 
-Handled by `OidcDiscoveryRouteHandler` (registered as a route handler on the `Gateway`). Served when `OIDC_PROVIDER_KEY` and `OIDC_PROVIDER_ISSUER` are configured.
+Handled by OIDC discovery closures (registered on the `Router` via `OidcRouterExt`). Served when `OIDC_PROVIDER_KEY` and `OIDC_PROVIDER_ISSUER` are configured.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

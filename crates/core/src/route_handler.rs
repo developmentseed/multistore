@@ -2,7 +2,7 @@
 //!
 //! Route handlers are checked in registration order before the main proxy
 //! dispatch. Each handler can inspect the request and optionally return a
-//! [`HandlerAction`] to short-circuit further processing. If no handler
+//! [`ProxyResult`] to short-circuit further processing. If no handler
 //! matches, the request proceeds to the normal resolve/dispatch pipeline.
 //!
 //! This module also defines the action/result types shared between route
@@ -123,11 +123,41 @@ pub const RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
 
 /// The future type returned by [`RouteHandler::handle`].
 #[cfg(not(target_arch = "wasm32"))]
-pub type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<HandlerAction>> + Send + 'a>>;
+pub type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<ProxyResult>> + Send + 'a>>;
 
 /// The future type returned by [`RouteHandler::handle`].
 #[cfg(target_arch = "wasm32")]
-pub type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<HandlerAction>> + 'a>>;
+pub type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<ProxyResult>> + 'a>>;
+
+/// Extracted path parameters from route matching.
+///
+/// When a route pattern like `/api/buckets/{id}` matches a request path,
+/// the router populates this with the extracted parameters (e.g. `id` → `"my-bucket"`).
+/// Handlers access parameters by name via [`Params::get`].
+#[derive(Debug, Clone, Default)]
+pub struct Params(Vec<(String, String)>);
+
+impl Params {
+    /// Look up a parameter value by name.
+    ///
+    /// Returns `None` if the parameter was not captured by the route pattern.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Create `Params` from a `matchit::Params` match result.
+    pub(crate) fn from_matchit(params: &matchit::Params<'_, '_>) -> Self {
+        Self(
+            params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+}
 
 /// Parsed request metadata passed to route handlers.
 pub struct RequestInfo<'a> {
@@ -135,16 +165,71 @@ pub struct RequestInfo<'a> {
     pub path: &'a str,
     pub query: Option<&'a str>,
     pub headers: &'a HeaderMap,
+    /// Path parameters extracted by the router during dispatch.
+    ///
+    /// Empty when the request is constructed outside the router (e.g. direct
+    /// `ProxyGateway::handle` calls).
+    pub params: Params,
 }
 
 /// A pluggable handler that can intercept requests before proxy dispatch.
 ///
 /// Implementations inspect the [`RequestInfo`] and return:
-/// - `Some(action)` to handle the request (stops further handler checks)
+/// - `Some(result)` to handle the request (stops further handler checks)
 /// - `None` to pass the request to the next handler or the proxy
+///
+/// Override individual HTTP method handlers (`get`, `post`, etc.) for
+/// method-specific behavior, or override `handle` directly for
+/// method-agnostic handlers.
+///
+/// ```rust,ignore
+/// struct HealthCheck;
+///
+/// impl RouteHandler for HealthCheck {
+///     fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+///         Box::pin(async move {
+///             Some(ProxyResult::json(200, r#"{"ok":true}"#))
+///         })
+///     }
+/// }
+///
+/// router.route("/health", HealthCheck);
+/// ```
 pub trait RouteHandler: MaybeSend + MaybeSync {
-    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a>;
-}
+    /// Handle a GET request. Returns `None` by default.
+    fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        Box::pin(async { None })
+    }
 
-// Compile-time check that RouteHandler is object-safe.
-fn _assert_object_safe(_: &dyn RouteHandler) {}
+    /// Handle a POST request. Returns `None` by default.
+    fn post<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        Box::pin(async { None })
+    }
+
+    /// Handle a PUT request. Returns `None` by default.
+    fn put<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        Box::pin(async { None })
+    }
+
+    /// Handle a DELETE request. Returns `None` by default.
+    fn delete<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        Box::pin(async { None })
+    }
+
+    /// Handle a HEAD request. Returns `None` by default.
+    fn head<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        Box::pin(async { None })
+    }
+
+    /// Dispatch by HTTP method. Override this for method-agnostic handlers.
+    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        match *req.method {
+            Method::GET => self.get(req),
+            Method::POST => self.post(req),
+            Method::PUT => self.put(req),
+            Method::DELETE => self.delete(req),
+            Method::HEAD => self.head(req),
+            _ => Box::pin(async { None }),
+        }
+    }
+}
