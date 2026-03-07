@@ -1,3 +1,16 @@
+# Source Cooperative public data
+[[buckets]]
+name = "harvard-lil"
+backend_type = "s3"
+anonymous_access = true
+allowed_roles = []
+
+[buckets.backend_options]
+endpoint = "https://data.source.coop"
+bucket_name = "harvard-lil"
+region = "us-west-2"
+skip_signature = "true"
+
 # Source Cooperative data proxy backend
 [[buckets]]
 name = "cholmes"

@@ -38,6 +38,18 @@ region = "us-east-1"
 secret_access_key = "minioadmin"
 
 [[vars.PROXY_CONFIG.buckets]]
+allowed_roles = []
+anonymous_access = true
+backend_type = "s3"
+name = "harvard-lil"
+
+[vars.PROXY_CONFIG.buckets.backend_options]
+bucket_name = "harvard-lil"
+endpoint = "https://data.source.coop"
+region = "us-west-2"
+skip_signature = "true"
+
+[[vars.PROXY_CONFIG.buckets]]
 allowed_roles = ["github-actions"]
 anonymous_access = false
 backend_type = "s3"
