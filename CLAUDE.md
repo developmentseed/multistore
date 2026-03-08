@@ -13,4 +13,6 @@
 - Always update `docs/` to ensure documentation matches modules
 - Always run `cargo check` and `cargo check -p multistore-cf-workers --target wasm32-unknown-unknown` to validate code
 - When making large changes, break work into smaller logical commits rather than one monolithic commit.
+- When fixing bugs, first write a failing test and then fix the bug to ensure that the fix resolved the issue.
+- Review codebase for dead code after refactoring.
 - Use conventional commits.
