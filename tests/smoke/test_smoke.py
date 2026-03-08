@@ -15,7 +15,7 @@ import requests
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-PREVIEW_URL = os.environ.get("PREVIEW_URL", "")
+PREVIEW_URL = os.environ.get("PREVIEW_URL", "http://localhost:8787")
 
 
 def assume_role(role_arn: str, oidc_token: str) -> dict:
@@ -60,6 +60,12 @@ def s3_client(creds: dict):
     )
 
 
+requires_oidc = pytest.mark.skipif(
+    not os.environ.get("ACTIONS_ID_TOKEN_REQUEST_TOKEN"),
+    reason="ACTIONS_ID_TOKEN_REQUEST_TOKEN not set",
+)
+
+
 @pytest.fixture(scope="module")
 def oidc_token() -> str:
     """Fetch a GitHub Actions OIDC token."""
@@ -85,6 +91,7 @@ def no_access_credentials(oidc_token):
     return assume_role("github-actions-no-access", oidc_token)
 
 
+@requires_oidc
 class TestAssumeRole:
     def test_assume_role_returns_credentials(self, actions_credentials):
         assert actions_credentials["AccessKeyId"]
@@ -97,6 +104,7 @@ class TestAssumeRole:
         assert no_access_credentials["SessionToken"]
 
 
+@requires_oidc
 class TestS3Access:
     def test_list_bucket_with_access(self, actions_credentials):
         client = s3_client(actions_credentials)
@@ -108,3 +116,43 @@ class TestS3Access:
         with pytest.raises(ClientError) as exc_info:
             client.list_objects_v2(Bucket="cholmes", MaxKeys=5)
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+
+
+# Public bucket + key used for range request tests.
+RANGE_TEST_PATH = "/harvard-lil/gov-data/README.md"
+
+
+class TestRangeRequests:
+    """Verify range request headers on GET and HEAD responses."""
+
+    def test_get_range_returns_206(self):
+        resp = requests.get(
+            f"{PREVIEW_URL}{RANGE_TEST_PATH}",
+            headers={"Range": "bytes=0-10"},
+        )
+        assert resp.status_code == 206
+        assert resp.headers.get("content-range") is not None
+        assert resp.headers["content-range"].startswith("bytes 0-10/")
+        assert resp.headers["content-length"] == "11"
+        assert resp.headers.get("accept-ranges") == "bytes"
+
+    def test_head_includes_accept_ranges(self):
+        resp = requests.head(f"{PREVIEW_URL}{RANGE_TEST_PATH}")
+        assert resp.status_code == 200
+        assert resp.headers.get("accept-ranges") == "bytes"
+        assert int(resp.headers["content-length"]) > 0
+
+    def test_head_range_returns_206(self):
+        resp = requests.head(
+            f"{PREVIEW_URL}{RANGE_TEST_PATH}",
+            headers={"Range": "bytes=0-10"},
+        )
+        assert resp.status_code == 206
+        assert resp.headers.get("content-range") is not None
+        assert resp.headers["content-range"].startswith("bytes 0-10/")
+        assert resp.headers["content-length"] == "11"
+
+    def test_get_without_range_returns_200(self):
+        resp = requests.head(f"{PREVIEW_URL}{RANGE_TEST_PATH}")
+        assert resp.status_code == 200
+        assert "content-range" not in resp.headers
