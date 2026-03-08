@@ -477,6 +477,7 @@ where
                         key,
                         original_headers,
                         &[
+                            "range",
                             "if-match",
                             "if-none-match",
                             "if-modified-since",
@@ -740,5 +741,168 @@ fn build_object_path(config: &BucketConfig, key: &str) -> object_store::path::Pa
             }
         }
         None => object_store::path::Path::from(key),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::response::BucketEntry;
+    use crate::backend::RawResponse;
+    use crate::registry::{BucketRegistry, CredentialRegistry, ResolvedBucket};
+    use crate::types::{ResolvedIdentity, RoleConfig, StoredCredential};
+    use object_store::list::PaginatedListStore;
+    use object_store::signer::Signer;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    // ── Mocks ───────────────────────────────────────────────────────
+
+    #[derive(Clone)]
+    struct MockBackend;
+
+    impl ProxyBackend for MockBackend {
+        fn create_paginated_store(
+            &self,
+            _config: &BucketConfig,
+        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
+            unimplemented!("not needed for forward tests")
+        }
+
+        fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
+            // Build a real S3 signer from the test config — produces a valid presigned URL.
+            crate::backend::build_signer(config)
+        }
+
+        async fn send_raw(
+            &self,
+            _method: http::Method,
+            _url: String,
+            _headers: HeaderMap,
+            _body: Bytes,
+        ) -> Result<RawResponse, ProxyError> {
+            unimplemented!("not needed for forward tests")
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockRegistry;
+
+    impl BucketRegistry for MockRegistry {
+        async fn get_bucket(
+            &self,
+            name: &str,
+            _identity: &ResolvedIdentity,
+            _operation: &S3Operation,
+        ) -> Result<ResolvedBucket, ProxyError> {
+            Ok(ResolvedBucket {
+                config: test_bucket_config(name),
+                list_rewrite: None,
+            })
+        }
+
+        async fn list_buckets(
+            &self,
+            _identity: &ResolvedIdentity,
+        ) -> Result<Vec<BucketEntry>, ProxyError> {
+            Ok(vec![])
+        }
+    }
+
+    #[derive(Clone)]
+    struct MockCreds;
+
+    impl CredentialRegistry for MockCreds {
+        async fn get_credential(
+            &self,
+            _access_key_id: &str,
+        ) -> Result<Option<StoredCredential>, ProxyError> {
+            Ok(None)
+        }
+
+        async fn get_role(&self, _role_id: &str) -> Result<Option<RoleConfig>, ProxyError> {
+            Ok(None)
+        }
+    }
+
+    fn test_bucket_config(name: &str) -> BucketConfig {
+        let mut backend_options = HashMap::new();
+        backend_options.insert(
+            "endpoint".into(),
+            "https://s3.us-east-1.amazonaws.com".into(),
+        );
+        backend_options.insert("bucket_name".into(), "backend-bucket".into());
+        backend_options.insert("region".into(), "us-east-1".into());
+        backend_options.insert("access_key_id".into(), "AKIAIOSFODNN7EXAMPLE".into());
+        backend_options.insert(
+            "secret_access_key".into(),
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
+        );
+        BucketConfig {
+            name: name.to_string(),
+            backend_type: "s3".into(),
+            backend_prefix: None,
+            anonymous_access: true,
+            allowed_roles: vec![],
+            backend_options,
+        }
+    }
+
+    fn run<F: std::future::Future>(f: F) -> F::Output {
+        futures::executor::block_on(f)
+    }
+
+    fn gateway() -> ProxyGateway<MockBackend, MockRegistry, MockCreds> {
+        ProxyGateway::new(MockBackend, MockRegistry, MockCreds, None)
+    }
+
+    // ── Tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn get_forward_preserves_range_header() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("range", "bytes=0-99".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    assert_eq!(fwd.method, Method::GET);
+                    assert_eq!(
+                        fwd.headers.get("range").map(|v| v.to_str().unwrap()),
+                        Some("bytes=0-99"),
+                        "GET forward should pass through the Range header"
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn head_forward_preserves_range_header() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("range", "bytes=0-1023".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::HEAD, "/test-bucket/key.txt", None, &headers)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    assert_eq!(fwd.method, Method::HEAD);
+                    assert_eq!(
+                        fwd.headers.get("range").map(|v| v.to_str().unwrap()),
+                        Some("bytes=0-1023"),
+                        "HEAD forward should pass through the Range header"
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
     }
 }
