@@ -41,11 +41,12 @@ secret_access_key = "minioadmin"
 allowed_roles = []
 anonymous_access = true
 backend_type = "s3"
+backend_prefix = "harvard-lil/"
 name = "harvard-lil"
 
 [vars.PROXY_CONFIG.buckets.backend_options]
-bucket_name = "harvard-lil"
-endpoint = "https://data.source.coop"
+bucket_name = "us-west-2.opendata.source.coop"
+endpoint = "https://s3.us-west-2.amazonaws.com"
 region = "us-west-2"
 skip_signature = "true"
 
@@ -53,11 +54,12 @@ skip_signature = "true"
 allowed_roles = ["github-actions"]
 anonymous_access = false
 backend_type = "s3"
+backend_prefix = "cholmes/"
 name = "cholmes"
 
 [vars.PROXY_CONFIG.buckets.backend_options]
-bucket_name = "cholmes"
-endpoint = "https://data.source.coop"
+bucket_name = "us-west-2.opendata.source.coop"
+endpoint = "https://s3.us-west-2.amazonaws.com"
 region = "us-east-1"
 skip_signature = "true"
 
