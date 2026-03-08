@@ -79,3 +79,22 @@ impl Default for Router {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// `matchit`'s `/{*path}` catch-all does NOT match the bare root `/`.
+    /// Route handlers that need to match `/` must register an explicit `/` route.
+    #[test]
+    fn matchit_catchall_does_not_match_root() {
+        let mut router = matchit::Router::<&str>::new();
+        router.insert("/{*path}", "handler").unwrap();
+        assert!(router.at("/").is_err());
+    }
+
+    #[test]
+    fn explicit_root_route_matches() {
+        let mut router = matchit::Router::<&str>::new();
+        router.insert("/", "root").unwrap();
+        assert!(router.at("/").is_ok());
+    }
+}

@@ -27,8 +27,11 @@ impl<C: CredentialRegistry> RouteHandler for StsHandler<C> {
 
 /// Extension trait for registering STS routes on a [`Router`].
 pub trait StsRouterExt {
-    /// Register a catch-all STS handler that intercepts
-    /// `AssumeRoleWithWebIdentity` requests on any path.
+    /// Register the STS handler on the root path (`/`).
+    ///
+    /// STS requests are identified by query parameters
+    /// (`Action=AssumeRoleWithWebIdentity`), not by path, and clients
+    /// always send them to `/`.
     fn with_sts<C: CredentialRegistry + 'static>(
         self,
         config: C,
@@ -44,6 +47,68 @@ impl StsRouterExt for Router {
         cache: JwksCache,
         key: Option<TokenKey>,
     ) -> Self {
-        self.route("/{*path}", StsHandler { config, cache, key })
+        self.route("/", StsHandler { config, cache, key })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use multistore::error::ProxyError;
+    use multistore::types::{RoleConfig, StoredCredential};
+
+    /// Minimal stub that satisfies `CredentialRegistry` without real data.
+    #[derive(Clone)]
+    struct EmptyRegistry;
+
+    impl CredentialRegistry for EmptyRegistry {
+        async fn get_credential(
+            &self,
+            _access_key_id: &str,
+        ) -> Result<Option<StoredCredential>, ProxyError> {
+            Ok(None)
+        }
+        async fn get_role(&self, _role_id: &str) -> Result<Option<RoleConfig>, ProxyError> {
+            Ok(None)
+        }
+    }
+
+    fn test_router() -> Router {
+        let cache = JwksCache::new(reqwest::Client::new(), std::time::Duration::from_secs(60));
+        Router::new().with_sts(EmptyRegistry, cache, None)
+    }
+
+    #[tokio::test]
+    async fn sts_query_on_root_path_is_handled() {
+        let router = test_router();
+        let headers = http::HeaderMap::new();
+        let req = RequestInfo {
+            method: &http::Method::GET,
+            path: "/",
+            query: Some("Action=AssumeRoleWithWebIdentity&RoleArn=test&WebIdentityToken=tok"),
+            headers: &headers,
+            params: Default::default(),
+        };
+        assert!(
+            router.dispatch(&req).await.is_some(),
+            "STS request to / must be intercepted by the router"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_sts_query_on_root_path_falls_through() {
+        let router = test_router();
+        let headers = http::HeaderMap::new();
+        let req = RequestInfo {
+            method: &http::Method::GET,
+            path: "/",
+            query: Some("prefix=foo/"),
+            headers: &headers,
+            params: Default::default(),
+        };
+        assert!(
+            router.dispatch(&req).await.is_none(),
+            "non-STS request to / must fall through"
+        );
     }
 }

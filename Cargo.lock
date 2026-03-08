@@ -1257,6 +1257,7 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
+ "http",
  "multistore",
  "quick-xml 0.37.5",
  "rand 0.8.5",
@@ -1266,6 +1267,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror",
+ "tokio",
  "tracing",
  "url",
 ]
