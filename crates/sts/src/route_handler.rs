@@ -87,6 +87,7 @@ mod tests {
             path: "/",
             query: Some("Action=AssumeRoleWithWebIdentity&RoleArn=test&WebIdentityToken=tok"),
             headers: &headers,
+            source_ip: None,
             params: Default::default(),
         };
         assert!(
@@ -104,6 +105,7 @@ mod tests {
             path: "/",
             query: Some("prefix=foo/"),
             headers: &headers,
+            source_ip: None,
             params: Default::default(),
         };
         assert!(

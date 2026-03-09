@@ -6,6 +6,9 @@ dist
 # Local
 .DS_Store
 
+# Plans
+.plans
+
 # CF Workers
 node_modules
 .dev.vars

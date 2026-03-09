@@ -5,7 +5,7 @@
 //! `Sync`. On `wasm32` targets, both are no-ops.
 //!
 //! Only used for traits that genuinely need it: [`ProxyBackend`](crate::backend::ProxyBackend),
-//! [`BackendAuth`](crate::backend::auth::BackendAuth),
+//! [`Middleware`](crate::middleware::Middleware),
 //! [`RouteHandler`](crate::route_handler::RouteHandler), and the
 //! `oidc-provider` crate's [`HttpExchange`] / [`CredentialExchange`] traits.
 //! Other traits use plain `Send + Sync`.

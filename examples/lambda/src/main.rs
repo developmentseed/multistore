@@ -37,8 +37,7 @@ use multistore_sts::TokenKey;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-type OidcAuth = MaybeOidcAuth<ReqwestHttpExchange>;
-type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider, OidcAuth>;
+type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider>;
 
 struct AppState {
     handler: Handler,
@@ -103,7 +102,7 @@ async fn main() -> Result<(), Error> {
 
     // Build the gateway with the router.
     let mut handler = ProxyGateway::new(backend, config.clone(), config, domain)
-        .with_backend_auth(oidc_auth)
+        .with_middleware(oidc_auth)
         .with_router(router);
     if let Some(resolver) = token_key {
         handler = handler.with_credential_resolver(resolver);
@@ -133,6 +132,7 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
         path: &path,
         query: query.as_deref(),
         headers: &headers,
+        source_ip: None,
         params: Default::default(),
     };
 

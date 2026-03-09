@@ -1,7 +1,7 @@
 //! The main proxy gateway that ties together registry lookup and backend forwarding.
 //!
 //! [`ProxyGateway`] is generic over the runtime's backend, bucket registry,
-//! credential registry, and backend auth.
+//! and credential registry.
 //!
 //! ## Router (pre-dispatch)
 //!
@@ -51,11 +51,13 @@ use crate::api::request::{self, HostStyle};
 use crate::api::response::{BucketList, ErrorResponse, ListAllMyBucketsResult};
 use crate::auth;
 use crate::auth::TemporaryCredentialResolver;
-use crate::backend::auth::{BackendAuth, NoAuth};
 use crate::backend::multipart::{build_backend_url, sign_s3_request};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
+use crate::middleware::{
+    Dispatch, DispatchContext, DispatchFuture, ErasedMiddleware, Middleware, Next,
+};
 use crate::registry::{BucketRegistry, CredentialRegistry};
 use crate::route_handler::{ProxyResponseBody, RequestInfo};
 use crate::router::Router;
@@ -64,6 +66,7 @@ use bytes::Bytes;
 use http::{HeaderMap, Method};
 use object_store::list::PaginatedListOptions;
 use std::borrow::Cow;
+use std::net::IpAddr;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -101,12 +104,11 @@ pub enum GatewayResponse<B> {
 /// - `B`: The runtime's backend for object store creation, signing, and raw HTTP
 /// - `R`: The bucket registry for bucket lookup and authorization
 /// - `C`: The credential registry for credential and role lookup
-/// - `O`: Backend auth for resolving credentials before store/signer creation
-pub struct ProxyGateway<B, R, C, O = NoAuth> {
+pub struct ProxyGateway<B, R, C> {
     backend: B,
     bucket_registry: R,
     credential_registry: C,
-    backend_auth: O,
+    middleware: Vec<Box<dyn ErasedMiddleware>>,
     virtual_host_domain: Option<String>,
     credential_resolver: Option<Box<dyn TemporaryCredentialResolver>>,
     router: Router,
@@ -131,38 +133,21 @@ where
             backend,
             bucket_registry,
             credential_registry,
-            backend_auth: NoAuth,
+            middleware: Vec::new(),
             virtual_host_domain,
             credential_resolver: None,
             router: Router::new(),
             debug_errors: false,
         }
     }
-}
 
-impl<B, R, C, O> ProxyGateway<B, R, C, O>
-where
-    B: ProxyBackend,
-    R: BucketRegistry,
-    C: CredentialRegistry,
-    O: BackendAuth,
-{
-    /// Set the backend auth implementation.
+    /// Add a middleware to the dispatch chain.
     ///
-    /// When configured, `dispatch_operation` calls `resolve_credentials`
-    /// before accessing the backend — enabling credential resolution
-    /// (e.g. OIDC token exchange) for buckets that require it.
-    pub fn with_backend_auth<O2: BackendAuth>(self, backend_auth: O2) -> ProxyGateway<B, R, C, O2> {
-        ProxyGateway {
-            backend: self.backend,
-            bucket_registry: self.bucket_registry,
-            credential_registry: self.credential_registry,
-            backend_auth,
-            virtual_host_domain: self.virtual_host_domain,
-            credential_resolver: self.credential_resolver,
-            router: self.router,
-            debug_errors: self.debug_errors,
-        }
+    /// Middleware runs after identity resolution and authorization, wrapping
+    /// the backend dispatch call. Middleware executes in registration order.
+    pub fn with_middleware(mut self, middleware: impl Middleware) -> Self {
+        self.middleware.push(Box::new(middleware));
+        self
     }
 
     /// Set the temporary credential resolver for session token verification.
@@ -209,8 +194,14 @@ where
         if let Some(action) = self.router.dispatch(req).await {
             return action;
         }
-        self.resolve_request(req.method.clone(), req.path, req.query, req.headers)
-            .await
+        self.resolve_request(
+            req.method.clone(),
+            req.path,
+            req.query,
+            req.headers,
+            req.source_ip,
+        )
+        .await
     }
 
     /// Convenience entry point that resolves `NeedsBody` internally.
@@ -267,6 +258,7 @@ where
         path: &str,
         query: Option<&str>,
         headers: &HeaderMap,
+        source_ip: Option<IpAddr>,
     ) -> HandlerAction {
         let request_id = Uuid::new_v4().to_string();
 
@@ -279,7 +271,7 @@ where
         );
 
         match self
-            .resolve_inner(method, path, query, headers, &request_id)
+            .resolve_inner(method, path, query, headers, source_ip, &request_id)
             .await
         {
             Ok(action) => {
@@ -323,6 +315,8 @@ where
     /// Phase 2: Complete a multipart operation with the request body.
     ///
     /// Called by the runtime after materializing the body for a `NeedsBody` action.
+    /// Middleware is not re-run here — it already executed during `resolve_inner`
+    /// when the `NeedsBody` action was produced.
     pub async fn handle_with_body(&self, pending: PendingRequest, body: Bytes) -> ProxyResult {
         match self.execute_multipart(&pending, body).await {
             Ok(result) => {
@@ -357,6 +351,7 @@ where
         path: &str,
         query: Option<&str>,
         headers: &HeaderMap,
+        source_ip: Option<IpAddr>,
         request_id: &str,
     ) -> Result<HandlerAction, ProxyError> {
         // Determine host style
@@ -414,40 +409,54 @@ where
         );
         tracing::trace!("authorization passed");
 
-        self.dispatch_operation(
-            &method,
-            &operation,
-            &resolved.config,
+        // Build middleware context
+        let ctx = DispatchContext {
+            identity: &identity,
+            operation: &operation,
+            bucket_config: Cow::Borrowed(&resolved.config),
             headers,
-            resolved.list_rewrite.as_ref(),
+            source_ip,
             request_id,
-        )
-        .await
+            list_rewrite: resolved.list_rewrite.as_ref(),
+            extensions: http::Extensions::new(),
+        };
+
+        // Terminal dispatch: wraps self.dispatch_operation with the method.
+        struct GatewayDispatch<'g, B, R, C> {
+            gateway: &'g ProxyGateway<B, R, C>,
+            method: Method,
+        }
+
+        impl<B, R, C> Dispatch for GatewayDispatch<'_, B, R, C>
+        where
+            B: ProxyBackend,
+            R: BucketRegistry,
+            C: CredentialRegistry,
+        {
+            fn dispatch<'a>(&'a self, ctx: DispatchContext<'a>) -> DispatchFuture<'a> {
+                Box::pin(async move { self.gateway.dispatch_operation(&self.method, &ctx).await })
+            }
+        }
+
+        let dispatch = GatewayDispatch {
+            gateway: self,
+            method: method.clone(),
+        };
+
+        let next = Next::new(&self.middleware, &dispatch);
+        next.run(ctx).await
     }
 
     async fn dispatch_operation(
         &self,
         method: &Method,
-        operation: &S3Operation,
-        bucket_config: &BucketConfig,
-        original_headers: &HeaderMap,
-        list_rewrite: Option<&ListRewrite>,
-        request_id: &str,
+        ctx: &DispatchContext<'_>,
     ) -> Result<HandlerAction, ProxyError> {
-        // Resolve backend credentials if needed (e.g. OIDC token exchange).
-        // Returns None for buckets with static credentials (zero-copy path),
-        // Some(options) with replacement backend_options for dynamic credentials.
-        let resolved_config;
-        let bucket_config = match self.backend_auth.resolve_credentials(bucket_config).await? {
-            Some(options) => {
-                resolved_config = BucketConfig {
-                    backend_options: options,
-                    ..bucket_config.clone()
-                };
-                &resolved_config
-            }
-            None => bucket_config,
-        };
+        let bucket_config = &*ctx.bucket_config;
+        let original_headers = ctx.headers;
+        let list_rewrite = ctx.list_rewrite;
+        let request_id = ctx.request_id;
+        let operation = ctx.operation;
 
         match operation {
             S3Operation::GetObject { key, .. } => {
@@ -865,7 +874,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert("range", "bytes=0-99".parse().unwrap());
             let action = gw
-                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers)
+                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers, None)
                 .await;
 
             match action {
@@ -889,7 +898,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert("range", "bytes=0-1023".parse().unwrap());
             let action = gw
-                .resolve_request(Method::HEAD, "/test-bucket/key.txt", None, &headers)
+                .resolve_request(Method::HEAD, "/test-bucket/key.txt", None, &headers, None)
                 .await;
 
             match action {
@@ -899,6 +908,81 @@ mod tests {
                         fwd.headers.get("range").map(|v| v.to_str().unwrap()),
                         Some("bytes=0-1023"),
                         "HEAD forward should pass through the Range header"
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    // -- Middleware test types -----------------------------------------------
+
+    struct BlockMiddleware;
+
+    impl crate::middleware::Middleware for BlockMiddleware {
+        async fn handle<'a>(
+            &'a self,
+            _ctx: crate::middleware::DispatchContext<'a>,
+            _next: crate::middleware::Next<'a>,
+        ) -> Result<HandlerAction, ProxyError> {
+            Ok(HandlerAction::Response(ProxyResult {
+                status: 429,
+                headers: HeaderMap::new(),
+                body: ProxyResponseBody::Empty,
+            }))
+        }
+    }
+
+    struct PassMiddleware;
+
+    impl crate::middleware::Middleware for PassMiddleware {
+        async fn handle<'a>(
+            &'a self,
+            ctx: crate::middleware::DispatchContext<'a>,
+            next: crate::middleware::Next<'a>,
+        ) -> Result<HandlerAction, ProxyError> {
+            next.run(ctx).await
+        }
+    }
+
+    // -- Middleware integration tests ----------------------------------------
+
+    #[test]
+    fn middleware_short_circuits_request() {
+        run(async {
+            let gw = gateway().with_middleware(BlockMiddleware);
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Response(resp) => {
+                    assert_eq!(resp.status, 429, "blocking middleware should return 429");
+                }
+                other => panic!(
+                    "expected Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
+    #[test]
+    fn middleware_passthrough_allows_request() {
+        run(async {
+            let gw = gateway().with_middleware(PassMiddleware);
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    assert_eq!(
+                        fwd.method,
+                        Method::GET,
+                        "passthrough middleware should allow normal forwarding"
                     );
                 }
                 other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),

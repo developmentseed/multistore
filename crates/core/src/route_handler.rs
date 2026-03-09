@@ -12,6 +12,7 @@ use crate::maybe_send::{MaybeSend, MaybeSync};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
 use std::future::Future;
+use std::net::IpAddr;
 use std::pin::Pin;
 use url::Url;
 
@@ -165,6 +166,12 @@ pub struct RequestInfo<'a> {
     pub path: &'a str,
     pub query: Option<&'a str>,
     pub headers: &'a HeaderMap,
+    /// The IP address of the client that originated this request.
+    ///
+    /// Populated by runtimes that can extract client addresses (e.g. from
+    /// `ConnectInfo` in axum, or request headers in Lambda/Workers).
+    /// `None` when the source IP is unavailable or not yet extracted.
+    pub source_ip: Option<IpAddr>,
     /// Path parameters extracted by the router during dispatch.
     ///
     /// Empty when the request is constructed outside the router (e.g. direct

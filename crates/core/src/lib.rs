@@ -16,6 +16,7 @@
 //! - [`api::request`] — parse incoming S3 API requests into typed operations
 //! - [`api::response`] — serialize S3 XML responses
 //! - [`route_handler::RouteHandler`] — pluggable pre-dispatch request interception (OIDC, STS, etc.)
+//! - [`middleware::Middleware`] — composable post-auth middleware for dispatch
 //! - [`router::Router`] — path-based route matching via `matchit` for efficient dispatch
 //! - [`proxy::ProxyGateway`] — the main request handler that ties everything together
 
@@ -24,6 +25,7 @@ pub mod auth;
 pub mod backend;
 pub mod error;
 pub mod maybe_send;
+pub mod middleware;
 pub mod proxy;
 pub mod registry;
 pub mod route_handler;

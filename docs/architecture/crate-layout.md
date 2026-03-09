@@ -49,7 +49,7 @@ Outbound OIDC identity provider for backend authentication:
 - RSA JWT signing (`JwtSigner`)
 - JWKS endpoint serving
 - OpenID Connect discovery document
-- AWS credential exchange (`AwsBackendAuth`)
+- AWS credential exchange (`AwsBackendAuth` middleware)
 - Credential caching
 
 ### `multistore-server`

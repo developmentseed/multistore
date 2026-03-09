@@ -8,7 +8,7 @@ The proxy needs to run on fundamentally different runtimes: Tokio/Hyper in conta
 
 ## Key Abstractions
 
-The core defines four trait boundaries that runtime crates implement:
+The core defines three trait boundaries that runtime crates implement:
 
 **`ProxyBackend`** — Provides three capabilities: `create_paginated_store()` returns a `PaginatedListStore` for LIST, `create_signer()` returns a `Signer` for presigned URL generation (GET/HEAD/PUT/DELETE), and `send_raw()` sends signed HTTP requests for multipart operations. Both runtimes delegate to `build_signer()` which uses `object_store`'s built-in signer for authenticated backends and `UnsignedUrlSigner` for anonymous backends (avoiding `Instant::now()` which panics on WASM). For `create_paginated_store()`, the server runtime uses default connectors + reqwest; the worker runtime uses a custom `FetchConnector`.
 
@@ -18,7 +18,7 @@ The core defines four trait boundaries that runtime crates implement:
 
 Any provider implementing these traits can be wrapped with `CachedProvider` for in-memory TTL caching of credential/role lookups (bucket resolution is always delegated directly since it involves authorization).
 
-**`BackendAuth`** — Resolves backend credentials via OIDC token exchange. Called at the top of `dispatch_operation()` before the config reaches `create_paginated_store()`/`create_signer()`. When a bucket's `backend_options` contains `auth_type=oidc`, the implementation mints a self-signed JWT and exchanges it for temporary cloud credentials, injecting them into the config. The default `NoAuth` passes configs through unchanged (and errors if `auth_type=oidc` is set without a provider). The `oidc-provider` crate provides `OidcAuth` as the concrete implementation.
+The core also defines the **`Middleware`** trait for composable post-auth request processing. Middleware runs after identity resolution and authorization, wrapping the backend dispatch call. Each middleware receives a `DispatchContext` and a `Next` handle to continue the chain. The `oidc-provider` crate provides `AwsBackendAuth` as a middleware that resolves backend credentials via OIDC token exchange.
 
 ## Module Overview
 
@@ -33,13 +33,13 @@ src/
 │   ├── identity.rs      SigV4 verification, identity resolution
 │   └── tests.rs         Auth test helpers
 ├── backend/
-│   ├── mod.rs           ProxyBackend trait, Signer/StoreBuilder, S3RequestSigner (multipart)
-│   └── auth.rs          BackendAuth trait, NoAuth default impl
+│   └── mod.rs           ProxyBackend trait, Signer/StoreBuilder, S3RequestSigner (multipart)
 ├── registry/
 │   ├── mod.rs           Re-exports
 │   ├── bucket.rs        BucketRegistry trait, ResolvedBucket, DEFAULT_BUCKET_OWNER
 │   └── credential.rs    CredentialRegistry trait
 ├── error.rs             ProxyError with S3-compatible error codes
+├── middleware.rs         Middleware trait, DispatchContext, Next
 ├── proxy.rs             ProxyGateway — the main request handler
 ├── route_handler.rs     RouteHandler trait, ProxyResponseBody
 └── types.rs             BucketConfig, RoleConfig, StoredCredential, etc.
@@ -68,8 +68,8 @@ let gateway = ProxyGateway::new(
 // let gateway = gateway.with_credential_resolver(token_key);
 // Optional: register route handlers for STS, OIDC discovery, etc.
 // let gateway = gateway.with_route_handler(sts_handler);
-// Optional: enable OIDC-based backend credential resolution.
-// let gateway = gateway.with_backend_auth(oidc_auth);
+// Optional: register middleware (e.g., OIDC-based backend credential resolution).
+// let gateway = gateway.with_middleware(oidc_auth);
 
 // In your HTTP handler, use handle_request for a two-variant match:
 let req_info = RequestInfo {
@@ -77,6 +77,7 @@ let req_info = RequestInfo {
     path: &path,
     query: query.as_deref(),
     headers: &headers,
+    source_ip: None,
     params: Default::default(),
 };
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {

@@ -51,10 +51,8 @@ impl Default for ServerConfig {
     }
 }
 
-type OidcAuth = MaybeOidcAuth<ReqwestHttpExchange>;
-
 struct AppState<R: BucketRegistry, C: CredentialRegistry> {
-    handler: ProxyGateway<ServerBackend, R, C, OidcAuth>,
+    handler: ProxyGateway<ServerBackend, R, C>,
     reqwest_client: reqwest::Client,
 }
 
@@ -129,7 +127,7 @@ where
         credential_registry,
         server_config.virtual_host_domain,
     )
-    .with_backend_auth(oidc_auth)
+    .with_middleware(oidc_auth)
     .with_router(proxy_router);
     if let Some(ref resolver) = token_key {
         handler = handler.with_credential_resolver(resolver.clone());
@@ -173,6 +171,7 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
         path: &path,
         query: query.as_deref(),
         headers: &headers,
+        source_ip: None,
         params: Default::default(),
     };
 

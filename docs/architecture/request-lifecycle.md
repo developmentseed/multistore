@@ -99,7 +99,7 @@ let router = Router::new()
 
 let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
     .with_credential_resolver(token_key)
-    .with_backend_auth(oidc_auth)
+    .with_middleware(oidc_auth)
     .with_router(router);
 ```
 

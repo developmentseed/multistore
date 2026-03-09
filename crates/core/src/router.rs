@@ -65,6 +65,7 @@ impl Router {
             path: req.path,
             query: req.query,
             headers: req.headers,
+            source_ip: req.source_ip,
         };
         matched
             .value

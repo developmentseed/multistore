@@ -116,6 +116,7 @@ let req_info = RequestInfo {
     path: &path,
     query: query.as_deref(),
     headers: &headers,
+    source_ip: None,
     params: Default::default(),
 };
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {

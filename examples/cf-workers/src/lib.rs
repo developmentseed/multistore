@@ -86,7 +86,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
 
     // Build the gateway with the router.
     let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)
-        .with_backend_auth(oidc_auth)
+        .with_middleware(oidc_auth)
         .with_router(router);
     if let Some(ref resolver) = token_key {
         gateway = gateway.with_credential_resolver(resolver.clone());
@@ -108,6 +108,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
         path: &path,
         query: query.as_deref(),
         headers: &headers,
+        source_ip: None,
         params: Default::default(),
     };
 
@@ -327,14 +328,18 @@ fn load_token_key(env: &Env) -> Result<Option<TokenKey>> {
     }
 }
 
-type OidcAuth = MaybeOidcAuth<FetchHttpExchange>;
-
 /// Load OIDC provider config from env secrets/vars.
 ///
 /// Returns `MaybeOidcAuth::Enabled` if both `OIDC_PROVIDER_KEY` (secret) and
 /// `OIDC_PROVIDER_ISSUER` (var) are set; otherwise `Disabled`. Also returns
 /// the signer and issuer for router registration.
-fn load_oidc_auth(env: &Env) -> Result<(OidcAuth, Option<JwtSigner>, Option<String>)> {
+fn load_oidc_auth(
+    env: &Env,
+) -> Result<(
+    MaybeOidcAuth<FetchHttpExchange>,
+    Option<JwtSigner>,
+    Option<String>,
+)> {
     let key_pem = match env.secret("OIDC_PROVIDER_KEY") {
         Ok(val) => Some(val.to_string()),
         Err(_) => None,
