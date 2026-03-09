@@ -153,3 +153,18 @@ subject_conditions = ["repo:alukach/multistore:*"]
 trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
 ]
+
+# Rate limiting bindings
+[[ratelimits]]
+name = "ANON_RATE_LIMITER"
+namespace_id = "1001"
+  [ratelimits.simple]
+  limit = 100
+  period = 60
+
+[[ratelimits]]
+name = "AUTH_RATE_LIMITER"
+namespace_id = "1002"
+  [ratelimits.simple]
+  limit = 1_000
+  period = 60

@@ -22,6 +22,7 @@
 
 mod client;
 mod fetch_connector;
+mod rate_limit;
 mod tracing_layer;
 
 use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
@@ -36,6 +37,7 @@ use multistore_static_config::{StaticConfig, StaticProvider};
 use multistore_sts::route_handler::StsRouterExt;
 use multistore_sts::JwksCache;
 use multistore_sts::TokenKey;
+use rate_limit::CfRateLimiter;
 
 use bytes::Bytes;
 use http::HeaderMap;
@@ -84,10 +86,16 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     }
     router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
+    // Build rate limiter middleware from env bindings (if configured).
+    let rate_limiter = load_rate_limiter(&env);
+
     // Build the gateway with the router.
     let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)
         .with_middleware(oidc_auth)
         .with_router(router);
+    if let Some(rl) = rate_limiter {
+        gateway = gateway.with_middleware(rl);
+    }
     if let Some(ref resolver) = token_key {
         gateway = gateway.with_credential_resolver(resolver.clone());
     }
@@ -326,6 +334,16 @@ fn load_token_key(env: &Env) -> Result<Option<TokenKey>> {
         }
         Err(_) => Ok(None),
     }
+}
+
+/// Load rate limiter middleware from env bindings.
+///
+/// Returns `Some(CfRateLimiter)` if both `ANON_RATE_LIMITER` and
+/// `AUTH_RATE_LIMITER` bindings are configured; otherwise `None`.
+fn load_rate_limiter(env: &Env) -> Option<CfRateLimiter> {
+    let anon = env.rate_limiter("ANON_RATE_LIMITER").ok()?;
+    let auth = env.rate_limiter("AUTH_RATE_LIMITER").ok()?;
+    Some(CfRateLimiter::new(anon, auth))
 }
 
 /// Load OIDC provider config from env secrets/vars.
