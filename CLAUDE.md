@@ -8,6 +8,7 @@
 
 ## Workflow
 
+- Use ./.plans for any agent planning documents
 - Always run `cargo fmt` before committing.
 - Always run `cargo clippy --fix --allow-dirty --allow-staged` before committing to catch lint issues.
 - Always update `docs/` to ensure documentation matches modules
