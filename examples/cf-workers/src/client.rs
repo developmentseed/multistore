@@ -7,9 +7,7 @@
 use crate::fetch_connector::FetchConnector;
 use bytes::Bytes;
 use http::HeaderMap;
-use multistore::backend::{
-    build_object_store, build_signer, ProxyBackend, RawResponse, StoreBuilder,
-};
+use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse, StoreBuilder};
 use multistore::error::ProxyError;
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
@@ -30,9 +28,10 @@ impl ProxyBackend for WorkerBackend {
         &self,
         config: &BucketConfig,
     ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        build_object_store(config, |b| match b {
+        let builder = match create_builder(config)? {
             StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(FetchConnector)),
-        })
+        };
+        builder.build()
     }
 
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {

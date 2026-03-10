@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use http::HeaderMap;
-use multistore::backend::{build_object_store, build_signer, ProxyBackend, RawResponse};
+use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
@@ -46,7 +46,7 @@ impl ProxyBackend for ServerBackend {
         &self,
         config: &BucketConfig,
     ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        build_object_store(config, |b| b)
+        create_builder(config)?.build()
     }
 
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {

@@ -78,8 +78,9 @@ pub struct RawResponse {
 
 /// Wrapper around provider-specific `object_store` builders.
 ///
-/// Runtimes use [`build_object_store`] to inject their HTTP connector
-/// via a closure that receives this enum.
+/// Obtain one via [`create_builder`], customize it (e.g. inject an HTTP
+/// connector), then call [`build`](Self::build) or
+/// [`build_signer`](Self::build_signer).
 pub enum StoreBuilder {
     S3(AmazonS3Builder),
     #[cfg(feature = "azure")]
@@ -125,7 +126,11 @@ impl StoreBuilder {
 }
 
 /// Create a [`StoreBuilder`] from a [`BucketConfig`], dispatching on `backend_type`.
-pub(crate) fn create_builder(config: &BucketConfig) -> Result<StoreBuilder, ProxyError> {
+///
+/// Runtimes call this to get a half-built store, customize it (e.g. inject
+/// an HTTP connector), then call [`StoreBuilder::build`] or
+/// [`StoreBuilder::build_signer`].
+pub fn create_builder(config: &BucketConfig) -> Result<StoreBuilder, ProxyError> {
     let backend_type = config.parsed_backend_type().ok_or_else(|| {
         ProxyError::ConfigError(format!(
             "unsupported backend_type: '{}'",
@@ -172,19 +177,4 @@ pub(crate) fn create_builder(config: &BucketConfig) -> Result<StoreBuilder, Prox
             "GCS backend support not enabled (requires 'gcp' feature)".into(),
         )),
     }
-}
-
-/// Build a [`PaginatedListStore`] from a [`BucketConfig`], dispatching on `backend_type`.
-///
-/// The `configure` closure lets each runtime inject its HTTP connector:
-/// - Server runtime passes `|b| b` (default connector)
-/// - CF Workers passes `|b| match b { StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(FetchConnector)), .. }`
-pub fn build_object_store<F>(
-    config: &BucketConfig,
-    configure: F,
-) -> Result<Box<dyn PaginatedListStore>, ProxyError>
-where
-    F: FnOnce(StoreBuilder) -> StoreBuilder,
-{
-    configure(create_builder(config)?).build()
 }

@@ -67,13 +67,7 @@ pub(crate) type DispatchFuture<'a> =
 /// Using a trait (instead of a closure/`dyn Fn`) allows the dispatch
 /// implementation to borrow from its environment with arbitrary lifetimes —
 /// avoiding the `'static` constraint that `Arc<dyn Fn>` would impose.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) trait Dispatch: Send + Sync {
-    fn dispatch<'a>(&'a self, ctx: DispatchContext<'a>) -> DispatchFuture<'a>;
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) trait Dispatch {
+pub(crate) trait Dispatch: MaybeSend + MaybeSync {
     fn dispatch<'a>(&'a self, ctx: DispatchContext<'a>) -> DispatchFuture<'a>;
 }
 
@@ -81,43 +75,13 @@ pub(crate) trait Dispatch {
 // ErasedMiddleware — type-erased trait object for the middleware chain.
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) trait ErasedMiddleware: Send + Sync {
-    fn handle<'a>(
-        &'a self,
-        ctx: DispatchContext<'a>,
-        next: Next<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<HandlerAction, ProxyError>> + Send + 'a>>;
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) trait ErasedMiddleware {
-    fn handle<'a>(
-        &'a self,
-        ctx: DispatchContext<'a>,
-        next: Next<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<HandlerAction, ProxyError>> + 'a>>;
+pub(crate) trait ErasedMiddleware: MaybeSend + MaybeSync {
+    fn handle<'a>(&'a self, ctx: DispatchContext<'a>, next: Next<'a>) -> DispatchFuture<'a>;
 }
 
 // Blanket impl: any `Middleware` is automatically an `ErasedMiddleware`.
-#[cfg(not(target_arch = "wasm32"))]
 impl<T: Middleware> ErasedMiddleware for T {
-    fn handle<'a>(
-        &'a self,
-        ctx: DispatchContext<'a>,
-        next: Next<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<HandlerAction, ProxyError>> + Send + 'a>> {
-        Box::pin(<Self as Middleware>::handle(self, ctx, next))
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl<T: Middleware> ErasedMiddleware for T {
-    fn handle<'a>(
-        &'a self,
-        ctx: DispatchContext<'a>,
-        next: Next<'a>,
-    ) -> Pin<Box<dyn Future<Output = Result<HandlerAction, ProxyError>> + 'a>> {
+    fn handle<'a>(&'a self, ctx: DispatchContext<'a>, next: Next<'a>) -> DispatchFuture<'a> {
         Box::pin(<Self as Middleware>::handle(self, ctx, next))
     }
 }
