@@ -159,6 +159,13 @@ async fn forward_to_backend_inner(
     let init = web_sys::RequestInit::new();
     init.set_method(fwd.method.as_str());
     init.set_headers(&ws_headers.into());
+    // Bypass Cloudflare's subrequest cache for Range requests. Without this,
+    // CF caches full-body 200 responses and serves them for Range requests,
+    // breaking multipart downloads. Non-Range requests still benefit from
+    // CF edge caching. Requires compatibility_date >= 2024-11-11.
+    if fwd.headers.contains_key(http::header::RANGE) {
+        init.set_cache(web_sys::RequestCache::NoStore);
+    }
 
     // For PUT: attach the original ReadableStream directly (zero-copy!).
     if fwd.method == http::Method::PUT {

@@ -1,4 +1,4 @@
-compatibility_date = "2024-09-23"
+compatibility_date = "2024-11-11"
 main = "build/worker/shim.mjs"
 name = "multistore"
 
