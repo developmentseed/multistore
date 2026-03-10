@@ -1,0 +1,22 @@
+name: Staging
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: staging
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy & Test
+    uses: ./.github/workflows/deploy.yml
+    with:
+      worker_name: multistore-staging
+      wrangler_config: examples/cf-workers/wrangler.staging.toml
+      environment: staging
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      SESSION_TOKEN_KEY: ${{ secrets.SESSION_TOKEN_KEY }}
+      OIDC_PROVIDER_KEY: ${{ secrets.OIDC_PROVIDER_KEY }}
