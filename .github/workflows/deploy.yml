@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       wrangler_config:
-        description: "Path to wrangler config file (relative to repo root)"
+        description: "Wrangler config filename (in examples/cf-workers/)"
         required: true
         type: string
       environment:
@@ -65,6 +65,7 @@ jobs:
             EXTRA_ARGS="--var OIDC_PROVIDER_ISSUER:${{ inputs.oidc_issuer_override }}"
           fi
           npx wrangler deploy \
+            --cwd examples/cf-workers \
             --config ${{ inputs.wrangler_config }} \
             --name "${{ inputs.worker_name }}" \
             $EXTRA_ARGS
@@ -81,12 +82,12 @@ jobs:
           SESSION_TOKEN_KEY: ${{ secrets.SESSION_TOKEN_KEY }}
           OIDC_PROVIDER_KEY: ${{ secrets.OIDC_PROVIDER_KEY }}
         run: |
-          echo "$SESSION_TOKEN_KEY" | npx wrangler secret put SESSION_TOKEN_KEY --config ${{ inputs.wrangler_config }} --name "${{ inputs.worker_name }}"
-          echo "$OIDC_PROVIDER_KEY" | npx wrangler secret put OIDC_PROVIDER_KEY --config ${{ inputs.wrangler_config }} --name "${{ inputs.worker_name }}"
+          echo "$SESSION_TOKEN_KEY" | npx wrangler secret put SESSION_TOKEN_KEY --cwd examples/cf-workers --config ${{ inputs.wrangler_config }} --name "${{ inputs.worker_name }}"
+          echo "$OIDC_PROVIDER_KEY" | npx wrangler secret put OIDC_PROVIDER_KEY --cwd examples/cf-workers --config ${{ inputs.wrangler_config }} --name "${{ inputs.worker_name }}"
 
       - name: Wait for deployment to be live
         run: |
-          URL="${{ steps.deploy.outputs.deploy_url }}"
+          URL="${{ steps.url.outputs.deploy_url }}"
           for i in $(seq 1 30); do
             if curl -sf -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null; then
               echo "Deployment is live"

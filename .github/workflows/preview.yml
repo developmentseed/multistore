@@ -15,7 +15,7 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       worker_name: multistore-proxy-pr-${{ github.event.pull_request.number }}
-      wrangler_config: examples/cf-workers/wrangler.preview.toml
+      wrangler_config: wrangler.preview.toml
       environment: preview
       oidc_issuer_override: "https://multistore-proxy-pr-${{ github.event.pull_request.number }}.${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}.workers.dev"
     secrets:
