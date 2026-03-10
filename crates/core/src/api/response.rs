@@ -45,6 +45,16 @@ impl ErrorResponse {
         }
     }
 
+    /// Build an S3 `SlowDown` error for rate-limited requests.
+    pub fn slow_down(request_id: &str) -> Self {
+        Self {
+            code: "SlowDown".to_string(),
+            message: "Please reduce your request rate.".to_string(),
+            resource: String::new(),
+            request_id: request_id.to_string(),
+        }
+    }
+
     pub fn to_xml(&self) -> String {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
