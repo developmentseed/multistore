@@ -82,14 +82,13 @@ mod tests {
     async fn sts_query_on_root_path_is_handled() {
         let router = test_router();
         let headers = http::HeaderMap::new();
-        let req = RequestInfo {
-            method: &http::Method::GET,
-            path: "/",
-            query: Some("Action=AssumeRoleWithWebIdentity&RoleArn=test&WebIdentityToken=tok"),
-            headers: &headers,
-            source_ip: None,
-            params: Default::default(),
-        };
+        let req = RequestInfo::new(
+            &http::Method::GET,
+            "/",
+            Some("Action=AssumeRoleWithWebIdentity&RoleArn=test&WebIdentityToken=tok"),
+            &headers,
+            None,
+        );
         assert!(
             router.dispatch(&req).await.is_some(),
             "STS request to / must be intercepted by the router"
@@ -100,14 +99,7 @@ mod tests {
     async fn non_sts_query_on_root_path_falls_through() {
         let router = test_router();
         let headers = http::HeaderMap::new();
-        let req = RequestInfo {
-            method: &http::Method::GET,
-            path: "/",
-            query: Some("prefix=foo/"),
-            headers: &headers,
-            source_ip: None,
-            params: Default::default(),
-        };
+        let req = RequestInfo::new(&http::Method::GET, "/", Some("prefix=foo/"), &headers, None);
         assert!(
             router.dispatch(&req).await.is_none(),
             "non-STS request to / must fall through"

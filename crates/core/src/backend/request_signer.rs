@@ -5,6 +5,7 @@
 //! (CreateMultipartUpload, UploadPart, CompleteMultipartUpload,
 //! AbortMultipartUpload) that go through [`backend::ProxyBackend::send_raw`](crate::backend::ProxyBackend::send_raw).
 
+use crate::auth::sigv4::hmac_sha256;
 use crate::error::ProxyError;
 use http::HeaderMap;
 
@@ -45,8 +46,6 @@ impl S3RequestSigner {
         payload_hash: &str,
     ) -> Result<(), ProxyError> {
         use chrono::Utc;
-        use hmac::{Hmac, Mac};
-        use sha2::Sha256;
 
         let now = Utc::now();
         let date_stamp = now.format("%Y%m%d").to_string();
@@ -103,7 +102,7 @@ impl S3RequestSigner {
             date_stamp, self.region, self.service
         );
 
-        use sha2::Digest;
+        use sha2::{Digest, Sha256};
         let canonical_request_hash = hex::encode(Sha256::digest(canonical_request.as_bytes()));
 
         let string_to_sign = format!(
@@ -111,35 +110,17 @@ impl S3RequestSigner {
             amz_date, credential_scope, canonical_request_hash
         );
 
-        // Signing key
-        type HmacSha256 = Hmac<Sha256>;
-
-        let mut mac =
-            HmacSha256::new_from_slice(format!("AWS4{}", self.secret_access_key).as_bytes())
-                .map_err(|e| ProxyError::Internal(e.to_string()))?;
-        mac.update(date_stamp.as_bytes());
-        let k_date = mac.finalize().into_bytes();
-
-        let mut mac =
-            HmacSha256::new_from_slice(&k_date).map_err(|e| ProxyError::Internal(e.to_string()))?;
-        mac.update(self.region.as_bytes());
-        let k_region = mac.finalize().into_bytes();
-
-        let mut mac = HmacSha256::new_from_slice(&k_region)
-            .map_err(|e| ProxyError::Internal(e.to_string()))?;
-        mac.update(self.service.as_bytes());
-        let k_service = mac.finalize().into_bytes();
-
-        let mut mac = HmacSha256::new_from_slice(&k_service)
-            .map_err(|e| ProxyError::Internal(e.to_string()))?;
-        mac.update(b"aws4_request");
-        let signing_key = mac.finalize().into_bytes();
+        // Derive signing key
+        let k_date = hmac_sha256(
+            format!("AWS4{}", self.secret_access_key).as_bytes(),
+            date_stamp.as_bytes(),
+        )?;
+        let k_region = hmac_sha256(&k_date, self.region.as_bytes())?;
+        let k_service = hmac_sha256(&k_region, self.service.as_bytes())?;
+        let signing_key = hmac_sha256(&k_service, b"aws4_request")?;
 
         // Signature
-        let mut mac = HmacSha256::new_from_slice(&signing_key)
-            .map_err(|e| ProxyError::Internal(e.to_string()))?;
-        mac.update(string_to_sign.as_bytes());
-        let signature = hex::encode(mac.finalize().into_bytes());
+        let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
 
         // Authorization header
         let auth_header = format!(

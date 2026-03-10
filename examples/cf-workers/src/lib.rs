@@ -111,14 +111,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     let query = uri.query().map(|q| q.to_string());
     let headers = convert_ws_headers(&req.headers());
 
-    let req_info = RequestInfo {
-        method: &method,
-        path: &path,
-        query: query.as_deref(),
-        headers: &headers,
-        source_ip: None,
-        params: Default::default(),
-    };
+    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 
     Ok(
         match gateway

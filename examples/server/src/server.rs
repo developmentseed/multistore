@@ -166,14 +166,7 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
         "incoming request"
     );
 
-    let req_info = RequestInfo {
-        method: &method,
-        path: &path,
-        query: query.as_deref(),
-        headers: &headers,
-        source_ip: None,
-        params: Default::default(),
-    };
+    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 
     match state
         .handler

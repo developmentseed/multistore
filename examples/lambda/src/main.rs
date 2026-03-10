@@ -127,14 +127,7 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
 
     tracing::debug!(method = %method, uri = %uri, "incoming request");
 
-    let req_info = RequestInfo {
-        method: &method,
-        path: &path,
-        query: query.as_deref(),
-        headers: &headers,
-        source_ip: None,
-        params: Default::default(),
-    };
+    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 
     Ok(
         match state

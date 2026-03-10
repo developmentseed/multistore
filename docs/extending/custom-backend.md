@@ -110,14 +110,7 @@ let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
     .with_router(router);
 
 // In your request handler, use handle_request for a two-variant match:
-let req_info = RequestInfo {
-    method: &method,
-    path: &path,
-    query: query.as_deref(),
-    headers: &headers,
-    source_ip: None,
-    params: Default::default(),
-};
+let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => {
         // Return the complete response (LIST, errors, STS, etc.)

@@ -16,7 +16,10 @@ struct OidcConfigHandler {
 }
 
 impl RouteHandler for OidcConfigHandler {
-    fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        if req.method.as_str() != "GET" {
+            return Box::pin(async { None });
+        }
         let json = openid_configuration_json(&self.issuer, &self.jwks_uri);
         Box::pin(async move { Some(ProxyResult::json(200, json)) })
     }
@@ -28,7 +31,10 @@ struct OidcJwksHandler {
 }
 
 impl RouteHandler for OidcJwksHandler {
-    fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        if req.method.as_str() != "GET" {
+            return Box::pin(async { None });
+        }
         let json = jwks_json(self.signer.public_key(), self.signer.kid());
         Box::pin(async move { Some(ProxyResult::json(200, json)) })
     }

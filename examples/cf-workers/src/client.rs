@@ -102,21 +102,7 @@ impl ProxyBackend for WorkerBackend {
     }
 }
 
-/// Headers to extract from backend responses.
-pub const RESPONSE_HEADER_ALLOWLIST: &[&str] = &[
-    "content-type",
-    "content-length",
-    "content-range",
-    "etag",
-    "last-modified",
-    "accept-ranges",
-    "content-encoding",
-    "content-disposition",
-    "cache-control",
-    "x-amz-request-id",
-    "x-amz-version-id",
-    "location",
-];
+use multistore::route_handler::RESPONSE_HEADER_ALLOWLIST;
 
 /// Extract response headers from a `web_sys::Headers` using an allowlist.
 pub fn extract_response_headers(ws_headers: &web_sys::Headers) -> HeaderMap {
