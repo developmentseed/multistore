@@ -75,7 +75,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     // Build OIDC backend auth from env secrets/vars.
     let (oidc_auth, oidc_signer, oidc_issuer) = load_oidc_auth(&env)?;
 
-    let config = load_static_config(&env)?;
+    let config = load_config_from_env(&env, "PROXY_CONFIG")?;
     let virtual_host_domain = env.var("VIRTUAL_HOST_DOMAIN").ok().map(|v| v.to_string());
     let sts_creds = config.clone();
 
@@ -86,15 +86,13 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     }
     router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
-    // Build rate limiter middleware from env bindings (if configured).
-    let rate_limiter = load_rate_limiter(&env);
-
     // Build the gateway with the router.
     let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)
         .with_middleware(oidc_auth)
         .with_router(router);
-    if let Some(rl) = rate_limiter {
-        gateway = gateway.with_middleware(rl);
+
+    if let Some(rate_limiter) = load_rate_limiter(&env) {
+        gateway = gateway.with_middleware(rate_limiter);
     }
     if let Some(ref resolver) = token_key {
         gateway = gateway.with_credential_resolver(resolver.clone());
@@ -154,7 +152,6 @@ async fn forward_to_backend_inner(
             let _ = ws_headers.set(key.as_str(), v);
         }
     }
-
     // Build web_sys::RequestInit.
     let init = web_sys::RequestInit::new();
     init.set_method(fwd.method.as_str());
@@ -318,10 +315,6 @@ fn load_config_from_env(env: &Env, var_name: &str) -> Result<StaticProvider> {
         StaticProvider::from_config(static_config)
             .map_err(|e| worker::Error::RustError(format!("{} config error: {}", var_name, e)))
     }
-}
-
-fn load_static_config(env: &Env) -> Result<StaticProvider> {
-    load_config_from_env(env, "PROXY_CONFIG")
 }
 
 /// Load the optional session token encryption key from the `SESSION_TOKEN_KEY` secret.
