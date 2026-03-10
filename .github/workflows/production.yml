@@ -19,5 +19,6 @@ jobs:
       environment: production
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       SESSION_TOKEN_KEY: ${{ secrets.SESSION_TOKEN_KEY }}
       OIDC_PROVIDER_KEY: ${{ secrets.OIDC_PROVIDER_KEY }}
