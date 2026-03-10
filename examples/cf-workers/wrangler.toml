@@ -111,7 +111,7 @@ prefixes = []
 max_session_duration_secs = 3600
 name = "GitHub Actions"
 role_id = "github-actions"
-subject_conditions = ["repo:alukach/multistore:*"]
+subject_conditions = ["repo:developmentseed/multistore:*"]
 trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
 ]
@@ -149,7 +149,7 @@ prefixes = []
 max_session_duration_secs = 3600
 name = "GitHub Actions (No Access)"
 role_id = "github-actions-no-access"
-subject_conditions = ["repo:alukach/multistore:*"]
+subject_conditions = ["repo:developmentseed/multistore:*"]
 trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
 ]

@@ -29,7 +29,7 @@ skip_signature = "true"
 role_id = "github-actions"
 name = "GitHub Actions"
 trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
-subject_conditions = ["repo:alukach/multistore:*"]
+subject_conditions = ["repo:developmentseed/multistore:*"]
 max_session_duration_secs = 3600
 
 [[roles.allowed_scopes]]
