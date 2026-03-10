@@ -1,7 +1,7 @@
 """Smoke tests for the multistore preview deployment.
 
 Requires environment variables:
-  PREVIEW_URL: The deployed preview worker URL
+  DEPLOY_URL: The deployed preview worker URL
   ACTIONS_ID_TOKEN_REQUEST_TOKEN: GitHub Actions OIDC bearer token (automatic)
   ACTIONS_ID_TOKEN_REQUEST_URL: GitHub Actions OIDC endpoint (automatic)
 """
@@ -15,13 +15,13 @@ import requests
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-PREVIEW_URL = os.environ.get("PREVIEW_URL", "http://localhost:8787")
+DEPLOY_URL = os.environ.get("DEPLOY_URL", "http://localhost:8787")
 
 
 def assume_role(role_arn: str, oidc_token: str) -> dict:
     """Assume a role via the STS proxy and return parsed credentials."""
     resp = requests.get(
-        PREVIEW_URL,
+        DEPLOY_URL,
         params={
             "Action": "AssumeRoleWithWebIdentity",
             "RoleArn": role_arn,
@@ -51,7 +51,7 @@ def s3_client(creds: dict):
     """Create an S3 client using the given credentials against the preview endpoint."""
     return boto3.client(
         "s3",
-        endpoint_url=PREVIEW_URL,
+        endpoint_url=DEPLOY_URL,
         aws_access_key_id=creds["AccessKeyId"],
         aws_secret_access_key=creds["SecretAccessKey"],
         aws_session_token=creds["SessionToken"],
@@ -127,7 +127,7 @@ class TestRangeRequests:
 
     def test_get_range_returns_206(self):
         resp = requests.get(
-            f"{PREVIEW_URL}{RANGE_TEST_PATH}",
+            f"{DEPLOY_URL}{RANGE_TEST_PATH}",
             headers={"Range": "bytes=0-10"},
         )
         assert resp.status_code == 206
@@ -137,14 +137,14 @@ class TestRangeRequests:
         assert resp.headers.get("accept-ranges") == "bytes"
 
     def test_head_includes_accept_ranges(self):
-        resp = requests.head(f"{PREVIEW_URL}{RANGE_TEST_PATH}")
+        resp = requests.head(f"{DEPLOY_URL}{RANGE_TEST_PATH}")
         assert resp.status_code == 200
         assert resp.headers.get("accept-ranges") == "bytes"
         assert int(resp.headers["content-length"]) > 0
 
     def test_head_range_returns_206(self):
         resp = requests.head(
-            f"{PREVIEW_URL}{RANGE_TEST_PATH}",
+            f"{DEPLOY_URL}{RANGE_TEST_PATH}",
             headers={"Range": "bytes=0-10"},
         )
         assert resp.status_code == 206
@@ -153,7 +153,7 @@ class TestRangeRequests:
         assert resp.headers["content-length"] == "11"
 
     def test_get_without_range_returns_200(self):
-        resp = requests.head(f"{PREVIEW_URL}{RANGE_TEST_PATH}")
+        resp = requests.head(f"{DEPLOY_URL}{RANGE_TEST_PATH}")
         assert resp.status_code == 200
         assert "content-range" not in resp.headers
 
@@ -165,7 +165,7 @@ class TestRangeRequests:
         the Range header to the origin. This simulates what `aws s3 cp` does:
         HEAD → full-size GET (or cached) → concurrent Range GETs.
         """
-        url = f"{PREVIEW_URL}{RANGE_TEST_PATH}"
+        url = f"{DEPLOY_URL}{RANGE_TEST_PATH}"
 
         # Prime the cache with a full GET (no Range).
         full = requests.get(url)
