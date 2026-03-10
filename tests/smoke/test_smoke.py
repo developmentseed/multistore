@@ -156,3 +156,31 @@ class TestRangeRequests:
         resp = requests.head(f"{PREVIEW_URL}{RANGE_TEST_PATH}")
         assert resp.status_code == 200
         assert "content-range" not in resp.headers
+
+    def test_range_after_full_get_still_returns_206(self):
+        """Regression test for CF subrequest caching breaking Range requests.
+
+        CF's edge cache can store a full-body 200 from a non-Range GET and
+        then serve it for subsequent Range requests instead of forwarding
+        the Range header to the origin. This simulates what `aws s3 cp` does:
+        HEAD → full-size GET (or cached) → concurrent Range GETs.
+        """
+        url = f"{PREVIEW_URL}{RANGE_TEST_PATH}"
+
+        # Prime the cache with a full GET (no Range).
+        full = requests.get(url)
+        assert full.status_code == 200
+        total_size = int(full.headers["content-length"])
+
+        # Now issue Range requests — these must return 206, not a cached 200.
+        chunk = min(1024, total_size - 1)
+        for start in [0, chunk]:
+            end = min(start + chunk - 1, total_size - 1)
+            resp = requests.get(url, headers={"Range": f"bytes={start}-{end}"})
+            assert resp.status_code == 206, (
+                f"Range bytes={start}-{end} returned {resp.status_code} "
+                f"(content-length: {resp.headers.get('content-length')}, "
+                f"content-range: {resp.headers.get('content-range')}). "
+                f"CF may be serving a cached full-body response."
+            )
+            assert resp.headers.get("content-range") is not None
