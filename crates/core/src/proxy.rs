@@ -373,51 +373,33 @@ where
         .await?;
         tracing::debug!(identity = ?identity, "resolved identity");
 
-        // Handle ListBuckets — returns virtual bucket list from registry, no backend call
-        if matches!(operation, S3Operation::ListBuckets) {
-            let buckets = self.bucket_registry.list_buckets(&identity).await?;
-            tracing::info!(count = buckets.len(), "listing virtual buckets");
-            let xml = ListAllMyBucketsResult {
-                owner: self.bucket_registry.bucket_owner(),
-                buckets: BucketList { buckets },
-            }
-            .to_xml();
+        // Resolve bucket config (if the operation targets a specific bucket).
+        let resolved = if let Some(bucket_name) = operation.bucket() {
+            let resolved = self
+                .bucket_registry
+                .get_bucket(bucket_name, &identity, &operation)
+                .await?;
 
-            let mut resp_headers = HeaderMap::new();
-            resp_headers.insert("content-type", "application/xml".parse().unwrap());
-            return Ok(HandlerAction::Response(ProxyResult {
-                status: 200,
-                headers: resp_headers,
-                body: ProxyResponseBody::from_bytes(Bytes::from(xml)),
-            }));
-        }
-
-        // Get bucket name and resolve via registry (includes authorization)
-        let bucket_name = operation
-            .bucket()
-            .ok_or_else(|| ProxyError::InvalidRequest("no bucket in request".into()))?;
-
-        let resolved = self
-            .bucket_registry
-            .get_bucket(bucket_name, &identity, &operation)
-            .await?;
-
-        tracing::debug!(
-            bucket = %bucket_name,
-            backend_type = %resolved.config.backend_type,
-            "resolved bucket config"
-        );
-        tracing::trace!("authorization passed");
+            tracing::debug!(
+                bucket = %bucket_name,
+                backend_type = %resolved.config.backend_type,
+                "resolved bucket config"
+            );
+            tracing::trace!("authorization passed");
+            Some(resolved)
+        } else {
+            None
+        };
 
         // Build middleware context
         let ctx = DispatchContext {
             identity: &identity,
             operation: &operation,
-            bucket_config: Cow::Borrowed(&resolved.config),
+            bucket_config: resolved.as_ref().map(|r| Cow::Borrowed(&r.config)),
             headers,
             source_ip,
             request_id,
-            list_rewrite: resolved.list_rewrite.as_ref(),
+            list_rewrite: resolved.as_ref().and_then(|r| r.list_rewrite.as_ref()),
             extensions: http::Extensions::new(),
         };
 
@@ -452,11 +434,35 @@ where
         method: &Method,
         ctx: &DispatchContext<'_>,
     ) -> Result<HandlerAction, ProxyError> {
-        let bucket_config = &*ctx.bucket_config;
         let original_headers = ctx.headers;
         let list_rewrite = ctx.list_rewrite;
         let request_id = ctx.request_id;
         let operation = ctx.operation;
+
+        // ListBuckets has no bucket config — handle it first.
+        if matches!(operation, S3Operation::ListBuckets) {
+            let buckets = self.bucket_registry.list_buckets(ctx.identity).await?;
+            tracing::info!(count = buckets.len(), "listing virtual buckets");
+            let xml = ListAllMyBucketsResult {
+                owner: self.bucket_registry.bucket_owner(),
+                buckets: BucketList { buckets },
+            }
+            .to_xml();
+
+            let mut resp_headers = HeaderMap::new();
+            resp_headers.insert("content-type", "application/xml".parse().unwrap());
+            return Ok(HandlerAction::Response(ProxyResult {
+                status: 200,
+                headers: resp_headers,
+                body: ProxyResponseBody::from_bytes(Bytes::from(xml)),
+            }));
+        }
+
+        // All remaining operations require a bucket config.
+        let bucket_config = ctx
+            .bucket_config
+            .as_deref()
+            .expect("bucket_config must be set for bucket-targeted operations");
 
         match operation {
             S3Operation::GetObject { key, .. } => {

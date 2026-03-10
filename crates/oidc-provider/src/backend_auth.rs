@@ -86,19 +86,21 @@ impl<H: HttpExchange> Middleware for AwsBackendAuth<H> {
         mut ctx: DispatchContext<'a>,
         next: Next<'a>,
     ) -> Result<HandlerAction, ProxyError> {
-        if ctx.bucket_config.option("auth_type") == Some("oidc") {
-            match ctx.bucket_config.backend_type.as_str() {
-                "s3" => {
-                    let options = self.resolve_aws(&ctx.bucket_config).await?;
-                    ctx.bucket_config = Cow::Owned(BucketConfig {
-                        backend_options: options,
-                        ..ctx.bucket_config.into_owned()
-                    });
-                }
-                other => {
-                    return Err(ProxyError::ConfigError(format!(
-                        "OIDC backend auth not yet supported for backend_type '{other}'"
-                    )));
+        if let Some(ref bucket_config) = ctx.bucket_config {
+            if bucket_config.option("auth_type") == Some("oidc") {
+                match bucket_config.backend_type.as_str() {
+                    "s3" => {
+                        let options = self.resolve_aws(bucket_config).await?;
+                        ctx.bucket_config = Some(Cow::Owned(BucketConfig {
+                            backend_options: options,
+                            ..ctx.bucket_config.unwrap().into_owned()
+                        }));
+                    }
+                    other => {
+                        return Err(ProxyError::ConfigError(format!(
+                            "OIDC backend auth not yet supported for backend_type '{other}'"
+                        )));
+                    }
                 }
             }
         }
@@ -125,7 +127,12 @@ impl<H: HttpExchange> Middleware for MaybeOidcAuth<H> {
         match self {
             MaybeOidcAuth::Enabled(auth) => auth.handle(ctx, next).await,
             MaybeOidcAuth::Disabled => {
-                if ctx.bucket_config.option("auth_type") == Some("oidc") {
+                let is_oidc = ctx
+                    .bucket_config
+                    .as_deref()
+                    .and_then(|c| c.option("auth_type"))
+                    == Some("oidc");
+                if is_oidc {
                     Err(ProxyError::ConfigError(
                         "bucket requires auth_type=oidc but no OIDC provider is configured".into(),
                     ))

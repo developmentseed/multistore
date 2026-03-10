@@ -32,7 +32,8 @@ pub struct DispatchContext<'a> {
     /// The parsed S3 operation being performed.
     pub operation: &'a S3Operation,
     /// The bucket configuration for the target bucket.
-    pub bucket_config: Cow<'a, BucketConfig>,
+    /// `None` for operations that don't target a specific bucket (e.g. ListBuckets).
+    pub bucket_config: Option<Cow<'a, BucketConfig>>,
     /// The original request headers.
     pub headers: &'a HeaderMap,
     /// The IP address of the client that originated this request.
@@ -271,7 +272,7 @@ mod tests {
         DispatchContext {
             identity: &IDENTITY,
             operation: &OPERATION,
-            bucket_config: Cow::Borrowed(&*BUCKET_CONFIG),
+            bucket_config: Some(Cow::Borrowed(&*BUCKET_CONFIG)),
             headers: &*HEADERS,
             source_ip: None,
             request_id: "test-request-id",
