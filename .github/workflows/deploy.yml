@@ -1,0 +1,110 @@
+name: Deploy & Smoke Test
+
+on:
+  workflow_call:
+    inputs:
+      worker_name:
+        description: "Cloudflare Worker name"
+        required: true
+        type: string
+      wrangler_config:
+        description: "Path to wrangler config file (relative to repo root)"
+        required: true
+        type: string
+      environment:
+        description: "GitHub environment name (preview, staging, production)"
+        required: true
+        type: string
+      oidc_issuer_override:
+        description: "Override OIDC_PROVIDER_ISSUER var (for dynamic preview URLs)"
+        required: false
+        type: string
+        default: ""
+      set_secrets:
+        description: "Whether to set worker secrets after deploy"
+        required: false
+        type: boolean
+        default: true
+    outputs:
+      deploy_url:
+        description: "The deployed worker URL"
+        value: ${{ jobs.deploy.outputs.deploy_url }}
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        required: true
+      SESSION_TOKEN_KEY:
+        required: true
+      OIDC_PROVIDER_KEY:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      deploy_url: ${{ steps.deploy.outputs.deploy_url }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Deploy worker
+        id: deploy
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${{ inputs.oidc_issuer_override }}" ]; then
+            EXTRA_ARGS="--var OIDC_PROVIDER_ISSUER:${{ inputs.oidc_issuer_override }}"
+          fi
+          OUTPUT=$(npx wrangler deploy \
+            --config ${{ inputs.wrangler_config }} \
+            --name "${{ inputs.worker_name }}" \
+            $EXTRA_ARGS \
+            2>&1)
+          echo "$OUTPUT"
+          URL=$(echo "$OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev')
+          echo "deploy_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Set worker secrets
+        if: inputs.set_secrets
+        env:
+          SESSION_TOKEN_KEY: ${{ secrets.SESSION_TOKEN_KEY }}
+          OIDC_PROVIDER_KEY: ${{ secrets.OIDC_PROVIDER_KEY }}
+        run: |
+          echo "$SESSION_TOKEN_KEY" | npx wrangler secret put SESSION_TOKEN_KEY --config ${{ inputs.wrangler_config }} --name "${{ inputs.worker_name }}"
+          echo "$OIDC_PROVIDER_KEY" | npx wrangler secret put OIDC_PROVIDER_KEY --config ${{ inputs.wrangler_config }} --name "${{ inputs.worker_name }}"
+
+      - name: Wait for deployment to be live
+        run: |
+          URL="${{ steps.deploy.outputs.deploy_url }}"
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null; then
+              echo "Deployment is live"
+              exit 0
+            fi
+            echo "Attempt $i: waiting for deployment..."
+            sleep 2
+          done
+          echo "Deployment did not become live in time"
+          exit 1
+
+  smoke-test:
+    name: Smoke Test
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    env:
+      DEPLOY_URL: ${{ needs.deploy.outputs.deploy_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Run smoke tests
+        run: uvx --with pytest,boto3,requests pytest tests/smoke/ -v
