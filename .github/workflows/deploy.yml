@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     outputs:
-      deploy_url: ${{ steps.deploy.outputs.deploy_url }}
+      deploy_url: ${{ steps.url.outputs.deploy_url }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -64,13 +64,15 @@ jobs:
           if [ -n "${{ inputs.oidc_issuer_override }}" ]; then
             EXTRA_ARGS="--var OIDC_PROVIDER_ISSUER:${{ inputs.oidc_issuer_override }}"
           fi
-          OUTPUT=$(npx wrangler deploy \
+          npx wrangler deploy \
             --config ${{ inputs.wrangler_config }} \
             --name "${{ inputs.worker_name }}" \
-            $EXTRA_ARGS \
-            2>&1)
-          echo "$OUTPUT"
-          URL=$(echo "$OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev')
+            $EXTRA_ARGS
+
+      - name: Get deploy URL
+        id: url
+        run: |
+          URL="https://${{ inputs.worker_name }}.${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}.workers.dev"
           echo "deploy_url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Set worker secrets
