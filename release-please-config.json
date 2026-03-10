@@ -1,0 +1,15 @@
+{
+  "packages": {
+    ".": {
+      "release-type": "rust",
+      "package-name": "multistore",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.package.version"
+        }
+      ]
+    }
+  }
+}
