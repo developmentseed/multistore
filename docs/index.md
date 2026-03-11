@@ -14,7 +14,7 @@ hero:
       link: /configuration/
     - theme: alt
       text: View on GitHub
-      link: https://github.com/alukach/multistore
+      link: https://github.com/developmentseed/multistore
 
 features:
   - title: Unified Interface
