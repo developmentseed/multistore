@@ -1,7 +1,7 @@
 {
   "packages": {
     ".": {
-      "release-type": "rust",
+      "release-type": "simple",
       "package-name": "multistore",
       "extra-files": [
         {
