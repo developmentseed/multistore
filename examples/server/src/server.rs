@@ -1,6 +1,6 @@
 //! HTTP server using axum, wiring everything together.
 
-use crate::axum_helpers::{build_proxy_response, error_response};
+use crate::axum_helpers::build_proxy_response;
 use crate::client::{ReqwestHttpExchange, ServerBackend};
 use axum::body::Body;
 use axum::extract::State;
@@ -9,6 +9,8 @@ use axum::Router;
 use futures::TryStreamExt;
 use http::HeaderMap;
 use http_body_util::BodyStream;
+use multistore::error::ProxyError;
+use multistore::forwarder::{ForwardResponse, Forwarder};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::registry::{BucketRegistry, CredentialRegistry};
 use multistore::route_handler::{ForwardRequest, RequestInfo, RESPONSE_HEADER_ALLOWLIST};
@@ -51,9 +53,62 @@ impl Default for ServerConfig {
     }
 }
 
+/// Forwards presigned backend requests using a [`reqwest::Client`].
+struct ServerForwarder {
+    client: reqwest::Client,
+}
+
+impl Forwarder<Body> for ServerForwarder {
+    type ResponseBody = reqwest::Response;
+
+    async fn forward(
+        &self,
+        request: ForwardRequest,
+        body: Body,
+    ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
+        let mut req_builder = self
+            .client
+            .request(request.method.clone(), request.url.as_str());
+
+        for (k, v) in request.headers.iter() {
+            req_builder = req_builder.header(k, v);
+        }
+
+        // Attach streaming body for PUT
+        if request.method == http::Method::PUT {
+            let body_stream = BodyStream::new(body)
+                .try_filter_map(|frame| async move { Ok(frame.into_data().ok()) });
+            req_builder = req_builder.body(reqwest::Body::wrap_stream(body_stream));
+        }
+
+        let backend_resp = req_builder
+            .send()
+            .await
+            .map_err(|e| ProxyError::BackendError(e.to_string()))?;
+
+        let status = backend_resp.status().as_u16();
+
+        // Forward allowlisted response headers
+        let mut headers = HeaderMap::new();
+        for name in RESPONSE_HEADER_ALLOWLIST {
+            if let Some(v) = backend_resp.headers().get(*name) {
+                headers.insert(*name, v.clone());
+            }
+        }
+
+        let content_length = backend_resp.content_length();
+
+        Ok(ForwardResponse {
+            status,
+            headers,
+            body: backend_resp,
+            content_length,
+        })
+    }
+}
+
 struct AppState<R: BucketRegistry, C: CredentialRegistry> {
-    handler: ProxyGateway<ServerBackend, R, C>,
-    reqwest_client: reqwest::Client,
+    handler: ProxyGateway<ServerBackend, R, C, ServerForwarder>,
 }
 
 /// Run the S3 proxy server.
@@ -121,10 +176,14 @@ where
     proxy_router = proxy_router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
     // Build the gateway with the router.
+    let forwarder = ServerForwarder {
+        client: reqwest_client,
+    };
     let mut handler = ProxyGateway::new(
         backend,
         bucket_registry,
         credential_registry,
+        forwarder,
         server_config.virtual_host_domain,
     )
     .with_middleware(oidc_auth)
@@ -133,10 +192,7 @@ where
         handler = handler.with_credential_resolver(resolver.clone());
     }
 
-    let state = Arc::new(AppState {
-        handler,
-        reqwest_client,
-    });
+    let state = Arc::new(AppState { handler });
 
     let app = Router::new()
         .fallback(request_handler::<R, C>)
@@ -174,52 +230,21 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
         .await
     {
         GatewayResponse::Response(result) => build_proxy_response(result),
-        GatewayResponse::Forward(fwd, body) => {
-            forward_to_backend(&state.reqwest_client, fwd, body).await
+        GatewayResponse::Forward(ForwardResponse {
+            status,
+            headers,
+            body: backend_resp,
+            ..
+        }) => {
+            // Stream the response body from the reqwest::Response
+            let body = Body::from_stream(backend_resp.bytes_stream());
+
+            let mut builder = Response::builder().status(status);
+            for (k, v) in headers.iter() {
+                builder = builder.header(k, v);
+            }
+
+            builder.body(body).unwrap()
         }
     }
-}
-
-/// Execute a Forward request via reqwest, streaming both request and response bodies.
-async fn forward_to_backend(client: &reqwest::Client, fwd: ForwardRequest, body: Body) -> Response {
-    let mut req_builder = client.request(fwd.method.clone(), fwd.url.as_str());
-
-    for (k, v) in fwd.headers.iter() {
-        req_builder = req_builder.header(k, v);
-    }
-
-    // Attach streaming body for PUT
-    if fwd.method == http::Method::PUT {
-        let body_stream =
-            BodyStream::new(body).try_filter_map(|frame| async move { Ok(frame.into_data().ok()) });
-        req_builder = req_builder.body(reqwest::Body::wrap_stream(body_stream));
-    }
-
-    let backend_resp = match req_builder.send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            tracing::error!(error = %e, "forward request failed");
-            return error_response(502, "Bad Gateway");
-        }
-    };
-
-    let status = backend_resp.status().as_u16();
-
-    // Forward allowlisted response headers
-    let mut resp_headers = HeaderMap::new();
-    for name in RESPONSE_HEADER_ALLOWLIST {
-        if let Some(v) = backend_resp.headers().get(*name) {
-            resp_headers.insert(*name, v.clone());
-        }
-    }
-
-    // Stream the response body
-    let body = Body::from_stream(backend_resp.bytes_stream());
-
-    let mut builder = Response::builder().status(status);
-    for (k, v) in resp_headers.iter() {
-        builder = builder.header(k, v);
-    }
-
-    builder.body(body).unwrap()
 }

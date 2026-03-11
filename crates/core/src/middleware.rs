@@ -21,6 +21,26 @@ use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::route_handler::HandlerAction;
 use crate::types::{BucketConfig, ResolvedIdentity, S3Operation};
 
+/// Post-dispatch context passed to [`Middleware::after_dispatch`].
+pub struct CompletedRequest<'a> {
+    /// The unique request identifier.
+    pub request_id: &'a str,
+    /// The resolved caller identity, if any.
+    pub identity: Option<&'a ResolvedIdentity>,
+    /// The parsed S3 operation, if determined.
+    pub operation: Option<&'a S3Operation>,
+    /// The target bucket name, if the operation targets a specific bucket.
+    pub bucket: Option<&'a str>,
+    /// The HTTP status code of the response.
+    pub status: u16,
+    /// The number of bytes in the response body, if known.
+    pub response_bytes: Option<u64>,
+    /// The number of bytes in the request body, if known.
+    pub request_bytes: Option<u64>,
+    /// Whether the request was forwarded to a backend via presigned URL.
+    pub was_forwarded: bool,
+}
+
 /// Context passed to each middleware in the dispatch chain.
 ///
 /// Contains the resolved identity, parsed S3 operation, bucket configuration,
@@ -59,6 +79,16 @@ pub(crate) type DispatchFuture<'a> =
     Pin<Box<dyn Future<Output = Result<HandlerAction, ProxyError>> + 'a>>;
 
 // ---------------------------------------------------------------------------
+// AfterDispatchFuture — the boxed future returned by after_dispatch callbacks.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type AfterDispatchFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) type AfterDispatchFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>;
+
+// ---------------------------------------------------------------------------
 // Dispatch — trait for the terminal dispatch function at the end of the chain.
 // ---------------------------------------------------------------------------
 
@@ -77,12 +107,21 @@ pub(crate) trait Dispatch: MaybeSend + MaybeSync {
 
 pub(crate) trait ErasedMiddleware: MaybeSend + MaybeSync {
     fn handle<'a>(&'a self, ctx: DispatchContext<'a>, next: Next<'a>) -> DispatchFuture<'a>;
+    fn after_dispatch<'a>(&'a self, completed: &'a CompletedRequest<'a>)
+        -> AfterDispatchFuture<'a>;
 }
 
 // Blanket impl: any `Middleware` is automatically an `ErasedMiddleware`.
 impl<T: Middleware> ErasedMiddleware for T {
     fn handle<'a>(&'a self, ctx: DispatchContext<'a>, next: Next<'a>) -> DispatchFuture<'a> {
         Box::pin(<Self as Middleware>::handle(self, ctx, next))
+    }
+
+    fn after_dispatch<'a>(
+        &'a self,
+        completed: &'a CompletedRequest<'a>,
+    ) -> AfterDispatchFuture<'a> {
+        Box::pin(<Self as Middleware>::after_dispatch(self, completed))
     }
 }
 
@@ -163,6 +202,16 @@ pub trait Middleware: MaybeSend + MaybeSync + 'static {
         ctx: DispatchContext<'a>,
         next: Next<'a>,
     ) -> impl Future<Output = Result<HandlerAction, ProxyError>> + MaybeSend + 'a;
+
+    /// Called after the request has been fully dispatched and the response is
+    /// available. Use this for logging, metering, or other post-dispatch
+    /// side effects. The default implementation is a no-op.
+    fn after_dispatch(
+        &self,
+        _completed: &CompletedRequest<'_>,
+    ) -> impl Future<Output = ()> + MaybeSend + '_ {
+        async {}
+    }
 }
 
 // ===========================================================================
@@ -300,5 +349,23 @@ mod tests {
             next.run(test_context()).await
         });
         assert_eq!(response_status(&result.unwrap()), 200);
+    }
+
+    #[test]
+    fn after_dispatch_default_is_noop() {
+        let middleware: Box<dyn ErasedMiddleware> = Box::new(PassthroughMiddleware);
+        futures::executor::block_on(async {
+            let completed = CompletedRequest {
+                request_id: "test",
+                identity: None,
+                operation: None,
+                bucket: None,
+                status: 200,
+                response_bytes: None,
+                request_bytes: None,
+                was_forwarded: false,
+            };
+            middleware.after_dispatch(&completed).await;
+        });
     }
 }

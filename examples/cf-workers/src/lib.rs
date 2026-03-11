@@ -26,6 +26,8 @@ mod rate_limit;
 mod tracing_layer;
 
 use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
+use multistore::error::ProxyError;
+use multistore::forwarder::{ForwardResponse, Forwarder};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo};
 use multistore::router::Router;
@@ -49,6 +51,80 @@ struct JsBody(Option<web_sys::ReadableStream>);
 // SAFETY: Workers is single-threaded; these are required by Gateway's generic bounds.
 unsafe impl Send for JsBody {}
 unsafe impl Sync for JsBody {}
+
+/// Zero-copy HTTP forwarder for Cloudflare Workers.
+///
+/// Executes presigned backend requests via the Fetch API, passing
+/// `ReadableStream` bodies through JS without touching WASM memory.
+struct WorkerForwarder;
+
+impl Forwarder<JsBody> for WorkerForwarder {
+    type ResponseBody = web_sys::Response;
+
+    async fn forward(
+        &self,
+        request: ForwardRequest,
+        body: JsBody,
+    ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
+        // Build web_sys::Headers from the forwarding headers.
+        let ws_headers = web_sys::Headers::new()
+            .map_err(|e| ProxyError::Internal(format!("failed to create Headers: {:?}", e)))?;
+        for (key, value) in request.headers.iter() {
+            if let Ok(v) = value.to_str() {
+                let _ = ws_headers.set(key.as_str(), v);
+            }
+        }
+
+        // Build web_sys::RequestInit.
+        let init = web_sys::RequestInit::new();
+        init.set_method(request.method.as_str());
+        init.set_headers(&ws_headers.into());
+
+        // Bypass Cloudflare's subrequest cache for Range requests. Without this,
+        // CF caches full-body 200 responses and serves them for Range requests,
+        // breaking multipart downloads. Non-Range requests still benefit from
+        // CF edge caching. Requires compatibility_date >= 2024-11-11.
+        if request.headers.contains_key(http::header::RANGE) {
+            init.set_cache(web_sys::RequestCache::NoStore);
+        }
+
+        // For PUT: attach the original ReadableStream directly (zero-copy!).
+        if request.method == http::Method::PUT {
+            if let Some(ref stream) = body.0 {
+                init.set_body(stream);
+            }
+        }
+
+        // Build the outgoing request.
+        let ws_request = web_sys::Request::new_with_str_and_init(request.url.as_str(), &init)
+            .map_err(|e| ProxyError::Internal(format!("failed to create request: {:?}", e)))?;
+
+        // Fetch via the worker crate's Fetch API.
+        let worker_req: worker::Request = ws_request.into();
+        let worker_resp = worker::Fetch::Request(worker_req)
+            .send()
+            .await
+            .map_err(|e| ProxyError::BackendError(format!("fetch failed: {}", e)))?;
+
+        // Convert to web_sys::Response to access the body stream.
+        let backend_ws: web_sys::Response = worker_resp.into();
+        let status = backend_ws.status();
+
+        // Build filtered response headers using the existing allowlist.
+        let headers = extract_response_headers(&backend_ws.headers());
+        let content_length = headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+
+        Ok(ForwardResponse {
+            status,
+            headers,
+            body: backend_ws,
+            content_length,
+        })
+    }
+}
 
 /// The Worker entry point.
 ///
@@ -87,9 +163,15 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
     // Build the gateway with the router.
-    let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)
-        .with_middleware(oidc_auth)
-        .with_router(router);
+    let mut gateway = ProxyGateway::new(
+        WorkerBackend,
+        config.clone(),
+        config,
+        WorkerForwarder,
+        virtual_host_domain,
+    )
+    .with_middleware(oidc_auth)
+    .with_router(router);
 
     if let Some(rate_limiter) = load_rate_limiter(&env) {
         gateway = gateway.with_middleware(rate_limiter);
@@ -117,87 +199,25 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
             .await
         {
             GatewayResponse::Response(result) => proxy_result_to_ws_response(result),
-            GatewayResponse::Forward(fwd, body) => forward_to_backend(fwd, body).await,
+            GatewayResponse::Forward(resp) => forward_response_to_ws(resp),
         },
     )
 }
 
-// ── Zero-copy forwarding ────────────────────────────────────────────
+// ── Forward response conversion ─────────────────────────────────────
 
-/// Execute a Forward request via the Fetch API with zero-copy streaming.
-///
-/// The original `ReadableStream` from the client request is passed directly
-/// to `web_sys::fetch` for PUT uploads — no bytes flow through WASM memory.
-/// The backend response's `ReadableStream` is similarly passed through to the
-/// client without buffering.
-async fn forward_to_backend(fwd: ForwardRequest, body: JsBody) -> web_sys::Response {
-    match forward_to_backend_inner(fwd, body).await {
-        Ok(resp) => resp,
-        Err(msg) => {
-            tracing::error!(error = %msg, "forward request failed");
-            ws_error_response(502, "Bad Gateway")
-        }
-    }
-}
+/// Convert a `ForwardResponse<web_sys::Response>` into a `web_sys::Response`
+/// for the client, preserving the backend's body stream (zero-copy).
+fn forward_response_to_ws(resp: ForwardResponse<web_sys::Response>) -> web_sys::Response {
+    let ws_headers = http_headermap_to_ws_headers(&resp.headers)
+        .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
 
-async fn forward_to_backend_inner(
-    fwd: ForwardRequest,
-    body: JsBody,
-) -> std::result::Result<web_sys::Response, String> {
-    // Build web_sys::Headers from the forwarding headers.
-    let ws_headers =
-        web_sys::Headers::new().map_err(|e| format!("failed to create Headers: {:?}", e))?;
-    for (key, value) in fwd.headers.iter() {
-        if let Ok(v) = value.to_str() {
-            let _ = ws_headers.set(key.as_str(), v);
-        }
-    }
-    // Build web_sys::RequestInit.
-    let init = web_sys::RequestInit::new();
-    init.set_method(fwd.method.as_str());
-    init.set_headers(&ws_headers.into());
-    // Bypass Cloudflare's subrequest cache for Range requests. Without this,
-    // CF caches full-body 200 responses and serves them for Range requests,
-    // breaking multipart downloads. Non-Range requests still benefit from
-    // CF edge caching. Requires compatibility_date >= 2024-11-11.
-    if fwd.headers.contains_key(http::header::RANGE) {
-        init.set_cache(web_sys::RequestCache::NoStore);
-    }
-
-    // For PUT: attach the original ReadableStream directly (zero-copy!).
-    if fwd.method == http::Method::PUT {
-        if let Some(ref stream) = body.0 {
-            init.set_body(stream);
-        }
-    }
-
-    // Build the outgoing request.
-    let ws_request = web_sys::Request::new_with_str_and_init(fwd.url.as_str(), &init)
-        .map_err(|e| format!("failed to create request: {:?}", e))?;
-
-    // Fetch via the worker crate's Fetch API.
-    let worker_req: worker::Request = ws_request.into();
-    let worker_resp = worker::Fetch::Request(worker_req)
-        .send()
-        .await
-        .map_err(|e| format!("fetch failed: {}", e))?;
-
-    // Convert to web_sys::Response to access the body stream.
-    let backend_ws: web_sys::Response = worker_resp.into();
-    let status = backend_ws.status();
-
-    // Build filtered response headers using the existing allowlist.
-    let resp_headers = extract_response_headers(&backend_ws.headers());
-    let ws_resp_headers = http_headermap_to_ws_headers(&resp_headers)
-        .map_err(|e| format!("failed to build response headers: {:?}", e))?;
-
-    // Build response with the backend's body stream (zero-copy!).
     let resp_init = web_sys::ResponseInit::new();
-    resp_init.set_status(status);
-    resp_init.set_headers(&ws_resp_headers.into());
+    resp_init.set_status(resp.status);
+    resp_init.set_headers(&ws_headers.into());
 
-    web_sys::Response::new_with_opt_readable_stream_and_init(backend_ws.body().as_ref(), &resp_init)
-        .map_err(|e| format!("failed to build response: {:?}", e))
+    web_sys::Response::new_with_opt_readable_stream_and_init(resp.body.body().as_ref(), &resp_init)
+        .unwrap_or_else(|_| ws_error_response(502, "Bad Gateway"))
 }
 
 // ── Body collection (NeedsBody path) ───────────────────────────────

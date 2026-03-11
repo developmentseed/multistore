@@ -55,13 +55,15 @@ use crate::backend::multipart::{build_backend_url, sign_s3_request};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
+use crate::forwarder::{ForwardResponse, Forwarder};
+use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::middleware::{
-    Dispatch, DispatchContext, DispatchFuture, ErasedMiddleware, Middleware, Next,
+    CompletedRequest, Dispatch, DispatchContext, DispatchFuture, ErasedMiddleware, Middleware, Next,
 };
 use crate::registry::{BucketRegistry, CredentialRegistry};
 use crate::route_handler::{ProxyResponseBody, RequestInfo};
 use crate::router::Router;
-use crate::types::{BucketConfig, S3Operation};
+use crate::types::{BucketConfig, ResolvedIdentity, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
 use object_store::list::PaginatedListOptions;
@@ -80,16 +82,26 @@ pub use crate::route_handler::{
 
 /// Simplified two-variant result from [`ProxyGateway::handle_request`].
 ///
-/// The gateway resolves `NeedsBody` internally via the body collection
-/// closure, so runtimes only need to handle `Response` and `Forward`.
-/// The body type `B` is generic — `Forward` passes it through untouched
-/// for zero-copy streaming.
-pub enum GatewayResponse<B> {
+/// The response body type `S` is the `Forwarder`'s `ResponseBody` — opaque
+/// to the core, passed through to the runtime for client delivery.
+pub enum GatewayResponse<S> {
     /// A fully formed response ready to send to the client.
     Response(ProxyResult),
-    /// A presigned URL for the runtime to forward, with the original body
-    /// for streaming (e.g. PUT uploads).
-    Forward(ForwardRequest, B),
+    /// A forwarded response from the backend, with the runtime's native
+    /// body type for streaming.
+    Forward(ForwardResponse<S>),
+}
+
+/// Metadata from request resolution, used for post-dispatch callbacks.
+pub struct RequestMetadata {
+    /// The unique request identifier.
+    pub request_id: String,
+    /// The resolved caller identity, if any.
+    pub identity: Option<ResolvedIdentity>,
+    /// The parsed S3 operation, if determined.
+    pub operation: Option<S3Operation>,
+    /// The target bucket name, if the operation targets a specific bucket.
+    pub bucket: Option<String>,
 }
 
 /// The core proxy gateway, generic over runtime primitives.
@@ -104,10 +116,12 @@ pub enum GatewayResponse<B> {
 /// - `B`: The runtime's backend for object store creation, signing, and raw HTTP
 /// - `R`: The bucket registry for bucket lookup and authorization
 /// - `C`: The credential registry for credential and role lookup
-pub struct ProxyGateway<B, R, C> {
+/// - `F`: The forwarder that executes presigned backend requests
+pub struct ProxyGateway<B, R, C, F> {
     backend: B,
     bucket_registry: R,
     credential_registry: C,
+    forwarder: F,
     middleware: Vec<Box<dyn ErasedMiddleware>>,
     virtual_host_domain: Option<String>,
     credential_resolver: Option<Box<dyn TemporaryCredentialResolver>>,
@@ -117,22 +131,25 @@ pub struct ProxyGateway<B, R, C> {
     debug_errors: bool,
 }
 
-impl<B, R, C> ProxyGateway<B, R, C>
+impl<B, R, C, F> ProxyGateway<B, R, C, F>
 where
     B: ProxyBackend,
     R: BucketRegistry,
     C: CredentialRegistry,
+    F: MaybeSend + MaybeSync,
 {
     pub fn new(
         backend: B,
         bucket_registry: R,
         credential_registry: C,
+        forwarder: F,
         virtual_host_domain: Option<String>,
     ) -> Self {
         Self {
             backend,
             bucket_registry,
             credential_registry,
+            forwarder,
             middleware: Vec::new(),
             virtual_host_domain,
             credential_resolver: None,
@@ -204,47 +221,139 @@ where
         .await
     }
 
-    /// Convenience entry point that resolves `NeedsBody` internally.
+    /// Convenience entry point that resolves `NeedsBody` internally and
+    /// executes forwarding via the [`Forwarder`].
     ///
-    /// The body is passed through untouched for `Forward` (preserving
-    /// zero-copy streaming for GET/PUT). For `NeedsBody` (multipart),
-    /// the `collect_body` closure is called to materialize the body.
+    /// Route handler matches bypass the forwarder/after_dispatch path for
+    /// simplicity. For the proxy pipeline, `after_dispatch` is fired on all
+    /// middleware after the response is determined.
     ///
     /// Runtimes match on only two variants — `Response` or `Forward`:
     ///
     /// ```rust,ignore
     /// match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     ///     GatewayResponse::Response(result) => build_response(result),
-    ///     GatewayResponse::Forward(fwd, body) => forward(fwd, body).await,
+    ///     GatewayResponse::Forward(resp) => stream_response(resp),
     /// }
     /// ```
-    pub async fn handle_request<Body, F, Fut, E>(
+    pub async fn handle_request<Body, CF, Fut, E>(
         &self,
         req: &RequestInfo<'_>,
         body: Body,
-        collect_body: F,
-    ) -> GatewayResponse<Body>
+        collect_body: CF,
+    ) -> GatewayResponse<F::ResponseBody>
     where
-        F: FnOnce(Body) -> Fut,
+        F: Forwarder<Body>,
+        CF: FnOnce(Body) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes, E>>,
         E: std::fmt::Display,
     {
-        match self.handle(req).await {
-            HandlerAction::Response(r) => GatewayResponse::Response(r),
-            HandlerAction::Forward(f) => GatewayResponse::Forward(f, body),
-            HandlerAction::NeedsBody(pending) => match collect_body(body).await {
-                Ok(bytes) => GatewayResponse::Response(self.handle_with_body(pending, bytes).await),
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to read request body");
-                    GatewayResponse::Response(error_response(
-                        &ProxyError::Internal("failed to read request body".into()),
-                        "",
+        // Route handlers first (bypass forwarder/after_dispatch for simplicity)
+        if let Some(action) = self.router.dispatch(req).await {
+            return match action {
+                HandlerAction::Response(r) => GatewayResponse::Response(r),
+                HandlerAction::Forward(fwd) => match self.forwarder.forward(fwd, body).await {
+                    Ok(resp) => GatewayResponse::Forward(resp),
+                    Err(e) => GatewayResponse::Response(error_response(
+                        &e,
+                        req.path,
                         "",
                         self.debug_errors,
-                    ))
+                    )),
+                },
+                HandlerAction::NeedsBody(_) => GatewayResponse::Response(error_response(
+                    &ProxyError::Internal("unexpected NeedsBody from route handler".into()),
+                    req.path,
+                    "",
+                    self.debug_errors,
+                )),
+            };
+        }
+
+        // Resolve via proxy pipeline (with metadata for after_dispatch)
+        let (action, metadata) = self
+            .resolve_request_with_metadata(
+                req.method.clone(),
+                req.path,
+                req.query,
+                req.headers,
+                req.source_ip,
+            )
+            .await;
+
+        // Helper to extract response body size
+        fn response_body_bytes(body: &ProxyResponseBody) -> Option<u64> {
+            match body {
+                ProxyResponseBody::Bytes(b) => Some(b.len() as u64),
+                ProxyResponseBody::Empty => Some(0),
+            }
+        }
+
+        fn content_length_from_headers(headers: &HeaderMap) -> Option<u64> {
+            headers
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+        }
+
+        let request_bytes = content_length_from_headers(req.headers);
+
+        let (response, status, resp_bytes, was_forwarded) = match action {
+            HandlerAction::Response(r) => {
+                let s = r.status;
+                let rb = response_body_bytes(&r.body);
+                (GatewayResponse::Response(r), s, rb, false)
+            }
+            HandlerAction::Forward(fwd) => match self.forwarder.forward(fwd, body).await {
+                Ok(resp) => {
+                    let s = resp.status;
+                    let cl = resp.content_length;
+                    (GatewayResponse::Forward(resp), s, cl, true)
+                }
+                Err(e) => {
+                    let err_resp =
+                        error_response(&e, req.path, &metadata.request_id, self.debug_errors);
+                    let s = err_resp.status;
+                    (GatewayResponse::Response(err_resp), s, None, true)
                 }
             },
+            HandlerAction::NeedsBody(pending) => match collect_body(body).await {
+                Ok(bytes) => {
+                    let result = self.handle_with_body(pending, bytes).await;
+                    let s = result.status;
+                    let rb = response_body_bytes(&result.body);
+                    (GatewayResponse::Response(result), s, rb, false)
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to read request body");
+                    let err_resp = error_response(
+                        &ProxyError::Internal("failed to read request body".into()),
+                        "",
+                        &metadata.request_id,
+                        self.debug_errors,
+                    );
+                    let s = err_resp.status;
+                    (GatewayResponse::Response(err_resp), s, None, false)
+                }
+            },
+        };
+
+        // Fire after_dispatch on all middleware
+        let completed = CompletedRequest {
+            request_id: &metadata.request_id,
+            identity: metadata.identity.as_ref(),
+            operation: metadata.operation.as_ref(),
+            bucket: metadata.bucket.as_deref(),
+            status,
+            response_bytes: resp_bytes,
+            request_bytes,
+            was_forwarded,
+        };
+        for m in &self.middleware {
+            m.after_dispatch(&completed).await;
         }
+
+        response
     }
 
     /// Phase 1: Resolve an incoming request into an action.
@@ -260,6 +369,22 @@ where
         headers: &HeaderMap,
         source_ip: Option<IpAddr>,
     ) -> HandlerAction {
+        let (action, _metadata) = self
+            .resolve_request_with_metadata(method, path, query, headers, source_ip)
+            .await;
+        action
+    }
+
+    /// Like [`resolve_request`](Self::resolve_request), but also returns
+    /// [`RequestMetadata`] for post-dispatch callbacks (e.g. metering).
+    pub(crate) async fn resolve_request_with_metadata(
+        &self,
+        method: Method,
+        path: &str,
+        query: Option<&str>,
+        headers: &HeaderMap,
+        source_ip: Option<IpAddr>,
+    ) -> (HandlerAction, RequestMetadata) {
         let request_id = Uuid::new_v4().to_string();
 
         tracing::info!(
@@ -274,7 +399,7 @@ where
             .resolve_inner(method, path, query, headers, source_ip, &request_id)
             .await
         {
-            Ok(action) => {
+            Ok((action, metadata)) => {
                 match &action {
                     HandlerAction::Response(resp) => {
                         tracing::info!(
@@ -297,7 +422,7 @@ where
                         );
                     }
                 }
-                action
+                (action, metadata)
             }
             Err(err) => {
                 tracing::warn!(
@@ -307,7 +432,21 @@ where
                     s3_code = %err.s3_error_code(),
                     "request failed"
                 );
-                HandlerAction::Response(error_response(&err, path, &request_id, self.debug_errors))
+                let metadata = RequestMetadata {
+                    request_id: request_id.clone(),
+                    identity: None,
+                    operation: None,
+                    bucket: None,
+                };
+                (
+                    HandlerAction::Response(error_response(
+                        &err,
+                        path,
+                        &request_id,
+                        self.debug_errors,
+                    )),
+                    metadata,
+                )
             }
         }
     }
@@ -353,7 +492,7 @@ where
         headers: &HeaderMap,
         source_ip: Option<IpAddr>,
         request_id: &str,
-    ) -> Result<HandlerAction, ProxyError> {
+    ) -> Result<(HandlerAction, RequestMetadata), ProxyError> {
         // Determine host style
         let host_style = determine_host_style(headers, self.virtual_host_domain.as_deref());
 
@@ -404,16 +543,17 @@ where
         };
 
         // Terminal dispatch: wraps self.dispatch_operation with the method.
-        struct GatewayDispatch<'g, B, R, C> {
-            gateway: &'g ProxyGateway<B, R, C>,
+        struct GatewayDispatch<'g, B, R, C, F> {
+            gateway: &'g ProxyGateway<B, R, C, F>,
             method: Method,
         }
 
-        impl<B, R, C> Dispatch for GatewayDispatch<'_, B, R, C>
+        impl<B, R, C, F> Dispatch for GatewayDispatch<'_, B, R, C, F>
         where
             B: ProxyBackend,
             R: BucketRegistry,
             C: CredentialRegistry,
+            F: MaybeSend + MaybeSync,
         {
             fn dispatch<'a>(&'a self, ctx: DispatchContext<'a>) -> DispatchFuture<'a> {
                 Box::pin(async move { self.gateway.dispatch_operation(&self.method, &ctx).await })
@@ -426,7 +566,17 @@ where
         };
 
         let next = Next::new(&self.middleware, &dispatch);
-        next.run(ctx).await
+        let action = next.run(ctx).await?;
+
+        // Capture metadata from resolved state for post-dispatch callbacks.
+        let metadata = RequestMetadata {
+            request_id: request_id.to_string(),
+            identity: Some(identity),
+            operation: Some(operation),
+            bucket: resolved.map(|r| r.config.name.clone()),
+        };
+
+        Ok((action, metadata))
     }
 
     async fn dispatch_operation(
@@ -479,6 +629,7 @@ where
                             "if-modified-since",
                             "if-unmodified-since",
                         ],
+                        request_id,
                     )
                     .await?;
                 tracing::debug!(path = fwd.url.path(), "GET via presigned URL");
@@ -498,6 +649,7 @@ where
                             "if-modified-since",
                             "if-unmodified-since",
                         ],
+                        request_id,
                     )
                     .await?;
                 tracing::debug!(path = fwd.url.path(), "HEAD via presigned URL");
@@ -511,6 +663,7 @@ where
                         key,
                         original_headers,
                         &["content-type", "content-length", "content-md5"],
+                        request_id,
                     )
                     .await?;
                 tracing::debug!(path = fwd.url.path(), "PUT via presigned URL");
@@ -518,7 +671,14 @@ where
             }
             S3Operation::DeleteObject { key, .. } => {
                 let fwd = self
-                    .build_forward(Method::DELETE, bucket_config, key, original_headers, &[])
+                    .build_forward(
+                        Method::DELETE,
+                        bucket_config,
+                        key,
+                        original_headers,
+                        &[],
+                        request_id,
+                    )
                     .await?;
                 tracing::debug!(path = fwd.url.path(), "DELETE via presigned URL");
                 Ok(HandlerAction::Forward(fwd))
@@ -560,6 +720,7 @@ where
         key: &str,
         original_headers: &HeaderMap,
         forward_header_names: &[&'static str],
+        request_id: &str,
     ) -> Result<ForwardRequest, ProxyError> {
         let signer = self.backend.create_signer(config)?;
         let path = build_object_path(config, key);
@@ -580,6 +741,7 @@ where
             method,
             url,
             headers: fwd_headers,
+            request_id: request_id.to_string(),
         })
     }
 
@@ -764,6 +926,7 @@ mod tests {
     use super::*;
     use crate::api::response::BucketEntry;
     use crate::backend::RawResponse;
+    use crate::forwarder::{ForwardResponse, Forwarder};
     use crate::registry::{BucketRegistry, CredentialRegistry, ResolvedBucket};
     use crate::types::{ResolvedIdentity, RoleConfig, StoredCredential};
     use object_store::list::PaginatedListStore;
@@ -863,12 +1026,25 @@ mod tests {
         }
     }
 
+    struct MockForwarder;
+
+    impl Forwarder<()> for MockForwarder {
+        type ResponseBody = ();
+        async fn forward(
+            &self,
+            _request: ForwardRequest,
+            _body: (),
+        ) -> Result<ForwardResponse<()>, ProxyError> {
+            unimplemented!("not needed for resolve_request tests")
+        }
+    }
+
     fn run<F: std::future::Future>(f: F) -> F::Output {
         futures::executor::block_on(f)
     }
 
-    fn gateway() -> ProxyGateway<MockBackend, MockRegistry, MockCreds> {
-        ProxyGateway::new(MockBackend, MockRegistry, MockCreds, None)
+    fn gateway() -> ProxyGateway<MockBackend, MockRegistry, MockCreds, MockForwarder> {
+        ProxyGateway::new(MockBackend, MockRegistry, MockCreds, MockForwarder, None)
     }
 
     // ── Tests ───────────────────────────────────────────────────────

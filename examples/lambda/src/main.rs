@@ -21,6 +21,8 @@ mod client;
 
 use client::{LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
+use multistore::error::ProxyError;
+use multistore::forwarder::{ForwardResponse, Forwarder};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{
     ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
@@ -37,11 +39,72 @@ use multistore_sts::TokenKey;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider>;
+/// Forwards presigned requests to the backend using `reqwest`, buffering the
+/// full response body for Lambda (which does not support streaming responses).
+struct LambdaForwarder {
+    client: reqwest::Client,
+}
+
+impl Forwarder<Body> for LambdaForwarder {
+    type ResponseBody = Body;
+
+    async fn forward(
+        &self,
+        request: ForwardRequest,
+        body: Body,
+    ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
+        let mut req_builder = self
+            .client
+            .request(request.method.clone(), request.url.as_str());
+
+        for (k, v) in request.headers.iter() {
+            req_builder = req_builder.header(k, v);
+        }
+
+        // Attach body for PUT requests
+        if request.method == http::Method::PUT {
+            let bytes = body_to_bytes(body)
+                .await
+                .map_err(|e| ProxyError::Internal(format!("failed to read PUT body: {e}")))?;
+            req_builder = req_builder.body(bytes);
+        }
+
+        let backend_resp = req_builder
+            .send()
+            .await
+            .map_err(|e| ProxyError::Internal(format!("forward request failed: {e}")))?;
+
+        let status = backend_resp.status().as_u16();
+
+        // Forward allowlisted response headers
+        let mut headers = http::HeaderMap::new();
+        for name in RESPONSE_HEADER_ALLOWLIST {
+            if let Some(v) = backend_resp.headers().get(*name) {
+                headers.insert(*name, v.clone());
+            }
+        }
+
+        let content_length = backend_resp.content_length();
+
+        // Buffer the response body (Lambda doesn't support streaming responses)
+        let body_bytes = backend_resp
+            .bytes()
+            .await
+            .map_err(|e| ProxyError::Internal(format!("failed to read backend response: {e}")))?;
+
+        Ok(ForwardResponse {
+            status,
+            headers,
+            body: Body::Binary(body_bytes.to_vec()),
+            content_length,
+        })
+    }
+}
+
+type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider, LambdaForwarder>;
 
 struct AppState {
     handler: Handler,
-    reqwest_client: reqwest::Client,
 }
 
 static STATE: OnceLock<AppState> = OnceLock::new();
@@ -100,18 +163,19 @@ async fn main() -> Result<(), Error> {
     }
     router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
+    let forwarder = LambdaForwarder {
+        client: reqwest_client,
+    };
+
     // Build the gateway with the router.
-    let mut handler = ProxyGateway::new(backend, config.clone(), config, domain)
+    let mut handler = ProxyGateway::new(backend, config.clone(), config, forwarder, domain)
         .with_middleware(oidc_auth)
         .with_router(router);
     if let Some(resolver) = token_key {
         handler = handler.with_credential_resolver(resolver);
     }
 
-    let _ = STATE.set(AppState {
-        handler,
-        reqwest_client,
-    });
+    let _ = STATE.set(AppState { handler });
 
     lambda_http::run(service_fn(request_handler)).await
 }
@@ -138,8 +202,12 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
             .await
         {
             GatewayResponse::Response(result) => build_lambda_response(result),
-            GatewayResponse::Forward(fwd, body) => {
-                forward_to_backend(&state.reqwest_client, fwd, body).await
+            GatewayResponse::Forward(resp) => {
+                let mut builder = Response::builder().status(resp.status);
+                for (k, v) in resp.headers.iter() {
+                    builder = builder.header(k, v);
+                }
+                builder.body(resp.body).unwrap()
             }
         },
     )
@@ -158,74 +226,6 @@ fn build_lambda_response(result: ProxyResult) -> Response<Body> {
     }
 
     builder.body(body).unwrap()
-}
-
-/// Build a plain-text error response.
-fn error_response(status: u16, message: &str) -> Response<Body> {
-    Response::builder()
-        .status(status)
-        .body(Body::Text(message.to_string()))
-        .unwrap()
-}
-
-/// Execute a Forward request via reqwest, buffering the response for Lambda.
-async fn forward_to_backend(
-    client: &reqwest::Client,
-    fwd: ForwardRequest,
-    body: Body,
-) -> Response<Body> {
-    let mut req_builder = client.request(fwd.method.clone(), fwd.url.as_str());
-
-    for (k, v) in fwd.headers.iter() {
-        req_builder = req_builder.header(k, v);
-    }
-
-    // Attach body for PUT requests
-    if fwd.method == http::Method::PUT {
-        match body_to_bytes(body).await {
-            Ok(bytes) => {
-                req_builder = req_builder.body(bytes);
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to read PUT body");
-                return error_response(502, "Bad Gateway");
-            }
-        }
-    }
-
-    let backend_resp = match req_builder.send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            tracing::error!(error = %e, "forward request failed");
-            return error_response(502, "Bad Gateway");
-        }
-    };
-
-    let status = backend_resp.status().as_u16();
-
-    // Forward allowlisted response headers
-    let mut resp_headers = http::HeaderMap::new();
-    for name in RESPONSE_HEADER_ALLOWLIST {
-        if let Some(v) = backend_resp.headers().get(*name) {
-            resp_headers.insert(*name, v.clone());
-        }
-    }
-
-    // Buffer the response body (Lambda doesn't support streaming responses)
-    let body_bytes = match backend_resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to read backend response body");
-            return error_response(502, "Bad Gateway");
-        }
-    };
-
-    let mut builder = Response::builder().status(status);
-    for (k, v) in resp_headers.iter() {
-        builder = builder.header(k, v);
-    }
-
-    builder.body(Body::Binary(body_bytes.to_vec())).unwrap()
 }
 
 /// Collect a Lambda body into bytes.

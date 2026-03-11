@@ -19,11 +19,3 @@ pub fn build_proxy_response(result: ProxyResult) -> Response {
 
     builder.body(body).unwrap()
 }
-
-/// Build a plain-text error response.
-pub fn error_response(status: u16, message: &str) -> Response {
-    Response::builder()
-        .status(status)
-        .body(Body::from(message.to_string()))
-        .unwrap()
-}

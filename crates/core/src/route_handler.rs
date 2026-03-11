@@ -64,6 +64,8 @@ pub struct ForwardRequest {
     pub url: Url,
     /// Headers to include in the backend request (Range, If-Match, Content-Type, etc.).
     pub headers: HeaderMap,
+    /// Unique request identifier for tracing and metering correlation.
+    pub request_id: String,
 }
 
 /// The result of handling a proxy request.
