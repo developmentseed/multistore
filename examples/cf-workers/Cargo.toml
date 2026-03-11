@@ -11,24 +11,20 @@ crate-type = ["cdylib"]
 [dependencies]
 multistore.workspace = true
 multistore-static-config.workspace = true
-multistore-sts.workspace = true
 multistore-metering.workspace = true
-multistore-oidc-provider.workspace = true
+s3s.workspace = true
 bytes.workspace = true
 http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-thiserror.workspace = true
 chrono.workspace = true
-quick-xml.workspace = true
 url.workspace = true
-object_store.workspace = true
 futures.workspace = true
+object_store.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
 async-trait.workspace = true
-reqwest.workspace = true
 
 # Cloudflare Workers SDK
 worker.workspace = true
