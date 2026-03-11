@@ -110,4 +110,4 @@ class_name = "BandwidthMeter"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["BandwidthMeter"]
+new_sqlite_classes = ["BandwidthMeter"]
