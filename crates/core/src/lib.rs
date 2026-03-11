@@ -20,6 +20,8 @@
 //! - [`forwarder::Forwarder`] — runtime-agnostic HTTP forwarding for backend requests
 //! - [`router::Router`] — path-based route matching via `matchit` for efficient dispatch
 //! - [`proxy::ProxyGateway`] — the main request handler that ties everything together
+//! - [`service::MultistoreService`] — s3s-based S3 service implementation (maps S3 ops → object_store)
+//! - [`service::StoreFactory`] — runtime-provided factory for creating object stores per request
 
 pub mod api;
 pub mod auth;
@@ -32,4 +34,5 @@ pub mod proxy;
 pub mod registry;
 pub mod route_handler;
 pub mod router;
+pub mod service;
 pub mod types;

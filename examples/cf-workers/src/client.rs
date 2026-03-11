@@ -9,10 +9,13 @@ use bytes::Bytes;
 use http::HeaderMap;
 use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse, StoreBuilder};
 use multistore::error::ProxyError;
+use multistore::service::StoreFactory;
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
 use object_store::list::PaginatedListStore;
+use object_store::multipart::MultipartStore;
 use object_store::signer::Signer;
+use object_store::ObjectStore;
 use std::sync::Arc;
 use worker::Fetch;
 
@@ -99,6 +102,35 @@ impl ProxyBackend for WorkerBackend {
             headers: resp_headers,
             body: Bytes::from(resp_bytes),
         })
+    }
+}
+
+impl StoreFactory for WorkerBackend {
+    fn create_store(&self, config: &BucketConfig) -> Result<Arc<dyn ObjectStore>, ProxyError> {
+        let builder = match create_builder(config)? {
+            StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(FetchConnector)),
+        };
+        builder.build_object_store()
+    }
+
+    fn create_paginated_store(
+        &self,
+        config: &BucketConfig,
+    ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
+        let builder = match create_builder(config)? {
+            StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(FetchConnector)),
+        };
+        builder.build()
+    }
+
+    fn create_multipart_store(
+        &self,
+        config: &BucketConfig,
+    ) -> Result<Arc<dyn MultipartStore>, ProxyError> {
+        let builder = match create_builder(config)? {
+            StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(FetchConnector)),
+        };
+        builder.build_multipart_store()
     }
 }
 

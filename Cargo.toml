@@ -52,6 +52,10 @@ aes-gcm = "0.10"
 object_store = { version = "0.13.1", default-features = false, features = ["aws"] }
 futures = "0.3"
 
+# S3 protocol
+s3s = { version = "0.13.0", default-features = false }
+dashmap = "6"
+
 # XML
 quick-xml = { version = "0.37", features = ["serialize"] }
 

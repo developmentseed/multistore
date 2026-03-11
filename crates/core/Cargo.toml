@@ -29,3 +29,5 @@ tracing.workspace = true
 object_store.workspace = true
 futures.workspace = true
 matchit.workspace = true
+s3s.workspace = true
+dashmap.workspace = true

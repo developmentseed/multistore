@@ -26,7 +26,9 @@ use bytes::Bytes;
 use http::HeaderMap;
 use object_store::aws::AmazonS3Builder;
 use object_store::list::PaginatedListStore;
+use object_store::multipart::MultipartStore;
 use object_store::signer::Signer;
+use object_store::ObjectStore;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -120,6 +122,40 @@ impl StoreBuilder {
             #[cfg(feature = "gcp")]
             StoreBuilder::Gcs(b) => Ok(Arc::new(b.build().map_err(|e| {
                 ProxyError::ConfigError(format!("failed to build GCS signer: {}", e))
+            })?)),
+        }
+    }
+
+    /// Build an [`ObjectStore`] for GET/HEAD/PUT/DELETE operations.
+    pub fn build_object_store(self) -> Result<Arc<dyn ObjectStore>, ProxyError> {
+        match self {
+            StoreBuilder::S3(b) => Ok(Arc::new(b.build().map_err(|e| {
+                ProxyError::ConfigError(format!("failed to build S3 object store: {}", e))
+            })?)),
+            #[cfg(feature = "azure")]
+            StoreBuilder::Azure(b) => Ok(Arc::new(b.build().map_err(|e| {
+                ProxyError::ConfigError(format!("failed to build Azure object store: {}", e))
+            })?)),
+            #[cfg(feature = "gcp")]
+            StoreBuilder::Gcs(b) => Ok(Arc::new(b.build().map_err(|e| {
+                ProxyError::ConfigError(format!("failed to build GCS object store: {}", e))
+            })?)),
+        }
+    }
+
+    /// Build a [`MultipartStore`] for multipart upload operations.
+    pub fn build_multipart_store(self) -> Result<Arc<dyn MultipartStore>, ProxyError> {
+        match self {
+            StoreBuilder::S3(b) => Ok(Arc::new(b.build().map_err(|e| {
+                ProxyError::ConfigError(format!("failed to build S3 multipart store: {}", e))
+            })?)),
+            #[cfg(feature = "azure")]
+            StoreBuilder::Azure(b) => Ok(Arc::new(b.build().map_err(|e| {
+                ProxyError::ConfigError(format!("failed to build Azure multipart store: {}", e))
+            })?)),
+            #[cfg(feature = "gcp")]
+            StoreBuilder::Gcs(b) => Ok(Arc::new(b.build().map_err(|e| {
+                ProxyError::ConfigError(format!("failed to build GCS multipart store: {}", e))
             })?)),
         }
     }
