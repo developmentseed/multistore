@@ -1,40 +1,31 @@
-//! Lambda backend using reqwest for raw HTTP and default object_store connector.
+//! Lambda backend using the default object_store connector.
 
-use bytes::Bytes;
-use http::HeaderMap;
-use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse};
+use multistore::backend::create_builder;
 use multistore::error::ProxyError;
+use multistore::service::StoreFactory;
 use multistore::types::BucketConfig;
-use multistore_oidc_provider::{HttpExchange, OidcProviderError};
 use object_store::list::PaginatedListStore;
-use object_store::signer::Signer;
+use object_store::multipart::MultipartStore;
+use object_store::ObjectStore;
 use std::sync::Arc;
 
 /// Backend for the Lambda runtime.
 ///
-/// Uses reqwest for raw HTTP (multipart operations) and the default
-/// object_store HTTP connector for high-level operations.
+/// Uses the default object_store HTTP connector for all operations.
 #[derive(Clone)]
-pub struct LambdaBackend {
-    client: reqwest::Client,
-}
+pub struct LambdaBackend;
 
 impl LambdaBackend {
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .pool_max_idle_per_host(5)
-                .build()
-                .expect("failed to build reqwest client"),
-        }
-    }
-
-    pub fn client(&self) -> &reqwest::Client {
-        &self.client
+        Self
     }
 }
 
-impl ProxyBackend for LambdaBackend {
+impl StoreFactory for LambdaBackend {
+    fn create_store(&self, config: &BucketConfig) -> Result<Arc<dyn ObjectStore>, ProxyError> {
+        create_builder(config)?.build_object_store()
+    }
+
     fn create_paginated_store(
         &self,
         config: &BucketConfig,
@@ -42,80 +33,10 @@ impl ProxyBackend for LambdaBackend {
         create_builder(config)?.build()
     }
 
-    fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
-        build_signer(config)
-    }
-
-    async fn send_raw(
+    fn create_multipart_store(
         &self,
-        method: http::Method,
-        url: String,
-        headers: HeaderMap,
-        body: Bytes,
-    ) -> Result<RawResponse, ProxyError> {
-        tracing::debug!(
-            method = %method,
-            url = %url,
-            "lambda: sending raw backend request via reqwest"
-        );
-
-        let mut req_builder = self.client.request(method, &url);
-
-        for (key, value) in headers.iter() {
-            req_builder = req_builder.header(key, value);
-        }
-
-        if !body.is_empty() {
-            req_builder = req_builder.body(body);
-        }
-
-        let response = req_builder.send().await.map_err(|e| {
-            tracing::error!(error = %e, "reqwest raw request failed");
-            ProxyError::BackendError(e.to_string())
-        })?;
-
-        let status = response.status().as_u16();
-        let resp_headers = response.headers().clone();
-        let resp_body = response.bytes().await.map_err(|e| {
-            ProxyError::BackendError(format!("failed to read raw response body: {}", e))
-        })?;
-
-        Ok(RawResponse {
-            status,
-            headers: resp_headers,
-            body: resp_body,
-        })
-    }
-}
-
-/// [`HttpExchange`] implementation using reqwest (native).
-#[derive(Clone)]
-pub struct ReqwestHttpExchange {
-    client: reqwest::Client,
-}
-
-impl ReqwestHttpExchange {
-    pub fn new(client: reqwest::Client) -> Self {
-        Self { client }
-    }
-}
-
-impl HttpExchange for ReqwestHttpExchange {
-    async fn post_form(
-        &self,
-        url: &str,
-        form: &[(&str, &str)],
-    ) -> Result<String, OidcProviderError> {
-        let resp = self
-            .client
-            .post(url)
-            .form(form)
-            .send()
-            .await
-            .map_err(|e| OidcProviderError::HttpError(e.to_string()))?;
-
-        resp.text()
-            .await
-            .map_err(|e| OidcProviderError::HttpError(e.to_string()))
+        config: &BucketConfig,
+    ) -> Result<Arc<dyn MultipartStore>, ProxyError> {
+        create_builder(config)?.build_multipart_store()
     }
 }

@@ -1,7 +1,6 @@
 //! AWS Lambda runtime for the multistore S3 proxy.
 //!
-//! Mirrors the server example but runs inside AWS Lambda instead of a
-//! standalone Tokio/Hyper server.
+//! Uses s3s for S3 protocol handling with `MultistoreService`.
 //!
 //! ## Building
 //!
@@ -13,98 +12,18 @@
 //!
 //! - `CONFIG_PATH` — Path to the TOML config file (default: `config.toml`)
 //! - `VIRTUAL_HOST_DOMAIN` — Domain for virtual-hosted-style requests
-//! - `SESSION_TOKEN_KEY` — Base64-encoded AES-256-GCM key for session tokens
-//! - `OIDC_PROVIDER_KEY` — PEM-encoded RSA private key for OIDC provider
-//! - `OIDC_PROVIDER_ISSUER` — OIDC issuer URL
 
 mod client;
 
-use client::{LambdaBackend, ReqwestHttpExchange};
+use client::LambdaBackend;
 use lambda_http::{service_fn, Body, Error, Request, Response};
-use multistore::error::ProxyError;
-use multistore::forwarder::{ForwardResponse, Forwarder};
-use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::route_handler::{
-    ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
-};
-use multistore::router::Router;
-use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
-use multistore_oidc_provider::jwt::JwtSigner;
-use multistore_oidc_provider::route_handler::OidcRouterExt;
-use multistore_oidc_provider::OidcCredentialProvider;
+use multistore::service::{MultistoreAuth, MultistoreService};
 use multistore_static_config::StaticProvider;
-use multistore_sts::route_handler::StsRouterExt;
-use multistore_sts::JwksCache;
-use multistore_sts::TokenKey;
+use s3s::service::S3ServiceBuilder;
 use std::sync::OnceLock;
-use std::time::Duration;
-
-/// Forwards presigned requests to the backend using `reqwest`, buffering the
-/// full response body for Lambda (which does not support streaming responses).
-struct LambdaForwarder {
-    client: reqwest::Client,
-}
-
-impl Forwarder<Body> for LambdaForwarder {
-    type ResponseBody = Body;
-
-    async fn forward(
-        &self,
-        request: ForwardRequest,
-        body: Body,
-    ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
-        let mut req_builder = self
-            .client
-            .request(request.method.clone(), request.url.as_str());
-
-        for (k, v) in request.headers.iter() {
-            req_builder = req_builder.header(k, v);
-        }
-
-        // Attach body for PUT requests
-        if request.method == http::Method::PUT {
-            let bytes = body_to_bytes(body)
-                .await
-                .map_err(|e| ProxyError::Internal(format!("failed to read PUT body: {e}")))?;
-            req_builder = req_builder.body(bytes);
-        }
-
-        let backend_resp = req_builder
-            .send()
-            .await
-            .map_err(|e| ProxyError::Internal(format!("forward request failed: {e}")))?;
-
-        let status = backend_resp.status().as_u16();
-
-        // Forward allowlisted response headers
-        let mut headers = http::HeaderMap::new();
-        for name in RESPONSE_HEADER_ALLOWLIST {
-            if let Some(v) = backend_resp.headers().get(*name) {
-                headers.insert(*name, v.clone());
-            }
-        }
-
-        let content_length = backend_resp.content_length();
-
-        // Buffer the response body (Lambda doesn't support streaming responses)
-        let body_bytes = backend_resp
-            .bytes()
-            .await
-            .map_err(|e| ProxyError::Internal(format!("failed to read backend response: {e}")))?;
-
-        Ok(ForwardResponse {
-            status,
-            headers,
-            body: Body::Binary(body_bytes.to_vec()),
-            content_length,
-        })
-    }
-}
-
-type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider, LambdaForwarder>;
 
 struct AppState {
-    handler: Handler,
+    s3_service: s3s::service::S3Service,
 }
 
 static STATE: OnceLock<AppState> = OnceLock::new();
@@ -124,115 +43,60 @@ async fn main() -> Result<(), Error> {
 
     let config = StaticProvider::from_file(&config_path)?;
 
-    let token_key = std::env::var("SESSION_TOKEN_KEY")
-        .ok()
-        .map(|v| TokenKey::from_base64(&v))
-        .transpose()?;
-
     let backend = LambdaBackend::new();
-    let reqwest_client = backend.client().clone();
-    let jwks_cache = JwksCache::new(reqwest_client.clone(), Duration::from_secs(900));
-    let sts_creds = config.clone();
 
-    let oidc_provider_key = std::env::var("OIDC_PROVIDER_KEY").ok();
-    let oidc_provider_issuer = std::env::var("OIDC_PROVIDER_ISSUER").ok();
+    // Build the s3s service
+    let service = MultistoreService::new(config.clone(), backend);
+    let auth = MultistoreAuth::new(config);
 
-    let (oidc_auth, oidc_signer, oidc_issuer) = match (&oidc_provider_key, &oidc_provider_issuer) {
-        (Some(key_pem), Some(issuer)) => {
-            let signer = JwtSigner::from_pem(key_pem, "proxy-key-1".into(), 300)
-                .map_err(|e| format!("failed to create OIDC JWT signer: {e}"))?;
-            let http = ReqwestHttpExchange::new(reqwest_client.clone());
-            let provider = OidcCredentialProvider::new(
-                signer.clone(),
-                http,
-                issuer.clone(),
-                "sts.amazonaws.com".into(),
-            );
-            let auth = MaybeOidcAuth::Enabled(Box::new(
-                multistore_oidc_provider::backend_auth::AwsBackendAuth::new(provider),
-            ));
-            (auth, Some(signer), Some(issuer.clone()))
-        }
-        _ => (MaybeOidcAuth::Disabled, None, None),
-    };
+    let mut builder = S3ServiceBuilder::new(service);
+    builder.set_auth(auth);
 
-    // Build router with OIDC discovery (if configured) and STS.
-    let mut router = Router::new();
-    if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
-        router = router.with_oidc_discovery(issuer, signer);
-    }
-    router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
-
-    let forwarder = LambdaForwarder {
-        client: reqwest_client,
-    };
-
-    // Build the gateway with the router.
-    let mut handler = ProxyGateway::new(backend, config.clone(), config, forwarder, domain)
-        .with_middleware(oidc_auth)
-        .with_router(router);
-    if let Some(resolver) = token_key {
-        handler = handler.with_credential_resolver(resolver);
+    if let Some(ref d) = domain {
+        builder.set_host(
+            s3s::host::SingleDomain::new(d)
+                .map_err(|e| format!("invalid virtual host domain: {e}"))?,
+        );
     }
 
-    let _ = STATE.set(AppState { handler });
+    let s3_service = builder.build();
+
+    let _ = STATE.set(AppState { s3_service });
 
     lambda_http::run(service_fn(request_handler)).await
 }
 
 async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
     let state = STATE.get().expect("state not initialized");
+
+    // Convert lambda_http::Request to http::Request<s3s::Body>
     let (parts, body) = req.into_parts();
-    let method = parts.method;
-    let uri = parts.uri;
-    let path = uri.path().to_string();
-    let query = uri.query().map(|q| q.to_string());
-    let headers = parts.headers;
+    let body_bytes = match body {
+        Body::Empty => bytes::Bytes::new(),
+        Body::Text(s) => bytes::Bytes::from(s),
+        Body::Binary(b) => bytes::Bytes::from(b),
+    };
+    let s3_req = http::Request::from_parts(parts, s3s::Body::from(body_bytes));
 
-    tracing::debug!(method = %method, uri = %uri, "incoming request");
+    // Call the s3s service
+    let s3_resp = state
+        .s3_service
+        .call(s3_req)
+        .await
+        .map_err(|e| format!("s3s error: {e:?}"))?;
 
-    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
+    // Convert http::Response<s3s::Body> to lambda_http::Response<Body>
+    let (parts, s3_body) = s3_resp.into_parts();
+    let resp_bytes = http_body_util::BodyExt::collect(s3_body)
+        .await
+        .map_err(|e| format!("failed to collect response body: {e}"))?
+        .to_bytes();
 
-    Ok(
-        match state
-            .handler
-            .handle_request(&req_info, body, |b| async {
-                body_to_bytes(b).await.map_err(|e| e.to_string())
-            })
-            .await
-        {
-            GatewayResponse::Response(result) => build_lambda_response(result),
-            GatewayResponse::Forward(resp) => {
-                let mut builder = Response::builder().status(resp.status);
-                for (k, v) in resp.headers.iter() {
-                    builder = builder.header(k, v);
-                }
-                builder.body(resp.body).unwrap()
-            }
-        },
-    )
-}
-
-/// Convert a `ProxyResult` to a Lambda `Response`.
-fn build_lambda_response(result: ProxyResult) -> Response<Body> {
-    let body = match result.body {
-        ProxyResponseBody::Bytes(b) => Body::Binary(b.to_vec()),
-        ProxyResponseBody::Empty => Body::Empty,
+    let lambda_body = if resp_bytes.is_empty() {
+        Body::Empty
+    } else {
+        Body::Binary(resp_bytes.to_vec())
     };
 
-    let mut builder = Response::builder().status(result.status);
-    for (key, value) in result.headers.iter() {
-        builder = builder.header(key, value);
-    }
-
-    builder.body(body).unwrap()
-}
-
-/// Collect a Lambda body into bytes.
-async fn body_to_bytes(body: Body) -> Result<bytes::Bytes, Box<dyn std::error::Error>> {
-    match body {
-        Body::Empty => Ok(bytes::Bytes::new()),
-        Body::Text(s) => Ok(bytes::Bytes::from(s)),
-        Body::Binary(b) => Ok(bytes::Bytes::from(b)),
-    }
+    Ok(Response::from_parts(parts, lambda_body))
 }

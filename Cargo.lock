@@ -1325,16 +1325,13 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "http",
+ "http-body-util",
  "lambda_http",
  "multistore",
- "multistore-oidc-provider",
  "multistore-static-config",
- "multistore-sts",
  "object_store",
- "reqwest",
- "serde",
+ "s3s",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
 ]
