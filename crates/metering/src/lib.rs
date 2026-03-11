@@ -1,42 +1,22 @@
-//! Usage metering and quota enforcement middleware.
+//! Usage metering and quota enforcement.
 //!
 //! This crate provides trait abstractions for tracking API usage and enforcing
-//! quotas, along with a [`MeteringMiddleware`] that wires them into the proxy's
-//! middleware chain. Integrators bring their own storage backends by implementing
+//! quotas. Integrators bring their own storage backends by implementing
 //! [`UsageRecorder`] and [`QuotaChecker`].
-//!
-//! ## Quick start
-//!
-//! ```rust,ignore
-//! use multistore_metering::{MeteringMiddleware, UsageRecorder, QuotaChecker};
-//!
-//! // Implement UsageRecorder and QuotaChecker for your storage backend,
-//! // then register the middleware on the ProxyGateway builder:
-//! let metering = MeteringMiddleware::new(my_quota_checker, my_usage_recorder);
-//! gateway_builder.add_middleware(metering);
-//! ```
 //!
 //! ## Architecture
 //!
 //! - **Pre-dispatch:** [`QuotaChecker::check_quota`] runs before the request
-//!   proceeds, using `Content-Length` as a byte estimate. Return
-//!   [`Err(QuotaExceeded)`](QuotaExceeded) to reject with HTTP 429.
+//!   proceeds. Return [`Err(QuotaExceeded)`](QuotaExceeded) to reject with
+//!   HTTP 429.
 //! - **Post-dispatch:** [`UsageRecorder::record_operation`] runs after the
-//!   response is available, recording actual status and byte counts from
-//!   the backend response.
+//!   response is available, recording actual status and byte counts.
 
 use std::future::Future;
 use std::net::IpAddr;
 
-use multistore::api::response::ErrorResponse;
-use multistore::error::ProxyError;
 use multistore::maybe_send::{MaybeSend, MaybeSync};
-use multistore::middleware::{CompletedRequest, DispatchContext, Middleware, Next};
-use multistore::route_handler::{HandlerAction, ProxyResponseBody, ProxyResult};
 use multistore::types::{ResolvedIdentity, S3Operation};
-
-use bytes::Bytes;
-use http::HeaderMap;
 
 /// A completed operation's metadata, passed to [`UsageRecorder::record_operation`].
 pub struct UsageEvent<'a> {
@@ -50,9 +30,7 @@ pub struct UsageEvent<'a> {
     pub bucket: Option<&'a str>,
     /// The HTTP status code of the response.
     pub status: u16,
-    /// Best-available byte count: `content_length` from backend response
-    /// for forwarded requests, response body length for direct responses,
-    /// or `Content-Length` header estimate as fallback.
+    /// Best-available byte count for the operation.
     pub bytes_transferred: u64,
     /// Whether the request was forwarded to a backend via presigned URL.
     pub was_forwarded: bool,
@@ -77,8 +55,8 @@ pub struct QuotaExceeded {
 pub trait UsageRecorder: MaybeSend + MaybeSync + 'static {
     /// Record a completed operation.
     ///
-    /// This runs in the post-dispatch phase. Implementations should be
-    /// fire-and-forget — recording failures must not affect the response.
+    /// Implementations should be fire-and-forget — recording failures
+    /// must not affect the response.
     fn record_operation<'a>(
         &'a self,
         event: UsageEvent<'a>,
@@ -103,110 +81,6 @@ pub trait QuotaChecker: MaybeSend + MaybeSync + 'static {
         estimated_bytes: u64,
         source_ip: Option<IpAddr>,
     ) -> impl Future<Output = Result<(), QuotaExceeded>> + MaybeSend + 'a;
-}
-
-/// Middleware that enforces quotas pre-dispatch and records usage post-dispatch.
-///
-/// Generic over the quota checker `Q` and usage recorder `U`, allowing
-/// integrators to bring their own storage backends.
-///
-/// ## Request flow
-///
-/// 1. Extract `Content-Length` from request headers as a byte estimate.
-/// 2. Call [`QuotaChecker::check_quota`] — reject with 429 if over limit.
-/// 3. Delegate to the next middleware via [`Next::run`].
-/// 4. In [`after_dispatch`](Middleware::after_dispatch), call
-///    [`UsageRecorder::record_operation`] with the actual response metadata.
-pub struct MeteringMiddleware<Q, U> {
-    quota_checker: Q,
-    usage_recorder: U,
-}
-
-impl<Q, U> MeteringMiddleware<Q, U> {
-    /// Create a new metering middleware with the given quota checker and
-    /// usage recorder.
-    pub fn new(quota_checker: Q, usage_recorder: U) -> Self {
-        Self {
-            quota_checker,
-            usage_recorder,
-        }
-    }
-}
-
-impl<Q: QuotaChecker, U: UsageRecorder> Middleware for MeteringMiddleware<Q, U> {
-    async fn handle<'a>(
-        &'a self,
-        ctx: DispatchContext<'a>,
-        next: Next<'a>,
-    ) -> Result<HandlerAction, ProxyError> {
-        let estimated_bytes = ctx
-            .headers
-            .get("content-length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0);
-
-        let bucket_name = ctx.bucket_config.as_ref().map(|b| b.name.as_str());
-
-        if let Err(_exceeded) = self
-            .quota_checker
-            .check_quota(
-                ctx.identity,
-                ctx.operation,
-                bucket_name,
-                estimated_bytes,
-                ctx.source_ip,
-            )
-            .await
-        {
-            tracing::warn!(bucket = bucket_name, "quota exceeded, returning 429");
-            let xml = ErrorResponse::slow_down(ctx.request_id).to_xml();
-            let mut headers = HeaderMap::new();
-            headers.insert("content-type", "application/xml".parse().unwrap());
-            return Ok(HandlerAction::Response(ProxyResult {
-                status: 429,
-                headers,
-                body: ProxyResponseBody::Bytes(Bytes::from(xml)),
-            }));
-        }
-
-        next.run(ctx).await
-    }
-
-    fn after_dispatch(
-        &self,
-        completed: &CompletedRequest<'_>,
-    ) -> impl Future<Output = ()> + MaybeSend + '_ {
-        // Extract all fields synchronously to avoid capturing `completed`
-        // in the returned future (the future's lifetime is tied to `&self`,
-        // not `completed`).
-        let request_id = completed.request_id.to_owned();
-        let identity = completed.identity.cloned();
-        let operation = completed.operation.cloned();
-        let bucket = completed.bucket.map(str::to_owned);
-        let status = completed.status;
-        let bytes_transferred = completed
-            .response_bytes
-            .or(completed.request_bytes)
-            .unwrap_or(0);
-        let was_forwarded = completed.was_forwarded;
-        let source_ip = completed.source_ip;
-
-        async move {
-            self.usage_recorder
-                .record_operation(UsageEvent {
-                    request_id: &request_id,
-                    identity: identity.as_ref(),
-                    operation: operation.as_ref(),
-                    bucket: bucket.as_deref(),
-                    status,
-                    bytes_transferred,
-                    was_forwarded,
-                    source_ip,
-                })
-                .await;
-        }
-    }
 }
 
 // ===========================================================================
@@ -245,7 +119,6 @@ impl QuotaChecker for NoopQuotaChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use multistore::middleware::CompletedRequest;
     use multistore::types::{ResolvedIdentity, S3Operation};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -332,9 +205,6 @@ mod tests {
 
     // -- Tests ----------------------------------------------------------------
 
-    // Tests for `handle` use the ProxyGateway integration tests in core.
-    // Here we test the quota checking and after_dispatch logic directly.
-
     #[test]
     fn rejecting_checker_returns_error() {
         let checker = RejectingChecker {
@@ -394,73 +264,25 @@ mod tests {
     }
 
     #[test]
-    fn after_dispatch_records_usage() {
+    fn recorder_captures_usage_event() {
         let (recorder, last_bytes, call_count) = RecordingRecorder::new();
-        let middleware = MeteringMiddleware::new(NoopQuotaChecker, recorder);
 
         futures::executor::block_on(async {
-            let completed = CompletedRequest {
-                request_id: "req-1",
-                identity: None,
-                operation: None,
-                bucket: Some("my-bucket"),
-                status: 200,
-                response_bytes: Some(1024),
-                request_bytes: None,
-                was_forwarded: true,
-                source_ip: None,
-            };
-            Middleware::after_dispatch(&middleware, &completed).await;
+            recorder
+                .record_operation(UsageEvent {
+                    request_id: "req-1",
+                    identity: None,
+                    operation: None,
+                    bucket: Some("my-bucket"),
+                    status: 200,
+                    bytes_transferred: 1024,
+                    was_forwarded: true,
+                    source_ip: None,
+                })
+                .await;
         });
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
         assert_eq!(last_bytes.load(Ordering::SeqCst), 1024);
-    }
-
-    #[test]
-    fn after_dispatch_falls_back_to_request_bytes() {
-        let (recorder, last_bytes, _) = RecordingRecorder::new();
-        let middleware = MeteringMiddleware::new(NoopQuotaChecker, recorder);
-
-        futures::executor::block_on(async {
-            let completed = CompletedRequest {
-                request_id: "req-2",
-                identity: None,
-                operation: None,
-                bucket: None,
-                status: 200,
-                response_bytes: None,
-                request_bytes: Some(512),
-                was_forwarded: false,
-                source_ip: None,
-            };
-            Middleware::after_dispatch(&middleware, &completed).await;
-        });
-
-        assert_eq!(last_bytes.load(Ordering::SeqCst), 512);
-    }
-
-    #[test]
-    fn after_dispatch_defaults_to_zero_bytes() {
-        let (recorder, last_bytes, call_count) = RecordingRecorder::new();
-        let middleware = MeteringMiddleware::new(NoopQuotaChecker, recorder);
-
-        futures::executor::block_on(async {
-            let completed = CompletedRequest {
-                request_id: "req-3",
-                identity: None,
-                operation: None,
-                bucket: None,
-                status: 500,
-                response_bytes: None,
-                request_bytes: None,
-                was_forwarded: false,
-                source_ip: None,
-            };
-            Middleware::after_dispatch(&middleware, &completed).await;
-        });
-
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(last_bytes.load(Ordering::SeqCst), 0);
     }
 }

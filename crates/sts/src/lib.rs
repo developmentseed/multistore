@@ -4,17 +4,6 @@
 //! workloads like GitHub Actions to exchange OIDC tokens for temporary S3
 //! credentials scoped to specific buckets and prefixes.
 //!
-//! # Integration
-//!
-//! Register STS routes via [`route_handler::StsRouterExt`]:
-//!
-//! ```rust,ignore
-//! use multistore_sts::route_handler::StsRouterExt;
-//!
-//! let router = Router::new()
-//!     .with_sts(config, jwks_cache, token_key);
-//! ```
-//!
 //! # Flow
 //!
 //! 1. Client obtains a JWT from their OIDC provider (e.g., GitHub Actions ID token)
@@ -29,7 +18,6 @@
 pub mod jwks;
 pub mod request;
 pub mod responses;
-pub mod route_handler;
 pub mod sealed_token;
 pub mod sts;
 

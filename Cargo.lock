@@ -422,7 +422,6 @@ dependencies = [
  "block-buffer 0.10.4",
  "const-oid 0.9.6",
  "crypto-common 0.1.7",
- "subtle",
 ]
 
 [[package]]
@@ -701,12 +700,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hex"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
 name = "hex-simd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -714,15 +707,6 @@ checksum = "1f7685beb53fc20efc2605f32f5d51e9ba18b8ef237961d1760169d2290d3bee"
 dependencies = [
  "outref",
  "vsimd",
-]
-
-[[package]]
-name = "hmac"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
-dependencies = [
- "digest 0.10.7",
 ]
 
 [[package]]
@@ -1211,12 +1195,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
-name = "matchit"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1264,25 +1242,19 @@ name = "multistore"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64",
  "bytes",
  "chrono",
  "dashmap",
  "futures",
- "hex",
- "hmac 0.12.1",
  "http",
- "matchit 0.8.4",
  "object_store",
  "quick-xml 0.37.5",
  "s3s",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror",
  "tracing",
  "url",
- "uuid",
 ]
 
 [[package]]
@@ -1336,9 +1308,7 @@ dependencies = [
 name = "multistore-metering"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "futures",
- "http",
  "multistore",
  "tokio",
  "tracing",
@@ -1401,7 +1371,6 @@ dependencies = [
  "async-trait",
  "base64",
  "chrono",
- "http",
  "multistore",
  "quick-xml 0.37.5",
  "rand 0.8.5",
@@ -2051,7 +2020,7 @@ dependencies = [
  "crc-fast",
  "futures",
  "hex-simd",
- "hmac 0.13.0-rc.5",
+ "hmac",
  "http",
  "http-body",
  "http-body-util",
@@ -3337,7 +3306,7 @@ dependencies = [
  "http",
  "http-body",
  "js-sys",
- "matchit 0.7.3",
+ "matchit",
  "pin-project",
  "serde",
  "serde-wasm-bindgen",

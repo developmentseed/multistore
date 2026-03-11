@@ -1,82 +1,28 @@
-//! Backend abstraction for proxying requests to backing object stores.
+//! Backend abstraction for building object stores from bucket configuration.
 //!
-//! [`ProxyBackend`] is the main trait runtimes implement. It provides three
-//! capabilities:
+//! [`StoreBuilder`] wraps provider-specific builders (S3, Azure, GCS) and
+//! provides a uniform API for constructing `ObjectStore`, `PaginatedListStore`,
+//! `MultipartStore`, and `Signer` instances.
 //!
-//! 1. **`create_paginated_store()`** — build a `PaginatedListStore` for LIST
-//!    operations with backend-side pagination.
-//! 2. **`create_signer()`** — build a `Signer` for generating presigned URLs
-//!    for GET, HEAD, PUT, DELETE operations.
-//! 3. **`send_raw()`** — send a pre-signed HTTP request for operations not
-//!    covered by `ObjectStore` (multipart uploads).
-//!
-//! The [`url_signer`] submodule handles `object_store` signer construction.
-//! The [`request_signer`] submodule handles outbound SigV4 request signing.
-//! The [`multipart`] submodule builds URLs and signs multipart upload requests.
+//! Runtimes call [`create_builder`] to get a half-built store, customize it
+//! (e.g. inject an HTTP connector), then call one of the `build_*` methods.
 
-pub mod multipart;
-pub mod request_signer;
 pub mod url_signer;
 pub use url_signer::build_signer;
 
 use crate::error::ProxyError;
-use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::types::{BackendType, BucketConfig};
-use bytes::Bytes;
-use http::HeaderMap;
 use object_store::aws::AmazonS3Builder;
 use object_store::list::PaginatedListStore;
 use object_store::multipart::MultipartStore;
 use object_store::signer::Signer;
 use object_store::ObjectStore;
-use std::future::Future;
 use std::sync::Arc;
 
 #[cfg(feature = "azure")]
 use object_store::azure::MicrosoftAzureBuilder;
 #[cfg(feature = "gcp")]
 use object_store::gcp::GoogleCloudStorageBuilder;
-
-/// Trait for runtime-specific backend operations.
-///
-/// Each runtime provides its own implementation:
-/// - Server runtime: uses `reqwest` for raw HTTP, default `object_store` HTTP connector
-/// - Worker runtime: uses `web_sys::fetch` for raw HTTP, custom `FetchConnector` for `object_store`
-pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
-    /// Create a [`PaginatedListStore`] for the given bucket configuration.
-    ///
-    /// Used for LIST operations with backend-side pagination via
-    /// [`PaginatedListStore::list_paginated`], avoiding loading all results
-    /// into memory.
-    fn create_paginated_store(
-        &self,
-        config: &BucketConfig,
-    ) -> Result<Box<dyn PaginatedListStore>, ProxyError>;
-
-    /// Create a `Signer` for generating presigned URLs.
-    ///
-    /// Used for GET, HEAD, PUT, DELETE operations. The handler generates
-    /// a presigned URL and the runtime executes the request with its
-    /// native HTTP client, enabling zero-copy streaming.
-    fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError>;
-
-    /// Send a raw HTTP request (used for multipart operations that
-    /// `ObjectStore` doesn't expose at the right abstraction level).
-    fn send_raw(
-        &self,
-        method: http::Method,
-        url: String,
-        headers: HeaderMap,
-        body: Bytes,
-    ) -> impl Future<Output = Result<RawResponse, ProxyError>> + MaybeSend;
-}
-
-/// Response from a raw HTTP request to a backend.
-pub struct RawResponse {
-    pub status: u16,
-    pub headers: HeaderMap,
-    pub body: Bytes,
-}
 
 /// Wrapper around provider-specific `object_store` builders.
 ///

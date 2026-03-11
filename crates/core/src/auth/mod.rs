@@ -1,17 +1,12 @@
 //! Authentication and authorization.
 //!
-//! - [`sigv4`] — SigV4 request parsing and signature verification
-//! - [`identity`] — identity resolution (mapping access key → principal)
-//! - [`authorize`](self::authorize::authorize) — authorization (scope checking)
-//! - [`TemporaryCredentialResolver`] — trait for resolving session tokens into temporary credentials
+//! SigV4 verification is handled by the s3s framework. This module provides:
+//! - [`authorize`] — check if an identity can perform an S3 operation
+//! - [`TemporaryCredentialResolver`] — resolve session tokens into temporary credentials
 
-mod authorize;
-pub mod identity;
-pub mod sigv4;
+mod authorize_impl;
 
-pub use authorize::authorize;
-pub use identity::resolve_identity;
-pub use sigv4::{parse_sigv4_auth, verify_sigv4_signature, SigV4Auth};
+pub use authorize_impl::authorize;
 
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
@@ -24,6 +19,3 @@ use crate::types::TemporaryCredentials;
 pub trait TemporaryCredentialResolver: MaybeSend + MaybeSync {
     fn resolve(&self, token: &str) -> Result<Option<TemporaryCredentials>, ProxyError>;
 }
-
-#[cfg(test)]
-mod tests;

@@ -12,7 +12,6 @@ mod bandwidth;
 mod client;
 mod fetch_connector;
 mod metering;
-mod rate_limit;
 mod tracing_layer;
 
 pub use bandwidth::BandwidthMeter;
