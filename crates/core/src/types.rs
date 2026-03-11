@@ -273,6 +273,22 @@ pub enum S3Operation {
 }
 
 impl S3Operation {
+    /// The HTTP method implied by this operation.
+    pub fn method(&self) -> http::Method {
+        match self {
+            S3Operation::GetObject { .. }
+            | S3Operation::ListBucket { .. }
+            | S3Operation::ListBuckets => http::Method::GET,
+            S3Operation::HeadObject { .. } => http::Method::HEAD,
+            S3Operation::PutObject { .. } | S3Operation::UploadPart { .. } => http::Method::PUT,
+            S3Operation::DeleteObject { .. } | S3Operation::AbortMultipartUpload { .. } => {
+                http::Method::DELETE
+            }
+            S3Operation::CreateMultipartUpload { .. }
+            | S3Operation::CompleteMultipartUpload { .. } => http::Method::POST,
+        }
+    }
+
     /// The authorization action for this operation.
     pub fn action(&self) -> Action {
         match self {

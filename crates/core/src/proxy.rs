@@ -42,7 +42,7 @@
 //! }
 //! ```
 //!
-//! For lower-level control, use [`ProxyGateway::handle`] which returns the
+//! For lower-level control, use [`ProxyGateway::resolve_request`] which returns the
 //! three-variant [`HandlerAction`] directly.
 
 use crate::api::list::{build_list_prefix, build_list_xml, parse_list_query_params, ListXmlParams};
@@ -202,27 +202,6 @@ where
         self
     }
 
-    /// Main entry point: check route handlers, then fall through to proxy dispatch.
-    ///
-    /// Route handlers are checked in registration order. If none match,
-    /// the request is resolved via the normal proxy pipeline.
-    ///
-    /// Returns a three-variant [`HandlerAction`]. For a simpler two-variant
-    /// API, use [`handle_request`](Self::handle_request) instead.
-    pub async fn handle(&self, req: &RequestInfo<'_>) -> HandlerAction {
-        if let Some(action) = self.router.dispatch(req).await {
-            return action;
-        }
-        self.resolve_request(
-            req.method.clone(),
-            req.path,
-            req.query,
-            req.headers,
-            req.source_ip,
-        )
-        .await
-    }
-
     /// Convenience entry point that resolves `NeedsBody` internally and
     /// executes forwarding via the [`Forwarder`].
     ///
@@ -359,7 +338,7 @@ where
         response
     }
 
-    /// Phase 1: Resolve an incoming request into an action.
+    /// Resolve an incoming request into an action.
     ///
     /// Parses the S3 operation from the request, resolves the caller's
     /// identity, authorizes via the bucket registry, and determines what
@@ -398,11 +377,77 @@ where
             "incoming request"
         );
 
-        match self
-            .resolve_inner(method, path, query, headers, source_ip, &request_id)
-            .await
+        // Determine host style
+        let host_style = determine_host_style(headers, self.virtual_host_domain.as_deref());
+
+        // Parse the S3 operation
+        let operation = match request::parse_s3_request(&method, path, query, headers, host_style) {
+            Ok(op) => op,
+            Err(err) => return self.error_result(err, path, &request_id, source_ip),
+        };
+        tracing::debug!(operation = ?operation, "parsed S3 operation");
+
+        // Resolve identity
+        let identity = match auth::resolve_identity(
+            &method,
+            path,
+            query.unwrap_or(""),
+            headers,
+            &self.credential_registry,
+            self.credential_resolver.as_deref(),
+        )
+        .await
         {
-            Ok((action, metadata)) => {
+            Ok(id) => id,
+            Err(err) => return self.error_result(err, path, &request_id, source_ip),
+        };
+        tracing::debug!(identity = ?identity, "resolved identity");
+
+        // Resolve bucket config (if the operation targets a specific bucket).
+        let resolved = if let Some(bucket_name) = operation.bucket() {
+            match self
+                .bucket_registry
+                .get_bucket(bucket_name, &identity, &operation)
+                .await
+            {
+                Ok(resolved) => {
+                    tracing::debug!(
+                        bucket = %bucket_name,
+                        backend_type = %resolved.config.backend_type,
+                        "resolved bucket config"
+                    );
+                    tracing::trace!("authorization passed");
+                    Some(resolved)
+                }
+                Err(err) => return self.error_result(err, path, &request_id, source_ip),
+            }
+        } else {
+            None
+        };
+
+        // Build middleware context
+        let ctx = DispatchContext {
+            identity: &identity,
+            operation: &operation,
+            bucket_config: resolved.as_ref().map(|r| Cow::Borrowed(&r.config)),
+            headers,
+            source_ip,
+            request_id: &request_id,
+            list_rewrite: resolved.as_ref().and_then(|r| r.list_rewrite.as_ref()),
+            extensions: http::Extensions::new(),
+        };
+
+        let next = Next::new(&self.middleware, self);
+        let metadata = RequestMetadata {
+            request_id: request_id.clone(),
+            identity: Some(identity.clone()),
+            operation: Some(operation.clone()),
+            bucket: operation.bucket().map(str::to_string),
+            source_ip,
+        };
+
+        match next.run(ctx).await {
+            Ok(action) => {
                 match &action {
                     HandlerAction::Response(resp) => {
                         tracing::info!(
@@ -427,38 +472,42 @@ where
                 }
                 (action, metadata)
             }
-            Err(err) => {
-                tracing::warn!(
-                    request_id = %request_id,
-                    error = %err,
-                    status = err.status_code(),
-                    s3_code = %err.s3_error_code(),
-                    "request failed"
-                );
-                let metadata = RequestMetadata {
-                    request_id: request_id.clone(),
-                    identity: None,
-                    operation: None,
-                    bucket: None,
-                    source_ip,
-                };
-                (
-                    HandlerAction::Response(error_response(
-                        &err,
-                        path,
-                        &request_id,
-                        self.debug_errors,
-                    )),
-                    metadata,
-                )
-            }
+            Err(err) => self.error_result(err, path, &request_id, source_ip),
         }
+    }
+
+    /// Build an error action + metadata pair for early returns.
+    fn error_result(
+        &self,
+        err: ProxyError,
+        path: &str,
+        request_id: &str,
+        source_ip: Option<IpAddr>,
+    ) -> (HandlerAction, RequestMetadata) {
+        tracing::warn!(
+            request_id = %request_id,
+            error = %err,
+            status = err.status_code(),
+            s3_code = %err.s3_error_code(),
+            "request failed"
+        );
+        let metadata = RequestMetadata {
+            request_id: request_id.to_string(),
+            identity: None,
+            operation: None,
+            bucket: None,
+            source_ip,
+        };
+        (
+            HandlerAction::Response(error_response(&err, path, request_id, self.debug_errors)),
+            metadata,
+        )
     }
 
     /// Phase 2: Complete a multipart operation with the request body.
     ///
     /// Called by the runtime after materializing the body for a `NeedsBody` action.
-    /// Middleware is not re-run here — it already executed during `resolve_inner`
+    /// Middleware is not re-run here — it already executed during phase 1
     /// when the `NeedsBody` action was produced.
     pub async fn handle_with_body(&self, pending: PendingRequest, body: Bytes) -> ProxyResult {
         match self.execute_multipart(&pending, body).await {
@@ -488,105 +537,8 @@ where
         }
     }
 
-    async fn resolve_inner(
-        &self,
-        method: Method,
-        path: &str,
-        query: Option<&str>,
-        headers: &HeaderMap,
-        source_ip: Option<IpAddr>,
-        request_id: &str,
-    ) -> Result<(HandlerAction, RequestMetadata), ProxyError> {
-        // Determine host style
-        let host_style = determine_host_style(headers, self.virtual_host_domain.as_deref());
-
-        // Parse the S3 operation
-        let operation = request::parse_s3_request(&method, path, query, headers, host_style)?;
-        tracing::debug!(operation = ?operation, "parsed S3 operation");
-
-        // Resolve identity
-        let identity = auth::resolve_identity(
-            &method,
-            path,
-            query.unwrap_or(""),
-            headers,
-            &self.credential_registry,
-            self.credential_resolver.as_deref(),
-        )
-        .await?;
-        tracing::debug!(identity = ?identity, "resolved identity");
-
-        // Resolve bucket config (if the operation targets a specific bucket).
-        let resolved = if let Some(bucket_name) = operation.bucket() {
-            let resolved = self
-                .bucket_registry
-                .get_bucket(bucket_name, &identity, &operation)
-                .await?;
-
-            tracing::debug!(
-                bucket = %bucket_name,
-                backend_type = %resolved.config.backend_type,
-                "resolved bucket config"
-            );
-            tracing::trace!("authorization passed");
-            Some(resolved)
-        } else {
-            None
-        };
-
-        // Build middleware context
-        let ctx = DispatchContext {
-            identity: &identity,
-            operation: &operation,
-            bucket_config: resolved.as_ref().map(|r| Cow::Borrowed(&r.config)),
-            headers,
-            source_ip,
-            request_id,
-            list_rewrite: resolved.as_ref().and_then(|r| r.list_rewrite.as_ref()),
-            extensions: http::Extensions::new(),
-        };
-
-        // Terminal dispatch: wraps self.dispatch_operation with the method.
-        struct GatewayDispatch<'g, B, R, C, F> {
-            gateway: &'g ProxyGateway<B, R, C, F>,
-            method: Method,
-        }
-
-        impl<B, R, C, F> Dispatch for GatewayDispatch<'_, B, R, C, F>
-        where
-            B: ProxyBackend,
-            R: BucketRegistry,
-            C: CredentialRegistry,
-            F: MaybeSend + MaybeSync,
-        {
-            fn dispatch<'a>(&'a self, ctx: DispatchContext<'a>) -> DispatchFuture<'a> {
-                Box::pin(async move { self.gateway.dispatch_operation(&self.method, &ctx).await })
-            }
-        }
-
-        let dispatch = GatewayDispatch {
-            gateway: self,
-            method: method.clone(),
-        };
-
-        let next = Next::new(&self.middleware, &dispatch);
-        let action = next.run(ctx).await?;
-
-        // Capture metadata from resolved state for post-dispatch callbacks.
-        let metadata = RequestMetadata {
-            request_id: request_id.to_string(),
-            identity: Some(identity),
-            operation: Some(operation),
-            bucket: resolved.map(|r| r.config.name.clone()),
-            source_ip,
-        };
-
-        Ok((action, metadata))
-    }
-
     async fn dispatch_operation(
         &self,
-        method: &Method,
         ctx: &DispatchContext<'_>,
     ) -> Result<HandlerAction, ProxyError> {
         let original_headers = ctx.headers;
@@ -706,7 +658,6 @@ where
                     )));
                 }
                 Ok(HandlerAction::NeedsBody(PendingRequest {
-                    method: method.clone(),
                     operation: operation.clone(),
                     bucket_config: bucket_config.clone(),
                     original_headers: original_headers.clone(),
@@ -857,8 +808,10 @@ where
             hash_payload(&body)
         };
 
+        let method = pending.operation.method();
+
         sign_s3_request(
-            &pending.method,
+            &method,
             &backend_url,
             &mut headers,
             &pending.bucket_config,
@@ -867,7 +820,7 @@ where
 
         let raw_resp = self
             .backend
-            .send_raw(pending.method.clone(), backend_url, headers, body)
+            .send_raw(method, backend_url, headers, body)
             .await?;
 
         tracing::debug!(status = raw_resp.status, "multipart backend response");
@@ -877,6 +830,18 @@ where
             headers: raw_resp.headers,
             body: ProxyResponseBody::from_bytes(raw_resp.body),
         })
+    }
+}
+
+impl<B, R, C, F> Dispatch for ProxyGateway<B, R, C, F>
+where
+    B: ProxyBackend,
+    R: BucketRegistry,
+    C: CredentialRegistry,
+    F: MaybeSend + MaybeSync,
+{
+    fn dispatch<'a>(&'a self, ctx: DispatchContext<'a>) -> DispatchFuture<'a> {
+        Box::pin(async move { self.dispatch_operation(&ctx).await })
     }
 }
 

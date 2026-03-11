@@ -101,7 +101,6 @@ impl ProxyResult {
 
 /// Opaque state for a multipart operation that needs the request body.
 pub struct PendingRequest {
-    pub(crate) method: Method,
     pub(crate) operation: crate::types::S3Operation,
     pub(crate) bucket_config: crate::types::BucketConfig,
     pub(crate) original_headers: HeaderMap,
