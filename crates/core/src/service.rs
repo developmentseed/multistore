@@ -20,11 +20,13 @@
 //! - A [`DashMap`] for tracking in-progress multipart uploads
 
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use dashmap::DashMap;
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
 use object_store::list::PaginatedListStore;
 use object_store::multipart::{MultipartStore, PartId};
 use object_store::path::Path;
@@ -32,7 +34,59 @@ use object_store::{GetOptions, ObjectStore, ObjectStoreExt, PutPayload};
 use s3s::auth::SecretKey;
 use s3s::dto::{self, StreamingBlob, Timestamp};
 use s3s::s3_error;
+use s3s::stream::{ByteStream, RemainingLength};
 use s3s::{S3Request, S3Response, S3Result};
+
+type StdError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+/// Wrapper that adds `Sync` to a `Send`-only stream via `Mutex`.
+///
+/// `object_store`'s `GetResult::into_stream()` returns `BoxStream` which is
+/// `Send` but not `Sync`. s3s's `StreamingBlob` requires `Send + Sync`.
+/// Since streams are only ever polled from a single task, wrapping in a
+/// `Mutex` is safe and has negligible overhead.
+struct SyncStream<S> {
+    inner: Mutex<S>,
+    remaining_bytes: usize,
+}
+
+impl<S> SyncStream<S> {
+    fn new(stream: S, remaining_bytes: usize) -> Self {
+        Self {
+            inner: Mutex::new(stream),
+            remaining_bytes,
+        }
+    }
+}
+
+impl<S, E> Stream for SyncStream<S>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    type Item = Result<Bytes, StdError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut guard = self.inner.lock().unwrap();
+        Pin::new(&mut *guard)
+            .poll_next(cx)
+            .map(|opt| opt.map(|r| r.map_err(|e| Box::new(e) as StdError)))
+    }
+}
+
+impl<S, E> ByteStream for SyncStream<S>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    fn remaining_length(&self) -> RemainingLength {
+        RemainingLength::new_exact(self.remaining_bytes)
+    }
+}
+
+// SAFETY: The inner stream is Send and the Mutex provides synchronization.
+// Streams are only polled from a single task, so this is safe.
+unsafe impl<S: Send> Sync for SyncStream<S> {}
 
 use crate::api::list::build_list_prefix;
 use crate::api::list_rewrite::ListRewrite;
@@ -199,10 +253,12 @@ where
             meta.last_modified,
         )));
 
-        // Collect into bytes — object_store streams are Send but not Sync,
-        // and StreamingBlob::wrap requires Send + Sync.
-        let data: Bytes = result.bytes().await.map_err(object_store_error_to_s3)?;
-        let body = StreamingBlob::from(s3s::Body::from(data));
+        // Wrap the object_store stream with SyncStream to satisfy StreamingBlob's
+        // Send + Sync requirement. The stream is Send but not Sync; the Mutex
+        // wrapper adds Sync with negligible overhead since polling is sequential.
+        let stream = result.into_stream();
+        let sync_stream = SyncStream::new(stream, content_length as usize);
+        let body = StreamingBlob::new(sync_stream);
 
         Ok(S3Response::new(dto::GetObjectOutput {
             body: Some(body),
