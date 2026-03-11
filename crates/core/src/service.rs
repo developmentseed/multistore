@@ -120,7 +120,6 @@ pub trait StoreFactory: Send + Sync + 'static {
 struct UploadState {
     config: BucketConfig,
     path: Path,
-    list_rewrite: Option<ListRewrite>,
     parts: Vec<Option<PartId>>,
 }
 
@@ -587,7 +586,6 @@ where
             UploadState {
                 config: resolved.config.clone(),
                 path,
-                list_rewrite: resolved.list_rewrite,
                 parts: Vec::new(),
             },
         );
