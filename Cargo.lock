@@ -1195,6 +1195,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "multistore-metering"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "http",
+ "multistore",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "multistore-oidc-provider"
 version = "0.1.0"
 dependencies = [

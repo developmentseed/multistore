@@ -1,6 +1,6 @@
 # Request Lifecycle
 
-Every request flows through the `ProxyGateway`: first through the `Router` (which maps paths to handlers for STS, OIDC discovery, etc.), then into the two-phase proxy dispatch (resolve, then execute). The recommended entry point is `ProxyGateway::handle_request`, which returns a two-variant `GatewayResponse` for simple runtime integration.
+Every request flows through the `ProxyGateway`: first through the `Router` (which maps paths to handlers for STS, OIDC discovery, etc.), then into the proxy dispatch pipeline (middleware chain → backend dispatch → post-dispatch callbacks). The recommended entry point is `ProxyGateway::handle_request`, which returns a two-variant `GatewayResponse` for simple runtime integration.
 
 ## Overview
 
@@ -10,6 +10,8 @@ sequenceDiagram
     participant Runtime as Runtime<br/>(Server, Lambda, or Workers)
     participant Gateway as ProxyGateway
     participant Router as Router<br/>(STS, OIDC)
+    participant Middleware as Middleware Chain
+    participant Forwarder as Forwarder<br/>(Runtime HTTP Client)
     participant BucketReg as BucketRegistry
     participant CredReg as CredentialRegistry
     participant Backend as Backend Store
@@ -26,10 +28,11 @@ sequenceDiagram
         Gateway->>Gateway: Parse S3 operation
         Gateway->>CredReg: resolve_identity (SigV4 verification)
         CredReg-->>Gateway: ResolvedIdentity
+        Gateway->>Middleware: handle(ctx, next)
+        Note over Middleware: Pre-dispatch (e.g. quota check)
         alt ListBuckets
             Gateway->>BucketReg: list_buckets(identity)
             BucketReg-->>Gateway: Vec<BucketEntry>
-            Gateway-->>Runtime: GatewayResponse::Response (XML)
         else Bucket operation
             Gateway->>BucketReg: get_bucket(name, identity, operation)
             BucketReg-->>Gateway: ResolvedBucket (config + authz)
@@ -37,17 +40,22 @@ sequenceDiagram
         end
 
         alt Forward (GET/HEAD/PUT/DELETE)
-            Gateway-->>Runtime: GatewayResponse::Forward(fwd, body)
-            Runtime->>Backend: Execute presigned URL (zero-copy streaming)
-            Backend-->>Runtime: Stream response
-            Runtime-->>Client: Stream response
+            Gateway->>Forwarder: forward(presigned_url, body)
+            Forwarder->>Backend: Execute presigned URL
+            Backend-->>Forwarder: ForwardResponse (status, headers, body)
+            Forwarder-->>Gateway: ForwardResponse<S>
+            Note over Middleware: after_dispatch(CompletedRequest)
+            Gateway-->>Runtime: GatewayResponse::Forward(ForwardResponse)
+            Runtime-->>Client: Stream response body (opaque, zero-copy)
         else Response (LIST, errors)
+            Note over Middleware: after_dispatch(CompletedRequest)
             Gateway-->>Runtime: GatewayResponse::Response
             Runtime-->>Client: Return response body
         else NeedsBody (multipart)
             Gateway->>Gateway: collect_body(body) → bytes
             Gateway->>Backend: Signed multipart request
             Backend-->>Gateway: Response
+            Note over Middleware: after_dispatch(CompletedRequest)
             Gateway-->>Runtime: GatewayResponse::Response
             Runtime-->>Client: Response
         end
@@ -120,11 +128,11 @@ Custom `BucketRegistry` implementations can provide entirely different authoriza
 
 The gateway takes the resolved bucket config and dispatches it based on the S3 operation type. When using `handle_request`, the three internal action types are collapsed into a two-variant `GatewayResponse`:
 
-### `Forward(ForwardRequest)`
+### `Forward(ForwardResponse<S>)`
 
 Used for: **GET, HEAD, PUT, DELETE**
 
-The handler generates a presigned URL using the backend's `Signer` and returns it to the runtime with filtered headers. The runtime executes the presigned URL with its native HTTP client, streaming request and response bodies directly. The handler never touches the body data.
+The handler generates a presigned URL using the backend's `Signer`, then the core calls the runtime-provided `Forwarder` to execute the HTTP request. The `Forwarder` returns a `ForwardResponse<S>` with the backend's status, headers, content length, and an opaque streaming body. The core observes the response metadata (status, content length) and fires `after_dispatch` callbacks on all middleware before returning the response to the runtime. The response body type `S` is an associated type on the `Forwarder` — on CF Workers it's a `web_sys::Response` (zero-copy), on native runtimes it's a `reqwest::Response` or similar.
 
 - Presigned URL TTL: 300 seconds
 - Headers forwarded: `range`, `if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`, `content-type`, `content-length`, `content-md5`, `content-encoding`, `content-disposition`, `cache-control`, `x-amz-content-sha256`
