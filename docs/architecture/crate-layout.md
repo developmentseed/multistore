@@ -78,9 +78,12 @@ The native server runtime (in `examples/server/`):
 
 The Cloudflare Workers WASM runtime (in `examples/cf-workers/`):
 - `WorkerBackend` implementing `ProxyBackend` with `web_sys::fetch`
+- `WorkerForwarder` implementing `Forwarder` with the Fetch API (zero-copy `ReadableStream`)
 - `FetchConnector` bridging `object_store` HTTP to Workers Fetch API
-- JS `ReadableStream` passthrough for zero-copy streaming
-- Config loading from env vars (`PROXY_CONFIG`)
+- `BandwidthMeter` Durable Object — per-(bucket, identity) sliding-window byte counter
+- `DoBandwidthMeter` implementing `QuotaChecker` + `UsageRecorder` via the `BandwidthMeter` DO
+- `CfRateLimiter` middleware for request-rate limiting via CF Rate Limiting API
+- Config loading from env vars (`PROXY_CONFIG`, `BANDWIDTH_QUOTAS`)
 
 > [!WARNING]
 > This crate is excluded from the workspace `default-members` because WASM types are `!Send` and won't compile on native targets. Always build with `--target wasm32-unknown-unknown`.

@@ -1157,6 +1157,7 @@ dependencies = [
  "http-body-util",
  "js-sys",
  "multistore",
+ "multistore-metering",
  "multistore-oidc-provider",
  "multistore-static-config",
  "multistore-sts",
@@ -1198,6 +1199,7 @@ dependencies = [
 name = "multistore-metering"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "futures",
  "http",
  "multistore",

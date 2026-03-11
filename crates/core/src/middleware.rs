@@ -39,6 +39,8 @@ pub struct CompletedRequest<'a> {
     pub request_bytes: Option<u64>,
     /// Whether the request was forwarded to a backend via presigned URL.
     pub was_forwarded: bool,
+    /// The IP address of the client, used for anonymous user identification.
+    pub source_ip: Option<IpAddr>,
 }
 
 /// Context passed to each middleware in the dispatch chain.
@@ -364,6 +366,7 @@ mod tests {
                 response_bytes: None,
                 request_bytes: None,
                 was_forwarded: false,
+                source_ip: None,
             };
             middleware.after_dispatch(&completed).await;
         });

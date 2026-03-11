@@ -168,3 +168,16 @@ namespace_id = "1002"
   [ratelimits.simple]
   limit = 1_000
   period = 10
+
+# Bandwidth metering
+[vars.BANDWIDTH_QUOTAS]
+# 2 GB per 5 minutes for the public-data bucket
+public-data = { limit_bytes = 2_147_483_648, window_secs = 300 }
+
+[[durable_objects.bindings]]
+name = "BANDWIDTH_METER"
+class_name = "BandwidthMeter"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["BandwidthMeter"]

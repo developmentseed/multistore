@@ -7,6 +7,7 @@ description = "Usage metering and quota enforcement middleware for the S3 proxy 
 
 [dependencies]
 multistore.workspace = true
+bytes.workspace = true
 http.workspace = true
 tracing.workspace = true
 

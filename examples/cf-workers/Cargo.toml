@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 multistore.workspace = true
 multistore-static-config.workspace = true
 multistore-sts.workspace = true
+multistore-metering.workspace = true
 multistore-oidc-provider.workspace = true
 bytes.workspace = true
 http.workspace = true

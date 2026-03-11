@@ -26,12 +26,17 @@
 //!   the backend response.
 
 use std::future::Future;
+use std::net::IpAddr;
 
+use multistore::api::response::ErrorResponse;
 use multistore::error::ProxyError;
 use multistore::maybe_send::{MaybeSend, MaybeSync};
 use multistore::middleware::{CompletedRequest, DispatchContext, Middleware, Next};
-use multistore::route_handler::HandlerAction;
+use multistore::route_handler::{HandlerAction, ProxyResponseBody, ProxyResult};
 use multistore::types::{ResolvedIdentity, S3Operation};
+
+use bytes::Bytes;
+use http::HeaderMap;
 
 /// A completed operation's metadata, passed to [`UsageRecorder::record_operation`].
 pub struct UsageEvent<'a> {
@@ -51,6 +56,8 @@ pub struct UsageEvent<'a> {
     pub bytes_transferred: u64,
     /// Whether the request was forwarded to a backend via presigned URL.
     pub was_forwarded: bool,
+    /// The client's IP address, if known.
+    pub source_ip: Option<IpAddr>,
 }
 
 /// Quota violation error returned by [`QuotaChecker::check_quota`].
@@ -94,6 +101,7 @@ pub trait QuotaChecker: MaybeSend + MaybeSync + 'static {
         operation: &'a S3Operation,
         bucket: Option<&'a str>,
         estimated_bytes: u64,
+        source_ip: Option<IpAddr>,
     ) -> impl Future<Output = Result<(), QuotaExceeded>> + MaybeSend + 'a;
 }
 
@@ -140,10 +148,27 @@ impl<Q: QuotaChecker, U: UsageRecorder> Middleware for MeteringMiddleware<Q, U> 
 
         let bucket_name = ctx.bucket_config.as_ref().map(|b| b.name.as_str());
 
-        self.quota_checker
-            .check_quota(ctx.identity, ctx.operation, bucket_name, estimated_bytes)
+        if let Err(_exceeded) = self
+            .quota_checker
+            .check_quota(
+                ctx.identity,
+                ctx.operation,
+                bucket_name,
+                estimated_bytes,
+                ctx.source_ip,
+            )
             .await
-            .map_err(|e| ProxyError::InvalidRequest(e.message))?;
+        {
+            tracing::warn!(bucket = bucket_name, "quota exceeded, returning 429");
+            let xml = ErrorResponse::slow_down(ctx.request_id).to_xml();
+            let mut headers = HeaderMap::new();
+            headers.insert("content-type", "application/xml".parse().unwrap());
+            return Ok(HandlerAction::Response(ProxyResult {
+                status: 429,
+                headers,
+                body: ProxyResponseBody::Bytes(Bytes::from(xml)),
+            }));
+        }
 
         next.run(ctx).await
     }
@@ -165,6 +190,7 @@ impl<Q: QuotaChecker, U: UsageRecorder> Middleware for MeteringMiddleware<Q, U> 
             .or(completed.request_bytes)
             .unwrap_or(0);
         let was_forwarded = completed.was_forwarded;
+        let source_ip = completed.source_ip;
 
         async move {
             self.usage_recorder
@@ -176,6 +202,7 @@ impl<Q: QuotaChecker, U: UsageRecorder> Middleware for MeteringMiddleware<Q, U> 
                     status,
                     bytes_transferred,
                     was_forwarded,
+                    source_ip,
                 })
                 .await;
         }
@@ -205,6 +232,7 @@ impl QuotaChecker for NoopQuotaChecker {
         _operation: &'a S3Operation,
         _bucket: Option<&'a str>,
         _estimated_bytes: u64,
+        _source_ip: Option<IpAddr>,
     ) -> Result<(), QuotaExceeded> {
         Ok(())
     }
@@ -263,6 +291,7 @@ mod tests {
             _operation: &'a S3Operation,
             _bucket: Option<&'a str>,
             _estimated_bytes: u64,
+            _source_ip: Option<IpAddr>,
         ) -> Result<(), QuotaExceeded> {
             Err(QuotaExceeded {
                 message: self.message.clone(),
@@ -293,6 +322,7 @@ mod tests {
             _operation: &'a S3Operation,
             _bucket: Option<&'a str>,
             estimated_bytes: u64,
+            _source_ip: Option<IpAddr>,
         ) -> Result<(), QuotaExceeded> {
             self.last_estimated_bytes
                 .store(estimated_bytes, Ordering::SeqCst);
@@ -318,6 +348,7 @@ mod tests {
                     &S3Operation::ListBuckets,
                     Some("test"),
                     0,
+                    None,
                 )
                 .await
         });
@@ -335,6 +366,7 @@ mod tests {
                     &S3Operation::ListBuckets,
                     None,
                     1_000_000,
+                    None,
                 )
                 .await
         });
@@ -353,6 +385,7 @@ mod tests {
                     &S3Operation::ListBuckets,
                     Some("test"),
                     42_000,
+                    None,
                 )
                 .await
         });
@@ -375,6 +408,7 @@ mod tests {
                 response_bytes: Some(1024),
                 request_bytes: None,
                 was_forwarded: true,
+                source_ip: None,
             };
             Middleware::after_dispatch(&middleware, &completed).await;
         });
@@ -398,6 +432,7 @@ mod tests {
                 response_bytes: None,
                 request_bytes: Some(512),
                 was_forwarded: false,
+                source_ip: None,
             };
             Middleware::after_dispatch(&middleware, &completed).await;
         });
@@ -420,6 +455,7 @@ mod tests {
                 response_bytes: None,
                 request_bytes: None,
                 was_forwarded: false,
+                source_ip: None,
             };
             Middleware::after_dispatch(&middleware, &completed).await;
         });

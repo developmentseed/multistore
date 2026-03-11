@@ -102,6 +102,8 @@ pub struct RequestMetadata {
     pub operation: Option<S3Operation>,
     /// The target bucket name, if the operation targets a specific bucket.
     pub bucket: Option<String>,
+    /// The IP address of the client, used for anonymous user identification.
+    pub source_ip: Option<IpAddr>,
 }
 
 /// The core proxy gateway, generic over runtime primitives.
@@ -348,6 +350,7 @@ where
             response_bytes: resp_bytes,
             request_bytes,
             was_forwarded,
+            source_ip: metadata.source_ip,
         };
         for m in &self.middleware {
             m.after_dispatch(&completed).await;
@@ -437,6 +440,7 @@ where
                     identity: None,
                     operation: None,
                     bucket: None,
+                    source_ip,
                 };
                 (
                     HandlerAction::Response(error_response(
@@ -574,6 +578,7 @@ where
             identity: Some(identity),
             operation: Some(operation),
             bucket: resolved.map(|r| r.config.name.clone()),
+            source_ip,
         };
 
         Ok((action, metadata))

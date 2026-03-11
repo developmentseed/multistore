@@ -20,10 +20,14 @@
 //! - Environment variables / secrets for simple setups
 //! - Workers KV for dynamic configuration
 
+mod bandwidth;
 mod client;
 mod fetch_connector;
+mod metering;
 mod rate_limit;
 mod tracing_layer;
+
+pub use bandwidth::BandwidthMeter;
 
 use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
 use multistore::error::ProxyError;
@@ -175,6 +179,9 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
 
     if let Some(rate_limiter) = load_rate_limiter(&env) {
         gateway = gateway.with_middleware(rate_limiter);
+    }
+    if let Some(bandwidth) = load_bandwidth_meter(&env) {
+        gateway = gateway.with_middleware(bandwidth);
     }
     if let Some(ref resolver) = token_key {
         gateway = gateway.with_credential_resolver(resolver.clone());
@@ -357,6 +364,47 @@ fn load_rate_limiter(env: &Env) -> Option<CfRateLimiter> {
     let anon = env.rate_limiter("ANON_RATE_LIMITER").ok()?;
     let auth = env.rate_limiter("AUTH_RATE_LIMITER").ok()?;
     Some(CfRateLimiter::new(anon, auth))
+}
+
+/// Load bandwidth metering middleware from env bindings.
+///
+/// Returns `Some(MeteringMiddleware)` if both `BANDWIDTH_METER` (DO namespace)
+/// and `BANDWIDTH_QUOTAS` (quota config) are configured; otherwise `None`.
+fn load_bandwidth_meter(
+    env: &Env,
+) -> Option<
+    multistore_metering::MeteringMiddleware<metering::DoBandwidthMeter, metering::DoBandwidthMeter>,
+> {
+    // Try loading quotas as a JSON string first, then as a TOML object.
+    let quotas: std::collections::HashMap<String, metering::BucketQuota> =
+        if let Ok(var) = env.var("BANDWIDTH_QUOTAS") {
+            serde_json::from_str(&var.to_string())
+                .map_err(|e| {
+                    tracing::error!(error = %e, "failed to parse BANDWIDTH_QUOTAS as JSON string");
+                    e
+                })
+                .ok()?
+        } else {
+            env.object_var("BANDWIDTH_QUOTAS")
+                .map_err(|e| {
+                    tracing::error!(error = %e, "failed to load BANDWIDTH_QUOTAS");
+                    e
+                })
+                .ok()?
+        };
+
+    // Two separate namespace bindings because MeteringMiddleware needs two separate instances
+    // (one for quota checking, one for recording). DoBandwidthMeter is stateless locally —
+    // all state lives in the DO.
+    let ns_check = env.durable_object("BANDWIDTH_METER").ok()?;
+    let ns_record = env.durable_object("BANDWIDTH_METER").ok()?;
+
+    let checker = metering::DoBandwidthMeter::new(ns_check, quotas.clone());
+    let recorder = metering::DoBandwidthMeter::new(ns_record, quotas);
+
+    Some(multistore_metering::MeteringMiddleware::new(
+        checker, recorder,
+    ))
 }
 
 /// Load OIDC provider config from env secrets/vars.
