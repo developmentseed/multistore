@@ -17,7 +17,7 @@ mod client;
 
 use client::LambdaBackend;
 use lambda_http::{service_fn, Body, Error, Request, Response};
-use multistore::service::{MultistoreAuth, MultistoreService};
+use multistore::service::{MultistoreAccess, MultistoreAuth, MultistoreService};
 use multistore_static_config::StaticProvider;
 use s3s::service::S3ServiceBuilder;
 use std::sync::OnceLock;
@@ -51,6 +51,7 @@ async fn main() -> Result<(), Error> {
 
     let mut builder = S3ServiceBuilder::new(service);
     builder.set_auth(auth);
+    builder.set_access(MultistoreAccess);
 
     if let Some(ref d) = domain {
         builder.set_host(

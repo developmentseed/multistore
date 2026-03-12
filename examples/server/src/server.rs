@@ -2,7 +2,7 @@
 
 use crate::client::ServerBackend;
 use multistore::registry::{BucketRegistry, CredentialRegistry};
-use multistore::service::{MultistoreAuth, MultistoreService};
+use multistore::service::{MultistoreAccess, MultistoreAuth, MultistoreService};
 use multistore_sts::TokenKey;
 use s3s::service::S3ServiceBuilder;
 use std::net::SocketAddr;
@@ -54,6 +54,7 @@ where
 
     let mut builder = S3ServiceBuilder::new(service);
     builder.set_auth(auth);
+    builder.set_access(MultistoreAccess);
 
     if let Some(ref domain) = server_config.virtual_host_domain {
         builder.set_host(

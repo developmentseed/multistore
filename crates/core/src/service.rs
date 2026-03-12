@@ -755,6 +755,22 @@ impl<C: CredentialRegistry> s3s::auth::S3Auth for MultistoreAuth<C> {
     }
 }
 
+/// Access control that allows both authenticated and anonymous requests.
+///
+/// s3s's default access check rejects all unsigned requests. Since our
+/// `BucketRegistry` handles authorization (including anonymous access
+/// checks per bucket), we allow all requests through the s3s access layer.
+pub struct MultistoreAccess;
+
+#[async_trait::async_trait]
+impl s3s::access::S3Access for MultistoreAccess {
+    async fn check(&self, _cx: &mut s3s::access::S3AccessContext<'_>) -> S3Result<()> {
+        // Authorization is handled by BucketRegistry::get_bucket()
+        // inside each S3 operation handler, not at the access layer.
+        Ok(())
+    }
+}
+
 // -- Helpers --
 
 /// Convert a [`ProxyError`] to an [`s3s::S3Error`].

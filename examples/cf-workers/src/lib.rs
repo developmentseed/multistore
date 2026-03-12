@@ -17,7 +17,7 @@ mod tracing_layer;
 pub use bandwidth::BandwidthMeter;
 
 use client::WorkerBackend;
-use multistore::service::{MultistoreAuth, MultistoreService};
+use multistore::service::{MultistoreAccess, MultistoreAuth, MultistoreService};
 use multistore_static_config::{StaticConfig, StaticProvider};
 use s3s::service::S3ServiceBuilder;
 
@@ -43,6 +43,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
 
     let mut builder = S3ServiceBuilder::new(service);
     builder.set_auth(auth);
+    builder.set_access(MultistoreAccess);
 
     if let Some(ref domain) = virtual_host_domain {
         builder.set_host(
