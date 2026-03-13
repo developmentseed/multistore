@@ -51,11 +51,8 @@ impl DoBandwidthMeter {
                     .unwrap_or_else(|| "unknown".to_string());
                 format!("anon:{ip}")
             }
-            ResolvedIdentity::LongLived { credential } => {
-                format!("auth:{}", credential.principal_name)
-            }
-            ResolvedIdentity::Temporary { credentials } => {
-                format!("auth:{}", credentials.source_identity)
+            ResolvedIdentity::Authenticated(id) => {
+                format!("auth:{}", id.principal_name)
             }
         };
         format!("{bucket}:{identity_part}")

@@ -7,7 +7,7 @@ use super::sigv4::{constant_time_eq, parse_sigv4_auth, verify_sigv4_signature};
 use super::TemporaryCredentialResolver;
 use crate::error::ProxyError;
 use crate::registry::CredentialRegistry;
-use crate::types::ResolvedIdentity;
+use crate::types::{AuthenticatedIdentity, ResolvedIdentity};
 use http::HeaderMap;
 
 /// Resolve the identity of an incoming request.
@@ -75,7 +75,10 @@ pub async fn resolve_identity<C: CredentialRegistry>(
                     scopes = ?creds.allowed_scopes,
                     "temporary credential identity resolved"
                 );
-                return Ok(ResolvedIdentity::Temporary { credentials: creds });
+                return Ok(ResolvedIdentity::Authenticated(AuthenticatedIdentity {
+                    principal_name: creds.source_identity.clone(),
+                    allowed_scopes: creds.allowed_scopes.clone(),
+                }));
             }
             None => {
                 tracing::warn!(
@@ -112,7 +115,10 @@ pub async fn resolve_identity<C: CredentialRegistry>(
             return Err(ProxyError::SignatureDoesNotMatch);
         }
 
-        return Ok(ResolvedIdentity::LongLived { credential: cred });
+        return Ok(ResolvedIdentity::Authenticated(AuthenticatedIdentity {
+            principal_name: cred.principal_name.clone(),
+            allowed_scopes: cred.allowed_scopes,
+        }));
     }
 
     Err(ProxyError::AccessDenied)

@@ -49,12 +49,7 @@ impl Middleware for CfRateLimiter {
                 };
                 (&self.anon_limiter, key)
             }
-            ResolvedIdentity::LongLived { credential } => {
-                (&self.auth_limiter, credential.principal_name.clone())
-            }
-            ResolvedIdentity::Temporary { credentials } => {
-                (&self.auth_limiter, credentials.source_identity.clone())
-            }
+            ResolvedIdentity::Authenticated(id) => (&self.auth_limiter, id.principal_name.clone()),
         };
 
         match limiter.limit(key.clone()).await {

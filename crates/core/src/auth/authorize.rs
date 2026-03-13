@@ -40,8 +40,7 @@ pub fn authorize(
 
     let scopes = match identity {
         ResolvedIdentity::Anonymous => unreachable!(),
-        ResolvedIdentity::LongLived { credential } => &credential.allowed_scopes,
-        ResolvedIdentity::Temporary { credentials } => &credentials.allowed_scopes,
+        ResolvedIdentity::Authenticated(id) => &id.allowed_scopes,
     };
 
     let action = operation.action();

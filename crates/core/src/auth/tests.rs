@@ -195,7 +195,7 @@ fn valid_signature_resolves_identity() {
 
         assert!(matches!(
             identity,
-            crate::types::ResolvedIdentity::LongLived { .. }
+            crate::types::ResolvedIdentity::Authenticated(_)
         ));
     });
 }
@@ -245,7 +245,7 @@ fn valid_signature_with_unsorted_query_params() {
 
         assert!(matches!(
             identity,
-            crate::types::ResolvedIdentity::LongLived { .. }
+            crate::types::ResolvedIdentity::Authenticated(_)
         ));
     });
 }
@@ -731,7 +731,7 @@ fn temporary_credential_round_trip() {
 
         assert!(matches!(
             identity,
-            crate::types::ResolvedIdentity::Temporary { .. }
+            crate::types::ResolvedIdentity::Authenticated(_)
         ));
     });
 }

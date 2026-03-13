@@ -214,12 +214,22 @@ impl fmt::Debug for TemporaryCredentials {
     }
 }
 
+/// The authenticated identity after credential verification.
+///
+/// This is the output of the authentication pipeline. It contains only
+/// the information downstream consumers need — not the raw credentials
+/// used during signature verification.
+#[derive(Debug, Clone)]
+pub struct AuthenticatedIdentity {
+    pub principal_name: String,
+    pub allowed_scopes: Vec<AccessScope>,
+}
+
 /// Represents the resolved identity after authentication.
 #[derive(Debug, Clone)]
 pub enum ResolvedIdentity {
     Anonymous,
-    LongLived { credential: StoredCredential },
-    Temporary { credentials: TemporaryCredentials },
+    Authenticated(AuthenticatedIdentity),
 }
 
 /// The parsed S3 operation extracted from an incoming request.
