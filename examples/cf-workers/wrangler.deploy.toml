@@ -37,6 +37,18 @@ endpoint = "https://s3.us-west-2.amazonaws.com"
 region = "us-east-1"
 skip_signature = "true"
 
+[[vars.PROXY_CONFIG.credentials]]
+access_key_id = "AKPROXY00000EXAMPLE"
+secret_access_key = "EXAMPLE000000000000"
+principal_name = "demo-user"
+created_at = "2024-01-15T00:00:00Z"
+enabled = true
+
+[[vars.PROXY_CONFIG.credentials.allowed_scopes]]
+bucket = "cholmes"
+prefixes = []
+actions = ["get_object", "head_object", "list_bucket"]
+
 [[vars.PROXY_CONFIG.roles]]
 max_session_duration_secs = 3600
 name = "GitHub Actions"
