@@ -118,6 +118,51 @@ class TestS3Access:
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
 
+class TestStaticCredentials:
+    """Verify access using static credentials from the proxy config.
+
+    The demo-user credentials have allowed_scopes granting read access to the
+    cholmes bucket. Unauthenticated requests and bad credentials must be denied.
+    """
+
+    @staticmethod
+    def _client(access_key: str = "AKPROXY00000EXAMPLE", secret_key: str = "EXAMPLE000000000000"):
+        return boto3.client(
+            "s3",
+            endpoint_url=DEPLOY_URL,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name="us-east-1",
+            config=Config(s3={"addressing_style": "path"}),
+        )
+
+    def test_list_bucket_with_valid_credentials(self):
+        client = self._client()
+        resp = client.list_objects_v2(Bucket="cholmes", MaxKeys=5)
+        assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+
+    def test_get_object_with_valid_credentials(self):
+        client = self._client()
+        resp = client.head_object(Bucket="cholmes", Key="overture/catalog.json")
+        assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+
+    def test_anonymous_access_denied_for_private_bucket(self):
+        resp = requests.get(f"{DEPLOY_URL}/cholmes/", params={"list-type": "2", "max-keys": "1"})
+        assert resp.status_code == 403
+
+    def test_bad_access_key_denied(self):
+        client = self._client(access_key="AKBADKEY0000000000", secret_key="BADSECRET00000000000")
+        with pytest.raises(ClientError) as exc_info:
+            client.list_objects_v2(Bucket="cholmes", MaxKeys=5)
+        assert exc_info.value.response["Error"]["Code"] in ("AccessDenied", "InvalidAccessKeyId")
+
+    def test_wrong_secret_key_denied(self):
+        client = self._client(access_key="AKPROXY00000EXAMPLE", secret_key="WRONGSECRET00000000")
+        with pytest.raises(ClientError) as exc_info:
+            client.list_objects_v2(Bucket="cholmes", MaxKeys=5)
+        assert exc_info.value.response["Error"]["Code"] in ("AccessDenied", "SignatureDoesNotMatch")
+
+
 # Public bucket + key used for range request tests.
 RANGE_TEST_PATH = "/harvard-lil/gov-data/README.md"
 
