@@ -11,10 +11,6 @@ on:
         description: "Wrangler config filename (in examples/cf-workers/)"
         required: true
         type: string
-      wrangler_env:
-        description: "Wrangler environment name (staging, production, preview)"
-        required: true
-        type: string
       environment:
         description: "GitHub environment name (preview, staging, production)"
         required: true
@@ -71,7 +67,6 @@ jobs:
           npx wrangler deploy \
             --cwd examples/cf-workers \
             --config ${{ inputs.wrangler_config }} \
-            --env ${{ inputs.wrangler_env }} \
             --name "${{ inputs.worker_name }}" \
             $EXTRA_ARGS
 
@@ -87,8 +82,8 @@ jobs:
           SESSION_TOKEN_KEY: ${{ secrets.SESSION_TOKEN_KEY }}
           OIDC_PROVIDER_KEY: ${{ secrets.OIDC_PROVIDER_KEY }}
         run: |
-          echo "$SESSION_TOKEN_KEY" | npx wrangler secret put SESSION_TOKEN_KEY --cwd examples/cf-workers --config ${{ inputs.wrangler_config }} --env ${{ inputs.wrangler_env }} --name "${{ inputs.worker_name }}"
-          echo "$OIDC_PROVIDER_KEY" | npx wrangler secret put OIDC_PROVIDER_KEY --cwd examples/cf-workers --config ${{ inputs.wrangler_config }} --env ${{ inputs.wrangler_env }} --name "${{ inputs.worker_name }}"
+          echo "$SESSION_TOKEN_KEY" | npx wrangler secret put SESSION_TOKEN_KEY --cwd examples/cf-workers --config ${{ inputs.wrangler_config }} --name "${{ inputs.worker_name }}"
+          echo "$OIDC_PROVIDER_KEY" | npx wrangler secret put OIDC_PROVIDER_KEY --cwd examples/cf-workers --config ${{ inputs.wrangler_config }} --name "${{ inputs.worker_name }}"
 
       - name: Wait for deployment to be live
         run: |

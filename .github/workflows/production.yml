@@ -16,7 +16,6 @@ jobs:
     with:
       worker_name: multistore
       wrangler_config: wrangler.deploy.toml
-      wrangler_env: production
       environment: production
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -123,14 +123,3 @@ class_name = "BandwidthMeter"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["BandwidthMeter"]
-
-# --- Environment overrides (only the worker name differs) ---
-
-[env.production]
-name = "multistore"
-
-[env.staging]
-name = "multistore-staging"
-
-[env.preview]
-name = "multistore-preview"
