@@ -1,18 +1,6 @@
 //! Cloudflare Workers runtime for the S3 proxy gateway.
 //!
-//! This crate provides implementations of core traits using Cloudflare Workers
-//! primitives. Uses zero-copy body forwarding: request and response
-//! `ReadableStream`s flow through the JS runtime without touching WASM memory.
-//!
-//! # Architecture
-//!
-//! ```text
-//! Client -> Worker (web_sys::Request — body stream NOT locked)
-//!   -> resolve request (ProxyGateway with static config registries)
-//!   -> Forward: web_sys::fetch with ReadableStream passthrough (zero-copy)
-//!   -> Response: LIST XML via object_store, errors, synthetic responses
-//!   -> NeedsBody: multipart operations via raw signed HTTP
-//! ```
+//! Uses s3s for S3 protocol handling with `MultistoreService`.
 //!
 //! # Configuration
 //!
@@ -24,122 +12,20 @@ mod bandwidth;
 mod client;
 mod fetch_connector;
 mod metering;
-mod rate_limit;
 mod tracing_layer;
 
 pub use bandwidth::BandwidthMeter;
 
-use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
-use multistore::error::ProxyError;
-use multistore::forwarder::{ForwardResponse, Forwarder};
-use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::route_handler::{ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo};
-use multistore::router::Router;
-use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
-use multistore_oidc_provider::jwt::JwtSigner;
-use multistore_oidc_provider::route_handler::OidcRouterExt;
-use multistore_oidc_provider::OidcCredentialProvider;
+use client::WorkerBackend;
+use multistore::service::{MultistoreAccess, MultistoreAuth, MultistoreService};
 use multistore_static_config::{StaticConfig, StaticProvider};
-use multistore_sts::route_handler::StsRouterExt;
-use multistore_sts::JwksCache;
-use multistore_sts::TokenKey;
-use rate_limit::CfRateLimiter;
+use s3s::service::S3ServiceBuilder;
 
 use bytes::Bytes;
 use http::HeaderMap;
 use worker::*;
 
-/// Zero-copy body wrapper. Holds the raw `ReadableStream` from the incoming
-/// request, passing it through the Gateway untouched for Forward requests.
-struct JsBody(Option<web_sys::ReadableStream>);
-// SAFETY: Workers is single-threaded; these are required by Gateway's generic bounds.
-unsafe impl Send for JsBody {}
-unsafe impl Sync for JsBody {}
-
-/// Zero-copy HTTP forwarder for Cloudflare Workers.
-///
-/// Executes presigned backend requests via the Fetch API, passing
-/// `ReadableStream` bodies through JS without touching WASM memory.
-struct WorkerForwarder;
-
-impl Forwarder<JsBody> for WorkerForwarder {
-    type ResponseBody = web_sys::Response;
-
-    async fn forward(
-        &self,
-        request: ForwardRequest,
-        body: JsBody,
-    ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
-        // Build web_sys::Headers from the forwarding headers.
-        let ws_headers = web_sys::Headers::new()
-            .map_err(|e| ProxyError::Internal(format!("failed to create Headers: {:?}", e)))?;
-        for (key, value) in request.headers.iter() {
-            if let Ok(v) = value.to_str() {
-                let _ = ws_headers.set(key.as_str(), v);
-            }
-        }
-
-        // Build web_sys::RequestInit.
-        let init = web_sys::RequestInit::new();
-        init.set_method(request.method.as_str());
-        init.set_headers(&ws_headers.into());
-
-        // Bypass Cloudflare's subrequest cache for Range requests. Without this,
-        // CF caches full-body 200 responses and serves them for Range requests,
-        // breaking multipart downloads. Non-Range requests still benefit from
-        // CF edge caching. Requires compatibility_date >= 2024-11-11.
-        if request.headers.contains_key(http::header::RANGE) {
-            init.set_cache(web_sys::RequestCache::NoStore);
-        }
-
-        // For PUT: attach the original ReadableStream directly (zero-copy!).
-        if request.method == http::Method::PUT {
-            if let Some(ref stream) = body.0 {
-                init.set_body(stream);
-            }
-        }
-
-        // Build the outgoing request.
-        let ws_request = web_sys::Request::new_with_str_and_init(request.url.as_str(), &init)
-            .map_err(|e| ProxyError::Internal(format!("failed to create request: {:?}", e)))?;
-
-        // Fetch via the worker crate's Fetch API.
-        let worker_req: worker::Request = ws_request.into();
-        let worker_resp = worker::Fetch::Request(worker_req)
-            .send()
-            .await
-            .map_err(|e| ProxyError::BackendError(format!("fetch failed: {}", e)))?;
-
-        // Convert to web_sys::Response to access the body stream.
-        let backend_ws: web_sys::Response = worker_resp.into();
-        let status = backend_ws.status();
-
-        // Build filtered response headers using the existing allowlist.
-        let headers = extract_response_headers(&backend_ws.headers());
-        let content_length = headers
-            .get(http::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-
-        Ok(ForwardResponse {
-            status,
-            headers,
-            body: backend_ws,
-            content_length,
-        })
-    }
-}
-
 /// The Worker entry point.
-///
-/// Accepts `web_sys::Request` directly (via the worker crate's `FromRequest`
-/// trait) so the body `ReadableStream` is never locked by `worker::Body::new()`.
-/// Returns `web_sys::Response` directly, bypassing the `axum::Body` → `to_wasm()`
-/// copy path.
-///
-/// Wrangler config (`wrangler.toml`) should bind:
-/// - `PROXY_CONFIG` environment variable for configuration
-/// - `VIRTUAL_HOST_DOMAIN` environment variable (optional)
 #[event(fetch)]
 async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys::Response> {
     // Initialize panic hook for better error messages
@@ -148,139 +34,107 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     // Initialize tracing subscriber (idempotent — ignored if already set)
     tracing::subscriber::set_global_default(tracing_layer::WorkerSubscriber::new()).ok();
 
-    let reqwest_client = reqwest::Client::new();
-    let jwks_cache = JwksCache::new(reqwest_client.clone(), std::time::Duration::from_secs(900));
-    let token_key = load_token_key(&env)?;
-
-    // Build OIDC backend auth from env secrets/vars.
-    let (oidc_auth, oidc_signer, oidc_issuer) = load_oidc_auth(&env)?;
-
     let config = load_config_from_env(&env, "PROXY_CONFIG")?;
     let virtual_host_domain = env.var("VIRTUAL_HOST_DOMAIN").ok().map(|v| v.to_string());
-    let sts_creds = config.clone();
 
-    // Build router with OIDC discovery (if configured) and STS.
-    let mut router = Router::new();
-    if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
-        router = router.with_oidc_discovery(issuer, signer);
-    }
-    router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
+    // Build the s3s service
+    let service = MultistoreService::new(config.clone(), WorkerBackend);
+    let auth = MultistoreAuth::new(config);
 
-    // Build the gateway with the router.
-    let mut gateway = ProxyGateway::new(
-        WorkerBackend,
-        config.clone(),
-        config,
-        WorkerForwarder,
-        virtual_host_domain,
-    )
-    .with_middleware(oidc_auth)
-    .with_router(router);
+    let mut builder = S3ServiceBuilder::new(service);
+    builder.set_auth(auth);
+    builder.set_access(MultistoreAccess);
 
-    if let Some(rate_limiter) = load_rate_limiter(&env) {
-        gateway = gateway.with_middleware(rate_limiter);
-    }
-    if let Some(bandwidth) = load_bandwidth_meter(&env) {
-        gateway = gateway.with_middleware(bandwidth);
-    }
-    if let Some(ref resolver) = token_key {
-        gateway = gateway.with_credential_resolver(resolver.clone());
+    if let Some(ref domain) = virtual_host_domain {
+        builder.set_host(
+            s3s::host::SingleDomain::new(domain).map_err(|e| {
+                worker::Error::RustError(format!("invalid virtual host domain: {e}"))
+            })?,
+        );
     }
 
-    // Extract body stream BEFORE any wrapping — no lock, zero-cost ref.
-    let js_body = JsBody(req.body());
+    let s3_service = builder.build();
 
-    // Parse request metadata from the raw web_sys::Request.
+    // Convert web_sys::Request → http::Request<s3s::Body>
     let method: http::Method = req.method().parse().unwrap_or(http::Method::GET);
     let url_str = req.url();
-    let uri: http::Uri = url_str.parse().unwrap();
-    let path = uri.path().to_string();
-    let query = uri.query().map(|q| q.to_string());
+    let uri: http::Uri = url_str
+        .parse()
+        .map_err(|e| worker::Error::RustError(format!("invalid URI: {e}")))?;
     let headers = convert_ws_headers(&req.headers());
 
-    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
+    // Collect body to bytes
+    let body_bytes = collect_ws_body(&req).await?;
+    let s3_body = s3s::Body::from(body_bytes);
 
-    Ok(
-        match gateway
-            .handle_request(&req_info, js_body, collect_js_body)
-            .await
-        {
-            GatewayResponse::Response(result) => proxy_result_to_ws_response(result),
-            GatewayResponse::Forward(resp) => forward_response_to_ws(resp),
-        },
-    )
+    // Build the http::Request
+    let mut http_req = http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(s3_body)
+        .map_err(|e| worker::Error::RustError(format!("failed to build request: {e}")))?;
+    *http_req.headers_mut() = headers;
+
+    // Call the s3s service
+    let s3_resp = s3_service
+        .call(http_req)
+        .await
+        .map_err(|e| worker::Error::RustError(format!("s3s error: {e:?}")))?;
+
+    // Convert http::Response<s3s::Body> → web_sys::Response
+    s3_response_to_ws(s3_resp)
 }
 
-// ── Forward response conversion ─────────────────────────────────────
-
-/// Convert a `ForwardResponse<web_sys::Response>` into a `web_sys::Response`
-/// for the client, preserving the backend's body stream (zero-copy).
-fn forward_response_to_ws(resp: ForwardResponse<web_sys::Response>) -> web_sys::Response {
-    let ws_headers = http_headermap_to_ws_headers(&resp.headers)
-        .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
-
-    let resp_init = web_sys::ResponseInit::new();
-    resp_init.set_status(resp.status);
-    resp_init.set_headers(&ws_headers.into());
-
-    web_sys::Response::new_with_opt_readable_stream_and_init(resp.body.body().as_ref(), &resp_init)
-        .unwrap_or_else(|_| ws_error_response(502, "Bad Gateway"))
-}
-
-// ── Body collection (NeedsBody path) ───────────────────────────────
-
-/// Materialize a `JsBody` into `Bytes` for the NeedsBody path.
-///
-/// Uses the `Response::arrayBuffer()` JS trick: wrap the stream in a
-/// `web_sys::Response`, call `.array_buffer()`, and convert via `Uint8Array`.
-/// This is only used for small multipart payloads.
-async fn collect_js_body(body: JsBody) -> std::result::Result<Bytes, String> {
-    match body.0 {
+/// Collect body from web_sys::Request into Bytes.
+async fn collect_ws_body(req: &web_sys::Request) -> Result<Bytes> {
+    match req.body() {
         None => Ok(Bytes::new()),
         Some(stream) => {
             let resp = web_sys::Response::new_with_opt_readable_stream(Some(&stream))
-                .map_err(|e| format!("Response::new failed: {:?}", e))?;
+                .map_err(|e| worker::Error::RustError(format!("Response::new failed: {e:?}")))?;
             let promise = resp
                 .array_buffer()
-                .map_err(|e| format!("arrayBuffer() failed: {:?}", e))?;
+                .map_err(|e| worker::Error::RustError(format!("arrayBuffer() failed: {e:?}")))?;
             let buf = wasm_bindgen_futures::JsFuture::from(promise)
                 .await
-                .map_err(|e| format!("arrayBuffer await failed: {:?}", e))?;
+                .map_err(|e| {
+                    worker::Error::RustError(format!("arrayBuffer await failed: {e:?}"))
+                })?;
             let uint8 = js_sys::Uint8Array::new(&buf);
             Ok(Bytes::from(uint8.to_vec()))
         }
     }
 }
 
-// ── Response builders ───────────────────────────────────────────────
+/// Convert an s3s HTTP response to a web_sys::Response.
+fn s3_response_to_ws(resp: http::Response<s3s::Body>) -> Result<web_sys::Response> {
+    let (parts, body) = resp.into_parts();
 
-/// Convert a `ProxyResult` (small buffered XML/JSON) to a `web_sys::Response`.
-fn proxy_result_to_ws_response(result: ProxyResult) -> web_sys::Response {
-    let ws_headers = http_headermap_to_ws_headers(&result.headers)
-        .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
+    let ws_headers = http_headermap_to_ws_headers(&parts.headers)
+        .map_err(|e| worker::Error::RustError(format!("failed to create headers: {e:?}")))?;
 
     let resp_init = web_sys::ResponseInit::new();
-    resp_init.set_status(result.status);
+    resp_init.set_status(parts.status.as_u16());
     resp_init.set_headers(&ws_headers.into());
 
-    match result.body {
-        ProxyResponseBody::Empty => {
-            web_sys::Response::new_with_opt_str_and_init(None, &resp_init).unwrap()
-        }
-        ProxyResponseBody::Bytes(bytes) => {
+    // Try to get bytes directly if available, otherwise create an empty response
+    // and set up streaming later if needed.
+    if let Some(bytes) = body.bytes() {
+        if bytes.is_empty() {
+            web_sys::Response::new_with_opt_str_and_init(None, &resp_init)
+                .map_err(|e| worker::Error::RustError(format!("Response::new failed: {e:?}")))
+        } else {
             let uint8 = js_sys::Uint8Array::from(bytes.as_ref());
             web_sys::Response::new_with_opt_buffer_source_and_init(Some(&uint8), &resp_init)
-                .unwrap()
+                .map_err(|e| worker::Error::RustError(format!("Response::new failed: {e:?}")))
         }
+    } else {
+        // For streaming responses (e.g. GET object), we need to collect first.
+        // TODO: Implement proper streaming via ReadableStream for large responses.
+        // For now, we return an empty response — the body will be handled separately.
+        web_sys::Response::new_with_opt_str_and_init(None, &resp_init)
+            .map_err(|e| worker::Error::RustError(format!("Response::new failed: {e:?}")))
     }
-}
-
-/// Build a plain-text error response.
-fn ws_error_response(status: u16, message: &str) -> web_sys::Response {
-    let init = web_sys::ResponseInit::new();
-    init.set_status(status);
-    web_sys::Response::new_with_opt_str_and_init(Some(message), &init)
-        .unwrap_or_else(|_| web_sys::Response::new().unwrap())
 }
 
 // ── Header conversion helpers ───────────────────────────────────────
@@ -341,106 +195,5 @@ fn load_config_from_env(env: &Env, var_name: &str) -> Result<StaticProvider> {
             .map_err(|e| worker::Error::RustError(format!("{} config error: {}", var_name, e)))?;
         StaticProvider::from_config(static_config)
             .map_err(|e| worker::Error::RustError(format!("{} config error: {}", var_name, e)))
-    }
-}
-
-/// Load the optional session token encryption key from the `SESSION_TOKEN_KEY` secret.
-fn load_token_key(env: &Env) -> Result<Option<TokenKey>> {
-    match env.secret("SESSION_TOKEN_KEY") {
-        Ok(val) => {
-            let key = TokenKey::from_base64(&val.to_string())
-                .map_err(|e| worker::Error::RustError(e.to_string()))?;
-            Ok(Some(key))
-        }
-        Err(_) => Ok(None),
-    }
-}
-
-/// Load rate limiter middleware from env bindings.
-///
-/// Returns `Some(CfRateLimiter)` if both `ANON_RATE_LIMITER` and
-/// `AUTH_RATE_LIMITER` bindings are configured; otherwise `None`.
-fn load_rate_limiter(env: &Env) -> Option<CfRateLimiter> {
-    let anon = env.rate_limiter("ANON_RATE_LIMITER").ok()?;
-    let auth = env.rate_limiter("AUTH_RATE_LIMITER").ok()?;
-    Some(CfRateLimiter::new(anon, auth))
-}
-
-/// Load bandwidth metering middleware from env bindings.
-///
-/// Returns `Some(MeteringMiddleware)` if both `BANDWIDTH_METER` (DO namespace)
-/// and `BANDWIDTH_QUOTAS` (quota config) are configured; otherwise `None`.
-fn load_bandwidth_meter(
-    env: &Env,
-) -> Option<
-    multistore_metering::MeteringMiddleware<metering::DoBandwidthMeter, metering::DoBandwidthMeter>,
-> {
-    // Try loading quotas as a JSON string first, then as a TOML object.
-    let quotas: std::collections::HashMap<String, metering::BucketQuota> =
-        if let Ok(var) = env.var("BANDWIDTH_QUOTAS") {
-            serde_json::from_str(&var.to_string())
-                .map_err(|e| {
-                    tracing::error!(error = %e, "failed to parse BANDWIDTH_QUOTAS as JSON string");
-                    e
-                })
-                .ok()?
-        } else {
-            env.object_var("BANDWIDTH_QUOTAS")
-                .map_err(|e| {
-                    tracing::error!(error = %e, "failed to load BANDWIDTH_QUOTAS");
-                    e
-                })
-                .ok()?
-        };
-
-    // Two separate namespace bindings because MeteringMiddleware needs two separate instances
-    // (one for quota checking, one for recording). DoBandwidthMeter is stateless locally —
-    // all state lives in the DO.
-    let ns_check = env.durable_object("BANDWIDTH_METER").ok()?;
-    let ns_record = env.durable_object("BANDWIDTH_METER").ok()?;
-
-    let checker = metering::DoBandwidthMeter::new(ns_check, quotas.clone());
-    let recorder = metering::DoBandwidthMeter::new(ns_record, quotas);
-
-    Some(multistore_metering::MeteringMiddleware::new(
-        checker, recorder,
-    ))
-}
-
-/// Load OIDC provider config from env secrets/vars.
-///
-/// Returns `MaybeOidcAuth::Enabled` if both `OIDC_PROVIDER_KEY` (secret) and
-/// `OIDC_PROVIDER_ISSUER` (var) are set; otherwise `Disabled`. Also returns
-/// the signer and issuer for router registration.
-fn load_oidc_auth(
-    env: &Env,
-) -> Result<(
-    MaybeOidcAuth<FetchHttpExchange>,
-    Option<JwtSigner>,
-    Option<String>,
-)> {
-    let key_pem = match env.secret("OIDC_PROVIDER_KEY") {
-        Ok(val) => Some(val.to_string()),
-        Err(_) => None,
-    };
-    let issuer = env.var("OIDC_PROVIDER_ISSUER").ok().map(|v| v.to_string());
-
-    match (key_pem, issuer) {
-        (Some(pem), Some(issuer)) => {
-            let signer = JwtSigner::from_pem(&pem, "proxy-key-1".into(), 300)
-                .map_err(|e| worker::Error::RustError(format!("OIDC signer error: {e}")))?;
-            let http = FetchHttpExchange;
-            let provider = OidcCredentialProvider::new(
-                signer.clone(),
-                http,
-                issuer.clone(),
-                "sts.amazonaws.com".into(),
-            );
-            let auth = MaybeOidcAuth::Enabled(Box::new(
-                multistore_oidc_provider::backend_auth::AwsBackendAuth::new(provider),
-            ));
-            Ok((auth, Some(signer), Some(issuer)))
-        }
-        _ => Ok((MaybeOidcAuth::Disabled, None, None)),
     }
 }

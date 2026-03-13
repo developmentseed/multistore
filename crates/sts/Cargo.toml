@@ -23,5 +23,4 @@ quick-xml.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-http.workspace = true
 tokio = { workspace = true, features = ["rt", "macros"] }

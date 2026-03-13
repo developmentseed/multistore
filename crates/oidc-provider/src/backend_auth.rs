@@ -4,15 +4,9 @@
 //! mints a self-signed JWT and exchanges it for temporary cloud credentials
 //! via the cloud provider's STS. The resolved credentials are injected back
 //! into the config so the existing builder pipeline works unmodified.
-//!
-//! Implements the [`Middleware`] trait so that credential resolution runs
-//! as part of the dispatch middleware chain.
 
 use multistore::error::ProxyError;
-use multistore::middleware::{DispatchContext, Middleware, Next};
-use multistore::route_handler::HandlerAction;
 use multistore::types::BucketConfig;
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::exchange::aws::AwsExchange;
@@ -29,7 +23,11 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         Self { provider }
     }
 
-    async fn resolve_aws(
+    /// Resolve OIDC credentials for an AWS backend bucket.
+    ///
+    /// Returns replacement `backend_options` with temporary AWS credentials
+    /// injected and OIDC-specific keys removed.
+    pub async fn resolve_aws(
         &self,
         config: &BucketConfig,
     ) -> Result<HashMap<String, String>, ProxyError> {
@@ -59,12 +57,11 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         Ok(options)
     }
 
-    /// Internal helper: resolve credentials if bucket needs OIDC.
+    /// Resolve credentials if the bucket uses OIDC auth.
     ///
-    /// Returns `None` if the bucket doesn't use OIDC auth, `Some(options)` with
+    /// Returns `None` if the bucket doesn't use OIDC, `Some(options)` with
     /// replacement backend options if it does.
-    #[cfg(test)]
-    async fn resolve_credentials(
+    pub async fn resolve_credentials(
         &self,
         config: &BucketConfig,
     ) -> Result<Option<HashMap<String, String>>, ProxyError> {
@@ -76,70 +73,6 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
             other => Err(ProxyError::ConfigError(format!(
                 "OIDC backend auth not yet supported for backend_type '{other}'"
             ))),
-        }
-    }
-}
-
-impl<H: HttpExchange> Middleware for AwsBackendAuth<H> {
-    async fn handle<'a>(
-        &'a self,
-        mut ctx: DispatchContext<'a>,
-        next: Next<'a>,
-    ) -> Result<HandlerAction, ProxyError> {
-        if let Some(ref bucket_config) = ctx.bucket_config {
-            if bucket_config.option("auth_type") == Some("oidc") {
-                match bucket_config.backend_type.as_str() {
-                    "s3" => {
-                        let options = self.resolve_aws(bucket_config).await?;
-                        ctx.bucket_config = Some(Cow::Owned(BucketConfig {
-                            backend_options: options,
-                            ..ctx.bucket_config.unwrap().into_owned()
-                        }));
-                    }
-                    other => {
-                        return Err(ProxyError::ConfigError(format!(
-                            "OIDC backend auth not yet supported for backend_type '{other}'"
-                        )));
-                    }
-                }
-            }
-        }
-        next.run(ctx).await
-    }
-}
-
-/// Wrapper enum that runtimes use as a single concrete middleware type.
-///
-/// `Enabled` holds the live OIDC provider; `Disabled` is the no-op fallback.
-/// When disabled and a bucket specifies `auth_type=oidc`, a `ConfigError`
-/// is returned.
-pub enum MaybeOidcAuth<H: HttpExchange> {
-    Enabled(Box<AwsBackendAuth<H>>),
-    Disabled,
-}
-
-impl<H: HttpExchange> Middleware for MaybeOidcAuth<H> {
-    async fn handle<'a>(
-        &'a self,
-        ctx: DispatchContext<'a>,
-        next: Next<'a>,
-    ) -> Result<HandlerAction, ProxyError> {
-        match self {
-            MaybeOidcAuth::Enabled(auth) => auth.handle(ctx, next).await,
-            MaybeOidcAuth::Disabled => {
-                let is_oidc = ctx
-                    .bucket_config
-                    .as_deref()
-                    .and_then(|c| c.option("auth_type"))
-                    == Some("oidc");
-                if is_oidc {
-                    Err(ProxyError::ConfigError(
-                        "bucket requires auth_type=oidc but no OIDC provider is configured".into(),
-                    ))
-                } else {
-                    next.run(ctx).await
-                }
-            }
         }
     }
 }
@@ -273,28 +206,5 @@ mod tests {
 
         assert!(resolved.is_none());
         assert_eq!(http.call_count.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn maybe_disabled_errors_on_oidc_bucket() {
-        // MaybeOidcAuth::Disabled should error when a bucket requires OIDC.
-        // We verify the branch condition directly since Next/Dispatch are
-        // pub(crate) in core and can't be constructed from here.
-        let config = oidc_bucket_config();
-        assert_eq!(config.option("auth_type"), Some("oidc"));
-        // The Middleware::handle impl returns this error before calling next:
-        let err = ProxyError::ConfigError(
-            "bucket requires auth_type=oidc but no OIDC provider is configured".into(),
-        );
-        assert!(err.to_string().contains("no OIDC provider is configured"));
-    }
-
-    #[tokio::test]
-    async fn maybe_disabled_passes_through_static_bucket() {
-        // MaybeOidcAuth::Disabled should pass through when the bucket
-        // doesn't require OIDC auth (no auth_type=oidc in options).
-        let config = static_bucket_config();
-        assert!(config.option("auth_type") != Some("oidc"));
-        // The Middleware::handle impl calls next.run(ctx) in this case.
     }
 }

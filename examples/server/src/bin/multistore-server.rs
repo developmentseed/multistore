@@ -4,7 +4,7 @@
 //!     multistore-server --config config.toml [--listen 0.0.0.0:8080] [--domain s3.local]
 
 use multistore_server::cached::CachedProvider;
-use multistore_server::server::{run, ServerConfig};
+use multistore_server::server::{self, ServerConfig};
 use multistore_static_config::StaticProvider;
 use multistore_sts::TokenKey;
 use std::net::SocketAddr;
@@ -62,5 +62,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         oidc_provider_issuer,
     };
 
-    run(config.clone(), config, server_config).await
+    server::run(config.clone(), config, server_config).await
 }

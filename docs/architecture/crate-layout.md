@@ -4,8 +4,8 @@ The project is organized as a Cargo workspace with libraries (traits and logic) 
 
 ```
 crates/
-├── core/  (multistore)                 # Runtime-agnostic: traits, S3 parsing, SigV4, registries
-├── metering/ (multistore-metering)     # Usage metering and quota enforcement middleware
+├── core/  (multistore)                 # Runtime-agnostic: s3s service, registries, authorization
+├── metering/ (multistore-metering)     # Usage metering and quota enforcement traits
 ├── sts/   (multistore-sts)             # OIDC/STS token exchange (AssumeRoleWithWebIdentity)
 └── oidc-provider/                      # Outbound OIDC provider (JWT signing, JWKS, exchange)
 
@@ -20,17 +20,15 @@ examples/
 ### `multistore`
 
 The runtime-agnostic core. Contains:
-- `ProxyGateway` — Router-based dispatch + S3 parsing + identity resolution + two-phase request dispatch (`handle_request()` → `GatewayResponse`)
-- `Router` — Path-based route matching via `matchit` for efficient pre-dispatch
-- `RouteHandler` trait — Pluggable request interception
-- `Middleware` trait — Composable post-auth middleware for dispatch, with `after_dispatch` for post-response observation
-- `Forwarder` trait — Runtime-provided HTTP transport for backend forwarding; the core orchestrates the call so middleware can observe response metadata
+- `MultistoreService` — s3s-based S3 service implementation mapping S3 operations to `object_store` calls (GET/HEAD/PUT/DELETE/LIST/multipart)
+- `MultistoreAuth` — s3s auth adapter wrapping `CredentialRegistry` for SigV4 verification
+- `StoreFactory` trait — Runtime-provided factory for creating `ObjectStore`, `PaginatedListStore`, and `MultipartStore` per request
 - `BucketRegistry` trait — Bucket lookup, authorization, and listing
 - `CredentialRegistry` trait — Credential and role storage
-- `ProxyBackend` trait — Runtime abstraction for store/signer/raw HTTP
-- S3 request parsing, XML response building, list prefix rewriting
-- SigV4 signature verification
-- Sealed session token encryption/decryption
+- `TemporaryCredentialResolver` trait — Resolve session tokens into temporary credentials
+- `authorize()` — Check if an identity is authorized for an S3 operation
+- `StoreBuilder` — Provider-specific `object_store` builder (S3, Azure, GCS)
+- List prefix rewriting
 - Type definitions (`BucketConfig`, `RoleConfig`, `AccessScope`, etc.)
 
 **Feature flags:**
@@ -39,51 +37,50 @@ The runtime-agnostic core. Contains:
 
 ### `multistore-metering`
 
-Usage metering and quota enforcement middleware:
-- `MeteringMiddleware<Q, U>` — Pre-dispatch quota checking + post-dispatch usage recording via the `Middleware` trait
+Usage metering and quota enforcement trait abstractions:
 - `QuotaChecker` trait — Pre-dispatch quota enforcement; return `Err(QuotaExceeded)` to reject with HTTP 429
 - `UsageRecorder` trait — Post-dispatch operation recording for usage tracking
 - `UsageEvent` — Operation metadata passed to the recorder (identity, operation, bytes, status)
-- `NoopQuotaChecker` / `NoopRecorder` — Convenience no-op implementations for when only one side is needed
+- `NoopQuotaChecker` / `NoopRecorder` — Convenience no-op implementations
 
 ### `multistore-sts`
 
 OIDC token exchange implementing `AssumeRoleWithWebIdentity`:
-- `StsRouterExt` — registers a closure that intercepts STS requests on the `Router`
 - JWT decoding and validation (RS256)
 - JWKS fetching and caching
 - Trust policy evaluation (issuer, audience, subject conditions)
 - Temporary credential minting with scope template variables
+- `TokenKey` — sealed session token encryption/decryption (implements `TemporaryCredentialResolver`)
 
 ### `multistore-oidc-provider`
 
 Outbound OIDC identity provider for backend authentication:
-- `OidcRouterExt` — registers closures for `.well-known` discovery endpoints on the `Router`
 - RSA JWT signing (`JwtSigner`)
 - JWKS endpoint serving
 - OpenID Connect discovery document
-- AWS credential exchange (`AwsBackendAuth` middleware)
+- AWS credential exchange (`AwsBackendAuth`)
 - Credential caching
 
 ### `multistore-server`
 
 The native server runtime (in `examples/server/`):
-- Tokio/Hyper HTTP server
-- `ServerBackend` implementing `ProxyBackend` with reqwest
-- Streaming via hyper `Incoming` bodies and reqwest `bytes_stream()`
-- Wires `ProxyGateway` with a `Router` (OIDC discovery + STS routes)
-- CLI argument parsing (`--config`, `--listen`, `--domain`, `--sts-config`)
+- Tokio/Hyper HTTP server via `S3ServiceBuilder` + hyper-util
+- `ServerBackend` implementing `StoreFactory` with reqwest
+- CLI argument parsing (`--config`, `--listen`, `--domain`)
+
+### `multistore-lambda`
+
+The AWS Lambda runtime (in `examples/lambda/`):
+- Lambda HTTP adapter converting between `lambda_http` and s3s types
+- `LambdaBackend` implementing `StoreFactory` with default `object_store` HTTP
 
 ### `multistore-cf-workers`
 
 The Cloudflare Workers WASM runtime (in `examples/cf-workers/`):
-- `WorkerBackend` implementing `ProxyBackend` with `web_sys::fetch`
-- `WorkerForwarder` implementing `Forwarder` with the Fetch API (zero-copy `ReadableStream`)
+- `WorkerBackend` implementing `StoreFactory` with `web_sys::fetch`
 - `FetchConnector` bridging `object_store` HTTP to Workers Fetch API
 - `BandwidthMeter` Durable Object — per-(bucket, identity) sliding-window byte counter
-- `DoBandwidthMeter` implementing `QuotaChecker` + `UsageRecorder` via the `BandwidthMeter` DO
-- `CfRateLimiter` middleware for request-rate limiting via CF Rate Limiting API
-- Config loading from env vars (`PROXY_CONFIG`, `BANDWIDTH_QUOTAS`)
+- Config loading from env vars (`PROXY_CONFIG`, `VIRTUAL_HOST_DOMAIN`)
 
 > [!WARNING]
 > This crate is excluded from the workspace `default-members` because WASM types are `!Send` and won't compile on native targets. Always build with `--target wasm32-unknown-unknown`.
@@ -101,17 +98,11 @@ flowchart TD
     workers["multistore-cf-workers"]
 
     server --> core
-    server --> sts
-    server --> oidc
     lambda --> core
-    lambda --> sts
-    lambda --> oidc
     workers --> core
-    workers --> sts
-    workers --> oidc
     metering --> core
     sts --> core
     oidc --> core
 ```
 
-Libraries define trait abstractions. Runtimes implement `ProxyBackend` and `Forwarder` with platform-native primitives, build a `Router` with extension traits, and handle the two-variant `GatewayResponse`.
+Libraries define trait abstractions. Runtimes implement `StoreFactory` with platform-native primitives. The s3s-based `MultistoreService` handles S3 protocol dispatch via the `s3s::S3` trait, using `object_store` for all backend operations including multipart uploads across S3, Azure, and GCS.
