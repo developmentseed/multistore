@@ -1,0 +1,120 @@
+# CI integration-test config — CF Workers + local MinIO
+# Based on wrangler.toml but trimmed to MinIO-only buckets.
+
+compatibility_date = "2024-11-11"
+main = "build/worker/shim.mjs"
+name = "multistore"
+
+[build]
+command = "cargo install worker-build && worker-build --release"
+
+[vars]
+VIRTUAL_HOST_DOMAIN = "s3.local"
+
+[vars.PROXY_CONFIG]
+
+# --- Buckets (MinIO only) ---
+
+[[vars.PROXY_CONFIG.buckets]]
+allowed_roles = ["github-actions"]
+anonymous_access = true
+backend_type = "s3"
+name = "public-data"
+
+[vars.PROXY_CONFIG.buckets.backend_options]
+access_key_id = "minioadmin"
+bucket_name = "public-data"
+endpoint = "http://localhost:9000"
+region = "us-east-1"
+secret_access_key = "minioadmin"
+
+[[vars.PROXY_CONFIG.buckets]]
+allowed_roles = ["github-actions"]
+anonymous_access = false
+backend_type = "s3"
+name = "private-uploads"
+
+[vars.PROXY_CONFIG.buckets.backend_options]
+access_key_id = "minioadmin"
+bucket_name = "private-uploads"
+endpoint = "http://localhost:9000"
+region = "us-east-1"
+secret_access_key = "minioadmin"
+
+# --- Static credentials ---
+
+[[vars.PROXY_CONFIG.credentials]]
+access_key_id = "AKTEST000000000001"
+created_at = "2024-01-01T00:00:00Z"
+enabled = true
+principal_name = "integration-test-user"
+secret_access_key = "testSecretKey00000000000000000001"
+
+[[vars.PROXY_CONFIG.credentials.allowed_scopes]]
+actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket"]
+bucket = "public-data"
+prefixes = []
+
+[[vars.PROXY_CONFIG.credentials.allowed_scopes]]
+actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket"]
+bucket = "private-uploads"
+prefixes = []
+
+# --- Roles ---
+
+[[vars.PROXY_CONFIG.roles]]
+max_session_duration_secs = 3600
+name = "GitHub Actions"
+role_id = "github-actions"
+subject_conditions = ["*"]
+trusted_oidc_issuers = [
+  "https://token.actions.githubusercontent.com",
+]
+
+[[vars.PROXY_CONFIG.roles.allowed_scopes]]
+actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket"]
+bucket = "public-data"
+prefixes = []
+
+[[vars.PROXY_CONFIG.roles.allowed_scopes]]
+actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket"]
+bucket = "private-uploads"
+prefixes = []
+
+[[vars.PROXY_CONFIG.roles]]
+max_session_duration_secs = 3600
+name = "GitHub Actions (No Access)"
+role_id = "github-actions-no-access"
+subject_conditions = ["*"]
+trusted_oidc_issuers = [
+  "https://token.actions.githubusercontent.com",
+]
+
+# --- Rate limiting bindings (required by wrangler dev) ---
+
+[[ratelimits]]
+name = "ANON_RATE_LIMITER"
+namespace_id = "1001"
+  [ratelimits.simple]
+  limit = 200
+  period = 10
+
+[[ratelimits]]
+name = "AUTH_RATE_LIMITER"
+namespace_id = "1002"
+  [ratelimits.simple]
+  limit = 1_000
+  period = 10
+
+# --- Bandwidth metering ---
+
+[vars.BANDWIDTH_QUOTAS]
+public-data = { limit_bytes = 2_147_483_648, window_secs = 300 }
+
+[[durable_objects.bindings]]
+name = "BANDWIDTH_METER"
+class_name = "BandwidthMeter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BandwidthMeter"]

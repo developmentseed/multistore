@@ -27,19 +27,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -- -D warnings
 
-  check:
-    name: Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check
-
   test:
-    name: Test
+    name: Unit Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +38,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
-  check-cf-workers:
-    name: Check CF Workers
+  check:
+    name: Cargo Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check
+
+  check-wasm:
+    name: Cargo Check (WASM)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,3 +72,84 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-audit
       - run: cargo audit
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "lts/*"
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+
+          # Wait for MinIO to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live > /dev/null 2>&1; then
+              echo "MinIO is ready"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Seed MinIO buckets
+        run: |
+          curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
+          chmod +x /usr/local/bin/mc
+
+          mc alias set local http://localhost:9000 minioadmin minioadmin
+          mc mb --ignore-existing local/public-data
+          mc mb --ignore-existing local/private-uploads
+          mc anonymous set download local/public-data
+          echo "Hello from s3-proxy!" | mc pipe local/public-data/hello.txt
+          echo '{"status":"ok"}' | mc pipe local/public-data/health.json
+          echo "Secret payload" | mc pipe local/private-uploads/docs/secret.txt
+
+      - name: Build worker
+        working-directory: examples/cf-workers
+        run: |
+          cargo install worker-build
+          worker-build --release
+
+      - name: Write .dev.vars
+        run: |
+          echo "SESSION_TOKEN_KEY=$(openssl rand -base64 32)" > examples/cf-workers/.dev.vars
+
+      - name: Start wrangler dev
+        working-directory: examples/cf-workers
+        run: |
+          npx wrangler dev --config wrangler.integration.toml --port 8787 &
+
+          # Wait for wrangler to be ready
+          for i in $(seq 1 30); do
+            if curl -so /dev/null http://localhost:8787/ 2>/dev/null; then
+              echo "Wrangler dev is ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: wrangler dev failed to start within 60 seconds"
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Run integration tests
+        run: uvx --with pytest,boto3,requests pytest tests/integration/ -v
