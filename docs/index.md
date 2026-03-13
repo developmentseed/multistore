@@ -17,17 +17,23 @@ hero:
       link: https://github.com/developmentseed/multistore
 
 features:
-  - title: Unified Interface
+  - icon: 🔗
+    title: Unified Interface
     details: One stable URL per dataset, regardless of which object storage provider hosts the bytes. Backend migrations are invisible to data consumers.
-  - title: Native S3 Compatibility
-    details: Works with aws-cli, boto3, DuckDB, obstore, GDAL, and any S3-compatible client. No custom SDK — just set the endpoint URL.
-  - title: Flexible Auth
+  - icon: 📦
+    title: Native S3 Compatibility
+    details: Works with aws-cli, boto3, DuckDB, obstore, GDAL, or any other S3-compatible client. No custom SDK — just set the endpoint URL.
+  - icon: 🔐
+    title: Flexible Auth
     details: OIDC token exchange for both frontend (user/machine identity) and backend (cloud storage credentials). No long-lived keys anywhere in the chain.
-  - title: Multi-Runtime
+  - icon: ⚡
+    title: Multi-Runtime
     details: Same core logic deploys as a native Tokio/Hyper server in containers or as a Cloudflare Worker at the edge.
-  - title: Zero-Copy Streaming
+  - icon: 🚀
+    title: Zero-Copy Streaming
     details: Presigned URLs enable direct streaming between clients and backends. No buffering, no double-handling of request or response bodies.
-  - title: Extensible
+  - icon: 🧩
+    title: Extensible
     details: Pluggable traits for request resolution, configuration, and backend I/O. Build your own proxy with custom auth, namespace mapping, and storage backends.
 ---
 

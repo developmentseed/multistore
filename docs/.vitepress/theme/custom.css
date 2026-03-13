@@ -1,0 +1,478 @@
+/* ============================================
+   Multistore Docs — Engineered Precision Theme
+   Monospace-driven, terminal-inspired, technical
+   ============================================ */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap");
+
+/* --- Root Variables --- */
+:root {
+  /* Typography */
+  --vp-font-family-base: "IBM Plex Mono", "SF Mono", "Fira Code", "Cascadia Code",
+    monospace;
+  --vp-font-family-mono: "IBM Plex Mono", "SF Mono", "Fira Code", monospace;
+
+  /* Brand colors — burnt orange */
+  --vp-c-brand-1: #cf3f02;
+  --vp-c-brand-2: #e5550a;
+  --vp-c-brand-3: #f97316;
+  --vp-c-brand-soft: rgba(207, 63, 2, 0.12);
+
+  /* Surface colors */
+  --vp-c-bg: #fafbfc;
+  --vp-c-bg-alt: #f1f3f5;
+  --vp-c-bg-elv: #ffffff;
+  --vp-c-bg-soft: #f1f3f5;
+
+  /* Text */
+  --vp-c-text-1: #1a1a2e;
+  --vp-c-text-2: #4a5568;
+  --vp-c-text-3: #94a3b8;
+
+  /* Borders */
+  --vp-c-border: #e2e8f0;
+  --vp-c-divider: #e2e8f0;
+  --vp-c-gutter: #e2e8f0;
+
+  /* Button */
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-bg: #cf3f02;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-hover-text: #ffffff;
+  --vp-button-brand-hover-bg: #b33600;
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-active-text: #ffffff;
+  --vp-button-brand-active-bg: #8a2a00;
+
+  --vp-button-alt-border: #e2e8f0;
+  --vp-button-alt-text: #1a1a2e;
+  --vp-button-alt-bg: #f1f3f5;
+  --vp-button-alt-hover-border: #cbd5e1;
+  --vp-button-alt-hover-text: #cf3f02;
+  --vp-button-alt-hover-bg: #e2e8f0;
+
+  /* Home hero name gradient */
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(
+    135deg,
+    #cf3f02 0%,
+    #f97316 50%,
+    #cf3f02 100%
+  );
+
+  /* Home hero image glow */
+  --vp-home-hero-image-background-image: linear-gradient(
+    135deg,
+    rgba(207, 63, 2, 0.25) 0%,
+    rgba(249, 115, 22, 0.15) 100%
+  );
+  --vp-home-hero-image-filter: blur(56px);
+
+  /* Code */
+  --vp-code-font-size: 0.85em;
+  --vp-code-color: #cf3f02;
+  --vp-code-bg: rgba(207, 63, 2, 0.08);
+  --vp-code-block-bg: #f6f7f9;
+  --vp-code-block-color: #1a1a2e;
+  --vp-code-block-divider-color: rgba(0, 0, 0, 0.06);
+
+  /* Sidebar */
+  --vp-sidebar-bg-color: #f8fafc;
+
+  /* Custom properties */
+  --ms-grid-color: rgba(207, 63, 2, 0.04);
+  --ms-grid-size: 24px;
+  --ms-border-radius: 4px;
+}
+
+/* --- Dark Mode --- */
+.dark {
+  --vp-c-brand-1: #fb923c;
+  --vp-c-brand-2: #f97316;
+  --vp-c-brand-3: #e5550a;
+  --vp-c-brand-soft: rgba(251, 146, 60, 0.12);
+
+  --vp-c-bg: #0f1117;
+  --vp-c-bg-alt: #161821;
+  --vp-c-bg-elv: #1c1e2a;
+  --vp-c-bg-soft: #1c1e2a;
+
+  --vp-c-text-1: #e2e8f0;
+  --vp-c-text-2: #94a3b8;
+  --vp-c-text-3: #64748b;
+
+  --vp-c-border: #2a2d3a;
+  --vp-c-divider: #2a2d3a;
+  --vp-c-gutter: #2a2d3a;
+
+  --vp-button-brand-bg: #cf3f02;
+  --vp-button-brand-hover-bg: #e5550a;
+  --vp-button-brand-active-bg: #b33600;
+
+  --vp-button-alt-border: #2a2d3a;
+  --vp-button-alt-text: #e2e8f0;
+  --vp-button-alt-bg: #1c1e2a;
+  --vp-button-alt-hover-border: #3a3d4a;
+  --vp-button-alt-hover-text: #fb923c;
+  --vp-button-alt-hover-bg: #252836;
+
+  --vp-home-hero-name-background: linear-gradient(
+    135deg,
+    #fb923c 0%,
+    #f97316 50%,
+    #fb923c 100%
+  );
+
+  --vp-code-color: #fb923c;
+  --vp-code-bg: rgba(251, 146, 60, 0.1);
+  --vp-code-block-bg: #0a0c14;
+  --vp-code-block-color: #cbd5e1;
+
+  --vp-sidebar-bg-color: #0f1117;
+
+  --ms-grid-color: rgba(207, 63, 2, 0.03);
+}
+
+/* ============================================
+   Global
+   ============================================ */
+
+html {
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+body {
+  font-size: 14px;
+  letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ============================================
+   Layout & Navigation
+   ============================================ */
+
+/* Nav bar — subtle bottom border */
+.VPNav {
+  border-bottom: 1px solid var(--vp-c-border) !important;
+}
+
+.VPNavBar .title {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 13px;
+}
+
+/* Sidebar refinements */
+.VPSidebar {
+  border-right: 1px solid var(--vp-c-border) !important;
+  font-size: 13px;
+}
+
+.VPSidebar .group + .group {
+  border-top: 1px solid var(--vp-c-border);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+.VPSidebarItem .text {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.VPSidebarItem.is-active > .item > .link > .text {
+  color: var(--vp-c-brand-1);
+  font-weight: 600;
+}
+
+/* ============================================
+   Content Typography
+   ============================================ */
+
+.vp-doc h1 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  border-bottom: 2px solid var(--vp-c-brand-1);
+  padding-bottom: 12px;
+}
+
+.vp-doc h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  border-top: 1px solid var(--vp-c-border);
+  padding-top: 24px;
+  margin-top: 40px;
+}
+
+.vp-doc h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.vp-doc p,
+.vp-doc li {
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+/* Inline code */
+.vp-doc :not(pre) > code {
+  border-radius: var(--ms-border-radius);
+  padding: 2px 6px;
+  font-size: 0.9em;
+  border: 1px solid transparent;
+}
+
+.dark .vp-doc :not(pre) > code {
+  border-color: rgba(251, 146, 60, 0.15);
+}
+
+/* Code blocks */
+.vp-doc div[class*="language-"] {
+  border-radius: 6px;
+  border: 1px solid var(--vp-c-border);
+}
+
+.dark .vp-doc div[class*="language-"] {
+  border-color: #2a2d3a;
+}
+
+/* Language label in code blocks */
+.vp-doc div[class*="language-"]::before {
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--vp-c-text-3);
+}
+
+/* ============================================
+   Links
+   ============================================ */
+
+.vp-doc a {
+  text-decoration-color: var(--vp-c-brand-soft);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.15s ease;
+}
+
+.vp-doc a:hover {
+  text-decoration-color: var(--vp-c-brand-1);
+}
+
+/* ============================================
+   Tables
+   ============================================ */
+
+.vp-doc table {
+  font-size: 13px;
+  border-collapse: collapse;
+}
+
+.vp-doc th {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--vp-c-text-2);
+  background: var(--vp-c-bg-alt);
+}
+
+/* ============================================
+   Custom Containers (tips, warnings, etc.)
+   ============================================ */
+
+.vp-doc .custom-block {
+  border-radius: 6px;
+  font-size: 13px;
+  border-left-width: 3px;
+}
+
+.vp-doc .custom-block .custom-block-title {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+/* ============================================
+   Homepage
+   ============================================ */
+
+/* Subtle grid background on hero */
+.VPHero {
+  position: relative;
+}
+
+.VPHero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(var(--ms-grid-color) 1px, transparent 1px),
+    linear-gradient(90deg, var(--ms-grid-color) 1px, transparent 1px);
+  background-size: var(--ms-grid-size) var(--ms-grid-size);
+  pointer-events: none;
+  mask-image: radial-gradient(ellipse 70% 70% at 50% 40%, black 0%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 70% 70% at 50% 40%, black 0%, transparent 100%);
+}
+
+/* Hero name */
+.VPHero .name .clip {
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+/* Hero text/tagline */
+.VPHero .text {
+  font-size: 18px !important;
+  line-height: 1.6 !important;
+  font-weight: 400;
+  max-width: 580px;
+}
+
+.VPHero .tagline {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: var(--vp-c-text-2);
+  font-weight: 400;
+}
+
+/* Action buttons */
+.VPHero .actions .VPButton {
+  border-radius: var(--ms-border-radius);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 10px 24px;
+  transition: all 0.2s ease;
+}
+
+.VPHero .actions .VPButton.brand:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(207, 63, 2, 0.25);
+}
+
+/* Feature cards */
+.VPFeatures .VPFeature {
+  border: 1px solid var(--vp-c-border);
+  border-radius: 6px;
+  background: var(--vp-c-bg-elv);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.VPFeatures .VPFeature:hover {
+  border-color: var(--vp-c-brand-1);
+  transform: translateY(-2px);
+}
+
+.VPFeatures .title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.VPFeatures .details {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--vp-c-text-2);
+}
+
+/* ============================================
+   Search
+   ============================================ */
+
+.VPLocalSearchBox .search-input {
+  font-family: var(--vp-font-family-base);
+  font-size: 13px;
+}
+
+/* ============================================
+   Scrollbar (Webkit)
+   ============================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--vp-c-border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vp-c-text-3);
+}
+
+/* ============================================
+   Animations
+   ============================================ */
+
+/* Fade in content on page load */
+.VPContent {
+  animation: fadeIn 0.3s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Feature cards staggered entrance */
+.VPFeatures .VPFeature:nth-child(1) { animation: slideUp 0.4s ease-out 0.05s both; }
+.VPFeatures .VPFeature:nth-child(2) { animation: slideUp 0.4s ease-out 0.1s both; }
+.VPFeatures .VPFeature:nth-child(3) { animation: slideUp 0.4s ease-out 0.15s both; }
+.VPFeatures .VPFeature:nth-child(4) { animation: slideUp 0.4s ease-out 0.2s both; }
+.VPFeatures .VPFeature:nth-child(5) { animation: slideUp 0.4s ease-out 0.25s both; }
+.VPFeatures .VPFeature:nth-child(6) { animation: slideUp 0.4s ease-out 0.3s both; }
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============================================
+   Mermaid diagrams
+   ============================================ */
+
+.mermaid {
+  background: var(--vp-c-bg-alt);
+  border: 1px solid var(--vp-c-border);
+  border-radius: 6px;
+  padding: 24px;
+  margin: 16px 0;
+}
+
+/* ============================================
+   Print
+   ============================================ */
+
+@media print {
+  .VPNav,
+  .VPSidebar,
+  .VPLocalNav {
+    display: none !important;
+  }
+}
