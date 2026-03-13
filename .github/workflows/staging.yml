@@ -14,7 +14,8 @@ jobs:
     uses: ./.github/workflows/deploy.yml
     with:
       worker_name: multistore-staging
-      wrangler_config: wrangler.staging.toml
+      wrangler_config: wrangler.deploy.toml
+      wrangler_env: staging
       environment: staging
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
