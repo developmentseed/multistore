@@ -140,7 +140,7 @@ pub struct BucketList {
     pub buckets: Vec<BucketEntry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BucketEntry {
     #[serde(rename = "Name")]
     pub name: String,

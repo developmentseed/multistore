@@ -97,20 +97,14 @@ impl BucketRegistry for MyRegistry {
 ```rust
 let registry = MyRegistry::new(api_client);
 let cred_registry = MyCredentialRegistry::new(/* ... */);
-let gateway = ProxyGateway::new(backend, registry, cred_registry, domain);
+let gateway = ProxyGateway::new(backend, forwarder, domain)
+    .with_s3_defaults(registry, cred_registry);
 
 // In your request handler:
-let req_info = RequestInfo {
-    method: &method,
-    path: &path,
-    query: query.as_deref(),
-    headers: &headers,
-    source_ip: None,
-    params: Default::default(),
-};
+let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => { /* return response */ }
-    GatewayResponse::Forward(fwd, body) => { /* execute presigned URL, stream body */ }
+    GatewayResponse::Forward(fwd) => { /* stream forwarded response */ }
 }
 ```
 

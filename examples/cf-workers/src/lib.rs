@@ -166,25 +166,25 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     }
     router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
-    // Build the gateway with the router.
-    let mut gateway = ProxyGateway::new(
-        WorkerBackend,
+    // Build the gateway with CORS (before auth) and S3 defaults.
+    let mut gateway =
+        ProxyGateway::new(WorkerBackend, WorkerForwarder, virtual_host_domain.clone());
+    gateway = gateway.with_middleware(multistore::cors::CorsMiddleware::new(
         config.clone(),
-        config,
-        WorkerForwarder,
         virtual_host_domain,
-    )
-    .with_middleware(oidc_auth)
-    .with_router(router);
+    ));
+    if let Some(ref resolver) = token_key {
+        gateway = gateway.with_s3_defaults_and_resolver(config.clone(), config, resolver.clone());
+    } else {
+        gateway = gateway.with_s3_defaults(config.clone(), config);
+    }
+    gateway = gateway.with_middleware(oidc_auth).with_middleware(router);
 
     if let Some(rate_limiter) = load_rate_limiter(&env) {
         gateway = gateway.with_middleware(rate_limiter);
     }
     if let Some(bandwidth) = load_bandwidth_meter(&env) {
         gateway = gateway.with_middleware(bandwidth);
-    }
-    if let Some(ref resolver) = token_key {
-        gateway = gateway.with_credential_resolver(resolver.clone());
     }
 
     // Extract body stream BEFORE any wrapping — no lock, zero-cost ref.

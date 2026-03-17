@@ -64,10 +64,6 @@ Pass your credential registry directly to `ProxyGateway`. The gateway handles S3
 let bucket_registry = MyBucketRegistry::new(/* ... */);
 let cred_registry = RedisCredentialRegistry::new(redis_client);
 
-let gateway = ProxyGateway::new(
-    backend,
-    bucket_registry,
-    cred_registry,
-    virtual_host_domain,
-);
+let gateway = ProxyGateway::new(backend, forwarder, virtual_host_domain)
+    .with_s3_defaults(bucket_registry, cred_registry);
 ```

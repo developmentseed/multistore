@@ -126,6 +126,7 @@ mod tests {
             anonymous_access: false,
             allowed_roles: vec![],
             backend_options,
+            cors: None,
         }
     }
 

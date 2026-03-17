@@ -6,6 +6,8 @@ The proxy configuration defines three things:
 2. **[Roles](./roles)** — Trust policies for OIDC token exchange via `AssumeRoleWithWebIdentity`
 3. **[Credentials](./credentials)** — Long-lived access keys for service accounts and internal tools
 
+Buckets also support optional per-bucket **[CORS](./cors)** configuration for browser-based access.
+
 ```mermaid
 flowchart TD
     Config["Proxy Configuration"]

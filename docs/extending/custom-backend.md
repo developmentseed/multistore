@@ -106,8 +106,10 @@ let router = Router::new()
     .with_sts(sts_creds, jwks_cache, token_key);
 
 let backend = MyBackend::new(http_client);
-let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
-    .with_router(router);
+let forwarder = MyForwarder::new();
+let gateway = ProxyGateway::new(backend, forwarder, domain)
+    .with_middleware(router)
+    .with_s3_defaults(bucket_registry, cred_registry);
 
 // In your request handler, use handle_request for a two-variant match:
 let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
@@ -115,9 +117,8 @@ match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => {
         // Return the complete response (LIST, errors, STS, etc.)
     }
-    GatewayResponse::Forward(fwd, body) => {
-        // Execute presigned URL with your HTTP client
-        // Stream request body (PUT) or response body (GET)
+    GatewayResponse::Forward(fwd) => {
+        // Stream the forwarded response to the client
     }
 }
 ```

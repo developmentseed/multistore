@@ -80,6 +80,12 @@ impl<P: BucketRegistry> BucketRegistry for CachedProvider<P> {
     }
 }
 
+impl<P: multistore::cors::CorsProvider> multistore::cors::CorsProvider for CachedProvider<P> {
+    async fn get_cors_config(&self, bucket_name: &str) -> Option<multistore::cors::CorsConfig> {
+        self.inner.get_cors_config(bucket_name).await
+    }
+}
+
 impl<P: CredentialRegistry> CredentialRegistry for CachedProvider<P> {
     async fn get_role(&self, role_id: &str) -> Result<Option<RoleConfig>, ProxyError> {
         if let Ok(lock) = self.cache.roles.read() {

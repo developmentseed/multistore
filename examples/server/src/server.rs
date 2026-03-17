@@ -12,7 +12,6 @@ use http_body_util::BodyStream;
 use multistore::error::ProxyError;
 use multistore::forwarder::{ForwardResponse, Forwarder};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::registry::{BucketRegistry, CredentialRegistry};
 use multistore::route_handler::{ForwardRequest, RequestInfo, RESPONSE_HEADER_ALLOWLIST};
 use multistore::router::Router as ProxyRouter;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
@@ -107,8 +106,8 @@ impl Forwarder<Body> for ServerForwarder {
     }
 }
 
-struct AppState<R: BucketRegistry, C: CredentialRegistry> {
-    handler: ProxyGateway<ServerBackend, R, C, ServerForwarder>,
+struct AppState {
+    handler: ProxyGateway<ServerBackend, ServerForwarder>,
 }
 
 /// Run the S3 proxy server.
@@ -136,8 +135,8 @@ pub async fn run<R, C>(
     server_config: ServerConfig,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
-    R: BucketRegistry,
-    C: CredentialRegistry,
+    R: multistore::registry::BucketRegistry + multistore::cors::CorsProvider,
+    C: multistore::registry::CredentialRegistry,
 {
     let backend = ServerBackend::new();
     let reqwest_client = backend.client().clone();
@@ -175,28 +174,35 @@ where
     }
     proxy_router = proxy_router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
-    // Build the gateway with the router.
+    // Build the gateway with CORS (before auth) and S3 defaults.
     let forwarder = ServerForwarder {
         client: reqwest_client,
     };
     let mut handler = ProxyGateway::new(
         backend,
-        bucket_registry,
-        credential_registry,
         forwarder,
+        server_config.virtual_host_domain.clone(),
+    );
+    handler = handler.with_middleware(multistore::cors::CorsMiddleware::new(
+        bucket_registry.clone(),
         server_config.virtual_host_domain,
-    )
-    .with_middleware(oidc_auth)
-    .with_router(proxy_router);
+    ));
     if let Some(ref resolver) = token_key {
-        handler = handler.with_credential_resolver(resolver.clone());
+        handler = handler.with_s3_defaults_and_resolver(
+            bucket_registry,
+            credential_registry,
+            resolver.clone(),
+        );
+    } else {
+        handler = handler.with_s3_defaults(bucket_registry, credential_registry);
     }
+    handler = handler
+        .with_middleware(oidc_auth)
+        .with_middleware(proxy_router);
 
     let state = Arc::new(AppState { handler });
 
-    let app = Router::new()
-        .fallback(request_handler::<R, C>)
-        .with_state(state);
+    let app = Router::new().fallback(request_handler).with_state(state);
 
     let listener = TcpListener::bind(server_config.listen_addr).await?;
     tracing::info!("listening on {}", server_config.listen_addr);
@@ -205,8 +211,8 @@ where
     Ok(())
 }
 
-async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
-    State(state): State<Arc<AppState<R, C>>>,
+async fn request_handler(
+    State(state): State<Arc<AppState>>,
     req: axum::extract::Request,
 ) -> Response {
     let (parts, body) = req.into_parts();

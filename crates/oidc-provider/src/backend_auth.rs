@@ -9,10 +9,10 @@
 //! as part of the dispatch middleware chain.
 
 use multistore::error::ProxyError;
-use multistore::middleware::{DispatchContext, Middleware, Next};
+use multistore::middleware::{Middleware, Next, RequestContext};
+use multistore::registry::ResolvedBucket;
 use multistore::route_handler::HandlerAction;
 use multistore::types::BucketConfig;
-use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::exchange::aws::AwsExchange;
@@ -83,18 +83,18 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
 impl<H: HttpExchange> Middleware for AwsBackendAuth<H> {
     async fn handle<'a>(
         &'a self,
-        mut ctx: DispatchContext<'a>,
+        mut ctx: RequestContext<'a>,
         next: Next<'a>,
     ) -> Result<HandlerAction, ProxyError> {
-        if let Some(ref bucket_config) = ctx.bucket_config {
-            if bucket_config.option("auth_type") == Some("oidc") {
-                match bucket_config.backend_type.as_str() {
+        // Clone the resolved bucket out to avoid borrowing ctx during mutation.
+        if let Some(resolved) = ctx.extensions.get::<ResolvedBucket>().cloned() {
+            if resolved.config.option("auth_type") == Some("oidc") {
+                match resolved.config.backend_type.as_str() {
                     "s3" => {
-                        let options = self.resolve_aws(bucket_config).await?;
-                        ctx.bucket_config = Some(Cow::Owned(BucketConfig {
-                            backend_options: options,
-                            ..ctx.bucket_config.unwrap().into_owned()
-                        }));
+                        let options = self.resolve_aws(&resolved.config).await?;
+                        let mut updated = resolved;
+                        updated.config.backend_options = options;
+                        ctx.extensions.insert(updated);
                     }
                     other => {
                         return Err(ProxyError::ConfigError(format!(
@@ -121,16 +121,15 @@ pub enum MaybeOidcAuth<H: HttpExchange> {
 impl<H: HttpExchange> Middleware for MaybeOidcAuth<H> {
     async fn handle<'a>(
         &'a self,
-        ctx: DispatchContext<'a>,
+        ctx: RequestContext<'a>,
         next: Next<'a>,
     ) -> Result<HandlerAction, ProxyError> {
         match self {
             MaybeOidcAuth::Enabled(auth) => auth.handle(ctx, next).await,
             MaybeOidcAuth::Disabled => {
                 let is_oidc = ctx
-                    .bucket_config
-                    .as_deref()
-                    .and_then(|c| c.option("auth_type"))
+                    .resolved_bucket()
+                    .and_then(|r| r.config.option("auth_type"))
                     == Some("oidc");
                 if is_oidc {
                     Err(ProxyError::ConfigError(
@@ -214,6 +213,7 @@ mod tests {
             anonymous_access: false,
             allowed_roles: vec![],
             backend_options: opts,
+            cors: None,
         }
     }
 
@@ -233,6 +233,7 @@ mod tests {
             anonymous_access: false,
             allowed_roles: vec![],
             backend_options: opts,
+            cors: None,
         }
     }
 

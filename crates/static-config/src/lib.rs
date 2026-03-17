@@ -229,6 +229,17 @@ impl BucketRegistry for StaticProvider {
     }
 }
 
+impl multistore::cors::CorsProvider for StaticProvider {
+    async fn get_cors_config(&self, bucket_name: &str) -> Option<multistore::cors::CorsConfig> {
+        self.inner
+            .config
+            .buckets
+            .iter()
+            .find(|b| b.name == bucket_name)
+            .and_then(|b| b.cors.clone())
+    }
+}
+
 impl CredentialRegistry for StaticProvider {
     async fn get_credential(
         &self,
@@ -269,6 +280,7 @@ mod tests {
                 anonymous_access: true,
                 allowed_roles: vec![],
                 backend_options: Default::default(),
+                cors: None,
             }],
             roles: vec![RoleConfig {
                 role_id: "my-role".into(),

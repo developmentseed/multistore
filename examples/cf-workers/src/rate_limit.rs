@@ -6,7 +6,7 @@
 
 use multistore::api::response::ErrorResponse;
 use multistore::error::ProxyError;
-use multistore::middleware::{DispatchContext, Middleware, Next};
+use multistore::middleware::{Middleware, Next, RequestContext};
 use multistore::route_handler::{HandlerAction, ProxyResponseBody, ProxyResult};
 use multistore::types::ResolvedIdentity;
 
@@ -35,10 +35,11 @@ impl CfRateLimiter {
 impl Middleware for CfRateLimiter {
     async fn handle<'a>(
         &'a self,
-        ctx: DispatchContext<'a>,
+        ctx: RequestContext<'a>,
         next: Next<'a>,
     ) -> Result<HandlerAction, ProxyError> {
-        let (limiter, key) = match ctx.identity {
+        let identity = ctx.identity().unwrap_or(&ResolvedIdentity::Anonymous);
+        let (limiter, key) = match identity {
             ResolvedIdentity::Anonymous => {
                 let key = match ctx.source_ip {
                     Some(ip) => ip.to_string(),
@@ -59,7 +60,7 @@ impl Middleware for CfRateLimiter {
             }
             Ok(_) => {
                 tracing::warn!(key = %key, "rate limited");
-                let xml = ErrorResponse::slow_down(ctx.request_id).to_xml();
+                let xml = ErrorResponse::slow_down(&ctx.request_id).to_xml();
                 let mut headers = HeaderMap::new();
                 headers.insert("content-type", "application/xml".parse().unwrap());
                 Ok(HandlerAction::Response(ProxyResult {

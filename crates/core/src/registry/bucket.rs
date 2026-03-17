@@ -13,6 +13,7 @@ pub const DEFAULT_BUCKET_OWNER: &str = "multistore-proxy";
 ///
 /// Contains the backend configuration needed to proxy the request,
 /// plus any optional list rewrite rules.
+#[derive(Clone)]
 pub struct ResolvedBucket {
     /// Backend configuration for this bucket.
     pub config: BucketConfig,

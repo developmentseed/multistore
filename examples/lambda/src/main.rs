@@ -101,7 +101,7 @@ impl Forwarder<Body> for LambdaForwarder {
     }
 }
 
-type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider, LambdaForwarder>;
+type Handler = ProxyGateway<LambdaBackend, LambdaForwarder>;
 
 struct AppState {
     handler: Handler,
@@ -167,13 +167,18 @@ async fn main() -> Result<(), Error> {
         client: reqwest_client,
     };
 
-    // Build the gateway with the router.
-    let mut handler = ProxyGateway::new(backend, config.clone(), config, forwarder, domain)
-        .with_middleware(oidc_auth)
-        .with_router(router);
+    // Build the gateway with CORS (before auth) and S3 defaults.
+    let mut handler = ProxyGateway::new(backend, forwarder, domain.clone());
+    handler = handler.with_middleware(multistore::cors::CorsMiddleware::new(
+        config.clone(),
+        domain,
+    ));
     if let Some(resolver) = token_key {
-        handler = handler.with_credential_resolver(resolver);
+        handler = handler.with_s3_defaults_and_resolver(config.clone(), config, resolver);
+    } else {
+        handler = handler.with_s3_defaults(config.clone(), config);
     }
+    handler = handler.with_middleware(oidc_auth).with_middleware(router);
 
     let _ = STATE.set(AppState { handler });
 

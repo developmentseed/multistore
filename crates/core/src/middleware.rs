@@ -1,25 +1,25 @@
-//! Composable post-auth middleware for dispatch.
+//! Composable middleware for the dispatch chain.
 //!
-//! Middleware runs after identity resolution and authorization, wrapping
-//! the backend dispatch call. Each middleware can inspect or modify the
-//! [`DispatchContext`], short-circuit the request with an early response,
-//! or delegate to the next middleware in the chain via [`Next::run`].
+//! Middleware runs in the dispatch chain, wrapping the backend dispatch call.
+//! Each middleware can inspect the [`RequestContext`], short-circuit the
+//! request with an early response, or delegate to the next middleware in the
+//! chain via [`Next::run`].
 //!
 //! Implement the [`Middleware`] trait for your type, then register it on
 //! the `ProxyGateway` builder. Middleware executes in registration order.
 
-use std::borrow::Cow;
 use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
 
-use http::HeaderMap;
+use http::{HeaderMap, Method};
 
-use crate::api::list_rewrite::ListRewrite;
+use crate::api::request::HostStyle;
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
+use crate::registry::ResolvedBucket;
 use crate::route_handler::HandlerAction;
-use crate::types::{BucketConfig, ResolvedIdentity, S3Operation};
+use crate::types::{ResolvedIdentity, S3Operation};
 
 /// Post-dispatch context passed to [`Middleware::after_dispatch`].
 pub struct CompletedRequest<'a> {
@@ -43,29 +43,48 @@ pub struct CompletedRequest<'a> {
     pub source_ip: Option<IpAddr>,
 }
 
-/// Context passed to each middleware in the dispatch chain.
+/// Context that flows through the unified middleware chain.
 ///
-/// Contains the resolved identity, parsed S3 operation, bucket configuration,
-/// original request headers, and an extensions map for middleware to share
-/// arbitrary typed data with downstream middleware or the dispatch function.
-pub struct DispatchContext<'a> {
-    /// The authenticated identity for this request.
-    pub identity: &'a ResolvedIdentity,
-    /// The parsed S3 operation being performed.
-    pub operation: &'a S3Operation,
-    /// The bucket configuration for the target bucket.
-    /// `None` for operations that don't target a specific bucket (e.g. ListBuckets).
-    pub bucket_config: Option<Cow<'a, BucketConfig>>,
+/// Middleware enriches this context by inserting typed data into
+/// `extensions`. Downstream middleware and dispatch read from extensions
+/// using the typed accessors or `extensions.get::<T>()` directly.
+pub struct RequestContext<'a> {
+    /// The HTTP method of the incoming request.
+    pub method: &'a Method,
+    /// The request path (e.g., `/bucket/key.txt`).
+    pub path: &'a str,
+    /// The query string, if any.
+    pub query: Option<&'a str>,
     /// The original request headers.
     pub headers: &'a HeaderMap,
-    /// The IP address of the client that originated this request.
+    /// The client's IP address, if known.
     pub source_ip: Option<IpAddr>,
-    /// A unique identifier for this request, used for tracing.
-    pub request_id: &'a str,
-    /// List rewrite rules for prefix-based bucket views.
-    pub list_rewrite: Option<&'a ListRewrite>,
-    /// Arbitrary typed data for middleware to share downstream.
+    /// Unique identifier for this request.
+    pub request_id: String,
+    /// Typed extension map for middleware to share data.
     pub extensions: http::Extensions,
+}
+
+impl RequestContext<'_> {
+    /// The resolved caller identity, if auth middleware has run.
+    pub fn identity(&self) -> Option<&ResolvedIdentity> {
+        self.extensions.get::<ResolvedIdentity>()
+    }
+
+    /// The parsed S3 operation, if op-parser middleware has run.
+    pub fn operation(&self) -> Option<&S3Operation> {
+        self.extensions.get::<S3Operation>()
+    }
+
+    /// The resolved bucket (config + list rewrite), if bucket resolver has run.
+    pub fn resolved_bucket(&self) -> Option<&ResolvedBucket> {
+        self.extensions.get::<ResolvedBucket>()
+    }
+
+    /// The host style (path vs virtual-hosted), if op-parser middleware has run.
+    pub fn host_style(&self) -> Option<&HostStyle> {
+        self.extensions.get::<HostStyle>()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +119,7 @@ pub(crate) type AfterDispatchFuture<'a> = Pin<Box<dyn Future<Output = ()> + 'a>>
 /// implementation to borrow from its environment with arbitrary lifetimes —
 /// avoiding the `'static` constraint that `Arc<dyn Fn>` would impose.
 pub(crate) trait Dispatch: MaybeSend + MaybeSync {
-    fn dispatch<'a>(&'a self, ctx: DispatchContext<'a>) -> DispatchFuture<'a>;
+    fn dispatch<'a>(&'a self, ctx: RequestContext<'a>) -> DispatchFuture<'a>;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,14 +127,14 @@ pub(crate) trait Dispatch: MaybeSend + MaybeSync {
 // ---------------------------------------------------------------------------
 
 pub(crate) trait ErasedMiddleware: MaybeSend + MaybeSync {
-    fn handle<'a>(&'a self, ctx: DispatchContext<'a>, next: Next<'a>) -> DispatchFuture<'a>;
+    fn handle<'a>(&'a self, ctx: RequestContext<'a>, next: Next<'a>) -> DispatchFuture<'a>;
     fn after_dispatch<'a>(&'a self, completed: &'a CompletedRequest<'a>)
         -> AfterDispatchFuture<'a>;
 }
 
 // Blanket impl: any `Middleware` is automatically an `ErasedMiddleware`.
 impl<T: Middleware> ErasedMiddleware for T {
-    fn handle<'a>(&'a self, ctx: DispatchContext<'a>, next: Next<'a>) -> DispatchFuture<'a> {
+    fn handle<'a>(&'a self, ctx: RequestContext<'a>, next: Next<'a>) -> DispatchFuture<'a> {
         Box::pin(<Self as Middleware>::handle(self, ctx, next))
     }
 
@@ -155,7 +174,7 @@ impl<'a> Next<'a> {
 
     /// Run the next middleware in the chain, or the dispatch function if the
     /// chain is exhausted.
-    pub async fn run(self, ctx: DispatchContext<'a>) -> Result<HandlerAction, ProxyError> {
+    pub async fn run(self, ctx: RequestContext<'a>) -> Result<HandlerAction, ProxyError> {
         if let Some((first, rest)) = self.middleware.split_first() {
             let next = Next {
                 middleware: rest,
@@ -172,12 +191,11 @@ impl<'a> Next<'a> {
 // Middleware — the public trait implementors use.
 // ---------------------------------------------------------------------------
 
-/// Composable post-auth middleware for the dispatch chain.
+/// Composable middleware for the dispatch chain.
 ///
-/// Implement this trait to intercept requests after identity resolution and
-/// authorization but before (or instead of) backend dispatch. Each
-/// middleware receives the [`DispatchContext`] and a [`Next`] handle to
-/// continue the chain.
+/// Implement this trait to intercept requests before (or instead of) backend
+/// dispatch. Each middleware receives the [`RequestContext`] and a [`Next`]
+/// handle to continue the chain.
 ///
 /// ```rust,ignore
 /// struct RateLimiter;
@@ -185,7 +203,7 @@ impl<'a> Next<'a> {
 /// impl Middleware for RateLimiter {
 ///     async fn handle<'a>(
 ///         &'a self,
-///         ctx: DispatchContext<'a>,
+///         ctx: RequestContext<'a>,
 ///         next: Next<'a>,
 ///     ) -> Result<HandlerAction, ProxyError> {
 ///         if self.is_over_limit(&ctx) {
@@ -201,7 +219,7 @@ pub trait Middleware: MaybeSend + MaybeSync + 'static {
     /// [`Next::run`].
     fn handle<'a>(
         &'a self,
-        ctx: DispatchContext<'a>,
+        ctx: RequestContext<'a>,
         next: Next<'a>,
     ) -> impl Future<Output = Result<HandlerAction, ProxyError>> + MaybeSend + 'a;
 
@@ -223,6 +241,7 @@ pub trait Middleware: MaybeSend + MaybeSync + 'static {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::registry::ResolvedBucket;
     use crate::route_handler::{ProxyResponseBody, ProxyResult};
     use crate::types::{BucketConfig, ResolvedIdentity, S3Operation};
 
@@ -233,7 +252,7 @@ mod tests {
     impl Middleware for BlockingMiddleware {
         async fn handle<'a>(
             &'a self,
-            _ctx: DispatchContext<'a>,
+            _ctx: RequestContext<'a>,
             _next: Next<'a>,
         ) -> Result<HandlerAction, ProxyError> {
             Ok(HandlerAction::Response(ProxyResult {
@@ -249,7 +268,7 @@ mod tests {
     impl Middleware for PassthroughMiddleware {
         async fn handle<'a>(
             &'a self,
-            ctx: DispatchContext<'a>,
+            ctx: RequestContext<'a>,
             next: Next<'a>,
         ) -> Result<HandlerAction, ProxyError> {
             next.run(ctx).await
@@ -259,7 +278,7 @@ mod tests {
     struct TestDispatch;
 
     impl Dispatch for TestDispatch {
-        fn dispatch<'a>(&'a self, _ctx: DispatchContext<'a>) -> DispatchFuture<'a> {
+        fn dispatch<'a>(&'a self, _ctx: RequestContext<'a>) -> DispatchFuture<'a> {
             Box::pin(async {
                 Ok(HandlerAction::Response(ProxyResult {
                     status: 200,
@@ -270,7 +289,7 @@ mod tests {
         }
     }
 
-    fn test_context() -> DispatchContext<'static> {
+    fn test_context() -> RequestContext<'static> {
         static IDENTITY: ResolvedIdentity = ResolvedIdentity::Anonymous;
         static OPERATION: S3Operation = S3Operation::ListBuckets;
         static HEADERS: std::sync::LazyLock<HeaderMap> = std::sync::LazyLock::new(HeaderMap::new);
@@ -282,17 +301,25 @@ mod tests {
                 anonymous_access: false,
                 allowed_roles: Vec::new(),
                 backend_options: Default::default(),
+                cors: None,
             });
 
-        DispatchContext {
-            identity: &IDENTITY,
-            operation: &OPERATION,
-            bucket_config: Some(Cow::Borrowed(&*BUCKET_CONFIG)),
+        let mut extensions = http::Extensions::new();
+        extensions.insert(IDENTITY.clone());
+        extensions.insert(OPERATION.clone());
+        extensions.insert(ResolvedBucket {
+            config: BUCKET_CONFIG.clone(),
+            list_rewrite: None,
+        });
+
+        RequestContext {
+            method: &Method::GET,
+            path: "/test",
+            query: None,
             headers: &*HEADERS,
             source_ip: None,
-            request_id: "test-request-id",
-            list_rewrite: None,
-            extensions: http::Extensions::new(),
+            request_id: "test-request-id".to_string(),
+            extensions,
         }
     }
 

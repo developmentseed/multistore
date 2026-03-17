@@ -1,6 +1,6 @@
 # Request Lifecycle
 
-Every request flows through the `ProxyGateway`: first through the `Router` (which maps paths to handlers for STS, OIDC discovery, etc.), then into the proxy dispatch pipeline (middleware chain → backend dispatch → post-dispatch callbacks). The recommended entry point is `ProxyGateway::handle_request`, which returns a two-variant `GatewayResponse` for simple runtime integration.
+Every request flows through the `ProxyGateway`'s unified middleware chain, then into backend dispatch. The middleware chain handles routing, CORS, S3 request parsing, authentication, and bucket resolution -- all as composable middleware registered in order. The recommended entry point is `ProxyGateway::handle_request`, which returns a two-variant `GatewayResponse` for simple runtime integration.
 
 ## Overview
 
@@ -9,92 +9,66 @@ sequenceDiagram
     participant Client
     participant Runtime as Runtime<br/>(Server, Lambda, or Workers)
     participant Gateway as ProxyGateway
-    participant Router as Router<br/>(STS, OIDC)
-    participant Middleware as Middleware Chain
+    participant Chain as Middleware Chain
     participant Forwarder as Forwarder<br/>(Runtime HTTP Client)
-    participant BucketReg as BucketRegistry
-    participant CredReg as CredentialRegistry
     participant Backend as Backend Store
 
     Client->>Runtime: HTTP request
     Runtime->>Gateway: handle_request(req_info, body, collect_body)
-    Gateway->>Router: dispatch(req_info)
-    alt Router matches (STS, OIDC discovery)
-        Router-->>Gateway: Some(Response)
-        Gateway-->>Runtime: GatewayResponse::Response
-        Runtime-->>Client: Return response
-    else No route matches
-        Router-->>Gateway: None
-        Gateway->>Gateway: Parse S3 operation
-        Gateway->>CredReg: resolve_identity (SigV4 verification)
-        CredReg-->>Gateway: ResolvedIdentity
-        Gateway->>Middleware: handle(ctx, next)
-        Note over Middleware: Pre-dispatch (e.g. quota check)
-        alt ListBuckets
-            Gateway->>BucketReg: list_buckets(identity)
-            BucketReg-->>Gateway: Vec<BucketEntry>
-        else Bucket operation
-            Gateway->>BucketReg: get_bucket(name, identity, operation)
-            BucketReg-->>Gateway: ResolvedBucket (config + authz)
-            Gateway->>Gateway: Dispatch operation
-        end
+    Gateway->>Chain: next.run(ctx)
 
-        alt Forward (GET/HEAD/PUT/DELETE)
-            Gateway->>Forwarder: forward(presigned_url, body)
-            Forwarder->>Backend: Execute presigned URL
-            Backend-->>Forwarder: ForwardResponse (status, headers, body)
-            Forwarder-->>Gateway: ForwardResponse<S>
-            Note over Middleware: after_dispatch(CompletedRequest)
-            Gateway-->>Runtime: GatewayResponse::Forward(ForwardResponse)
-            Runtime-->>Client: Stream response body (opaque, zero-copy)
-        else Response (LIST, errors)
-            Note over Middleware: after_dispatch(CompletedRequest)
-            Gateway-->>Runtime: GatewayResponse::Response
-            Runtime-->>Client: Return response body
-        else NeedsBody (multipart)
-            Gateway->>Gateway: collect_body(body) → bytes
-            Gateway->>Backend: Signed multipart request
-            Backend-->>Gateway: Response
-            Note over Middleware: after_dispatch(CompletedRequest)
-            Gateway-->>Runtime: GatewayResponse::Response
-            Runtime-->>Client: Response
-        end
+    Note over Chain: CorsMiddleware (preflight / stamp headers)
+    Note over Chain: Router (STS, OIDC discovery)
+    Note over Chain: S3OpParser (parse S3 operation)
+    Note over Chain: AuthMiddleware (SigV4 identity resolution)
+    Note over Chain: BucketResolver (bucket lookup + authorization)
+    Note over Chain: Custom middleware (e.g. OIDC backend auth)
+
+    Chain->>Gateway: dispatch_operation(ctx)
+
+    alt Forward (GET/HEAD/PUT/DELETE)
+        Gateway->>Forwarder: forward(presigned_url, body)
+        Forwarder->>Backend: Execute presigned URL
+        Backend-->>Forwarder: ForwardResponse (status, headers, body)
+        Forwarder-->>Gateway: ForwardResponse<S>
+        Note over Chain: after_dispatch(CompletedRequest)
+        Gateway-->>Runtime: GatewayResponse::Forward(ForwardResponse)
+        Runtime-->>Client: Stream response body (opaque, zero-copy)
+    else Response (LIST, errors)
+        Note over Chain: after_dispatch(CompletedRequest)
+        Gateway-->>Runtime: GatewayResponse::Response
+        Runtime-->>Client: Return response body
+    else NeedsBody (multipart)
+        Gateway->>Gateway: collect_body(body) -> bytes
+        Gateway->>Backend: Signed multipart request
+        Backend-->>Gateway: Response
+        Note over Chain: after_dispatch(CompletedRequest)
+        Gateway-->>Runtime: GatewayResponse::Response
+        Runtime-->>Client: Response
     end
 ```
 
-## Router
+## Middleware Chain
 
-Before the proxy dispatch pipeline runs, the `Router` matches the request path against registered routes using `matchit`. Exact paths take priority over catch-all patterns, so OIDC discovery endpoints (`/.well-known/*`) are matched before the STS catch-all (`/{*path}`).
+All request processing flows through a unified middleware chain. Middleware executes in registration order, and each middleware can enrich the `RequestContext`, short-circuit with an early response, or delegate to the next middleware via `Next::run`.
 
-When a route matches, the router extracts path parameters from the pattern and populates `RequestInfo::params`. Handlers access parameters by name via `params.get("name")`.
+### Built-in S3 middleware
 
-Built-in route handlers:
+The standard S3 middleware stack is registered via `ProxyGateway::with_s3_defaults()`:
 
-- **`OidcRouterExt`** (`multistore-oidc-provider`) — Registers handlers for `/.well-known/openid-configuration` and `/.well-known/jwks.json`
-- **`StsRouterExt`** (`multistore-sts`) — Registers a handler that intercepts `AssumeRoleWithWebIdentity` STS requests
+1. **`S3OpParser`** -- parses the HTTP request into a typed `S3Operation` and determines host style (path vs virtual-hosted)
+2. **`AuthMiddleware`** -- resolves caller identity from SigV4 headers via the `CredentialRegistry`
+3. **`BucketResolver`** -- looks up bucket configuration via the `BucketRegistry` and authorizes the caller
 
-### Method routing
+Each middleware inserts typed data into `RequestContext::extensions` for downstream middleware and the dispatch function to consume.
 
-Handlers implement the `RouteHandler` trait and override individual HTTP method handlers (`get`, `post`, `put`, `delete`, `head`) for method-specific behavior, or override `handle` directly for method-agnostic handlers:
+### CORS middleware
 
-```rust
-use multistore::router::Router;
+`CorsMiddleware` handles per-bucket CORS. Place it **before** the S3 defaults so preflight `OPTIONS` requests succeed without credentials. See [CORS configuration](/configuration/cors) for details.
 
-struct HealthCheck;
+### Router middleware
 
-impl RouteHandler for HealthCheck {
-    fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
-        Box::pin(async { Some(ProxyResult::json(200, r#"{"ok":true}"#)) })
-    }
-}
-
-let router = Router::new()
-    .route("/api/health", HealthCheck);
-```
-
-### Extension traits
-
-Extension crates provide `Router` extension traits for one-call registration:
+The `Router` implements `Middleware` and matches request paths against registered routes using `matchit`. When a route matches, the corresponding handler runs and may return an early response (for STS, OIDC discovery, health checks, etc.). When no route matches, the request continues down the middleware chain.
 
 ```rust
 use multistore::router::Router;
@@ -105,28 +79,19 @@ let router = Router::new()
     .with_oidc_discovery(issuer, signer)
     .with_sts(sts_creds, jwks_cache, token_key);
 
-let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
-    .with_credential_resolver(token_key)
-    .with_middleware(oidc_auth)
-    .with_router(router);
+let gateway = ProxyGateway::new(backend, forwarder, domain.clone())
+    .with_middleware(CorsMiddleware::new(config.clone(), domain))
+    .with_middleware(router)
+    .with_s3_defaults(config.clone(), config);
 ```
 
-## Phase 1: Request Resolution
+### Custom middleware
 
-The `ProxyGateway` owns S3 request parsing, identity resolution, and bucket authorization:
+Any type implementing `Middleware` can be registered via `with_middleware`. Examples include rate limiters, OIDC backend credential resolution, and metering.
 
-1. **Parse the S3 operation** from the HTTP method, path, query, and headers
-   - Path-style: `GET /bucket/key` → GetObject on `bucket` with key `key`
-   - Virtual-hosted: `GET /key` with `Host: bucket.s3.example.com` → same operation
-2. **Resolve identity** via the `CredentialRegistry` — verifies SigV4 signatures against stored or sealed credentials
-3. **Resolve bucket** via the `BucketRegistry` — looks up the bucket config and authorizes the caller
-4. **Dispatch** the operation based on type (forward, list, or multipart)
+## Dispatch
 
-Custom `BucketRegistry` implementations can provide entirely different authorization logic, namespace mapping, or dynamic bucket configuration.
-
-## Phase 2: Proxy Dispatch
-
-The gateway takes the resolved bucket config and dispatches it based on the S3 operation type. When using `handle_request`, the three internal action types are collapsed into a two-variant `GatewayResponse`:
+After the middleware chain completes, the terminal dispatch function reads from `RequestContext::extensions` to determine the action. The three internal action types are collapsed into a two-variant `GatewayResponse` when using `handle_request`:
 
 ### `Forward(ForwardResponse<S>)`
 

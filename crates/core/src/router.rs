@@ -15,6 +15,8 @@
 //!     .route("/api/health", HealthCheck);
 //! ```
 
+use crate::error::ProxyError;
+use crate::middleware::{Middleware, Next, RequestContext};
 use crate::route_handler::{HandlerAction, Params, RequestInfo, RouteHandler};
 
 /// Path-based request router.
@@ -72,6 +74,43 @@ impl Router {
             .handle(&req_with_params)
             .await
             .map(HandlerAction::Response)
+    }
+}
+
+impl Router {
+    /// Try to match a path from a [`RequestContext`] and invoke the matched handler.
+    ///
+    /// Used by the [`Middleware`] implementation to dispatch requests
+    /// without requiring a full [`RequestInfo`].
+    async fn dispatch_from_ctx(&self, ctx: &RequestContext<'_>) -> Option<HandlerAction> {
+        let matched = self.inner.at(ctx.path).ok()?;
+        let params = Params::from_matchit(&matched.params);
+        let req_with_params = RequestInfo {
+            params,
+            method: ctx.method,
+            path: ctx.path,
+            query: ctx.query,
+            headers: ctx.headers,
+            source_ip: ctx.source_ip,
+        };
+        matched
+            .value
+            .handle(&req_with_params)
+            .await
+            .map(HandlerAction::Response)
+    }
+}
+
+impl Middleware for Router {
+    async fn handle<'a>(
+        &'a self,
+        ctx: RequestContext<'a>,
+        next: Next<'a>,
+    ) -> Result<HandlerAction, ProxyError> {
+        if let Some(action) = self.dispatch_from_ctx(&ctx).await {
+            return Ok(action);
+        }
+        next.run(ctx).await
     }
 }
 

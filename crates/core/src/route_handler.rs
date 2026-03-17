@@ -64,6 +64,8 @@ pub struct ForwardRequest {
     pub url: Url,
     /// Headers to include in the backend request (Range, If-Match, Content-Type, etc.).
     pub headers: HeaderMap,
+    /// Headers to merge onto the client-facing response after forwarding.
+    pub response_headers: HeaderMap,
     /// Unique request identifier for tracing and metering correlation.
     pub request_id: String,
 }
@@ -105,6 +107,23 @@ pub struct PendingRequest {
     pub(crate) bucket_config: crate::types::BucketConfig,
     pub(crate) original_headers: HeaderMap,
     pub(crate) request_id: String,
+    /// Headers to merge onto the client-facing response after body processing.
+    pub(crate) response_headers: HeaderMap,
+}
+
+impl HandlerAction {
+    /// Mutable access to headers that will be merged onto the client response.
+    ///
+    /// For `Response`, this returns the response headers directly.
+    /// For `Forward` and `NeedsBody`, returns supplemental headers that the
+    /// gateway merges after forwarding/body processing.
+    pub fn response_headers_mut(&mut self) -> &mut HeaderMap {
+        match self {
+            Self::Response(r) => &mut r.headers,
+            Self::Forward(f) => &mut f.response_headers,
+            Self::NeedsBody(p) => &mut p.response_headers,
+        }
+    }
 }
 
 /// Headers to forward from backend responses (used by runtimes for Forward responses).

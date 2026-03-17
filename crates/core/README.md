@@ -10,22 +10,32 @@ The proxy needs to run on fundamentally different runtimes: Tokio/Hyper in conta
 
 The core defines three trait boundaries that runtime crates implement:
 
-**`ProxyBackend`** — Provides three capabilities: `create_paginated_store()` returns a `PaginatedListStore` for LIST, `create_signer()` returns a `Signer` for presigned URL generation (GET/HEAD/PUT/DELETE), and `send_raw()` sends signed HTTP requests for multipart operations. Both runtimes delegate to `build_signer()` which uses `object_store`'s built-in signer for authenticated backends and `UnsignedUrlSigner` for anonymous backends (avoiding `Instant::now()` which panics on WASM). For `create_paginated_store()`, the server runtime uses default connectors + reqwest; the worker runtime uses a custom `FetchConnector`.
+**`ProxyBackend`** -- Provides three capabilities: `create_paginated_store()` returns a `PaginatedListStore` for LIST, `create_signer()` returns a `Signer` for presigned URL generation (GET/HEAD/PUT/DELETE), and `send_raw()` sends signed HTTP requests for multipart operations. Both runtimes delegate to `build_signer()` which uses `object_store`'s built-in signer for authenticated backends and `UnsignedUrlSigner` for anonymous backends (avoiding `Instant::now()` which panics on WASM). For `create_paginated_store()`, the server runtime uses default connectors + reqwest; the worker runtime uses a custom `FetchConnector`.
 
-**`BucketRegistry`** — Identity-aware bucket resolution and listing. Given a bucket name, identity, and S3 operation, `get_bucket()` returns a `ResolvedBucket` (config + optional list rewrite) or an authorization error. `list_buckets()` returns the buckets visible to a given identity. See `multistore-static-config` for a file-based implementation.
+**`BucketRegistry`** -- Identity-aware bucket resolution and listing. Given a bucket name, identity, and S3 operation, `get_bucket()` returns a `ResolvedBucket` (config + optional list rewrite) or an authorization error. `list_buckets()` returns the buckets visible to a given identity. See `multistore-static-config` for a file-based implementation.
 
-**`CredentialRegistry`** — Credential and role lookup for authentication infrastructure. Provides `get_credential()` for SigV4 verification and `get_role()` for STS role assumption. See `multistore-static-config` for a file-based implementation.
+**`CredentialRegistry`** -- Credential and role lookup for authentication infrastructure. Provides `get_credential()` for SigV4 verification and `get_role()` for STS role assumption. See `multistore-static-config` for a file-based implementation.
 
 Any provider implementing these traits can be wrapped with `CachedProvider` for in-memory TTL caching of credential/role lookups (bucket resolution is always delegated directly since it involves authorization).
 
-The core also defines the **`Middleware`** trait for composable post-auth request processing. Middleware runs after identity resolution and authorization, wrapping the backend dispatch call. Each middleware receives a `DispatchContext` and a `Next` handle to continue the chain. The `oidc-provider` crate provides `AwsBackendAuth` as a middleware that resolves backend credentials via OIDC token exchange.
+The core also defines the **`Middleware`** trait for composable request processing. All request handling flows through a unified middleware chain. Each middleware receives a `RequestContext` and a `Next` handle to continue the chain. `RequestContext` carries request metadata and a typed `http::Extensions` map that middleware uses to share data (identity, parsed operation, resolved bucket, etc.) with downstream middleware and the dispatch function.
+
+Built-in middleware:
+
+- **`s3::S3OpParser`** -- parses the HTTP request into a typed `S3Operation`
+- **`s3::AuthMiddleware`** -- resolves caller identity from SigV4 headers
+- **`s3::BucketResolver`** -- looks up bucket configuration and authorizes access
+- **`cors::CorsMiddleware`** -- per-bucket CORS handling (preflight + response headers)
+- **`router::Router`** -- path-based route matching (STS, OIDC discovery, etc.)
+
+The `oidc-provider` crate provides `AwsBackendAuth` as a middleware that resolves backend credentials via OIDC token exchange.
 
 ## Module Overview
 
 ```
 src/
 ├── api/
-│   ├── request.rs       Parse incoming HTTP → S3Operation enum
+│   ├── request.rs       Parse incoming HTTP -> S3Operation enum
 │   ├── response.rs      Serialize S3 XML responses
 │   └── list_rewrite.rs  Rewrite <Key>/<Prefix> values in list response XML
 ├── auth/
@@ -34,14 +44,17 @@ src/
 │   └── tests.rs         Auth test helpers
 ├── backend/
 │   └── mod.rs           ProxyBackend trait, Signer/StoreBuilder, S3RequestSigner (multipart)
+├── cors.rs              CorsMiddleware, CorsConfig, CorsProvider
 ├── registry/
 │   ├── mod.rs           Re-exports
 │   ├── bucket.rs        BucketRegistry trait, ResolvedBucket, DEFAULT_BUCKET_OWNER
 │   └── credential.rs    CredentialRegistry trait
+├── s3.rs                S3OpParser, AuthMiddleware, BucketResolver
 ├── error.rs             ProxyError with S3-compatible error codes
-├── middleware.rs         Middleware trait, DispatchContext, Next
-├── proxy.rs             ProxyGateway — the main request handler
+├── middleware.rs         Middleware trait, RequestContext, Next
+├── proxy.rs             ProxyGateway -- the main request handler
 ├── route_handler.rs     RouteHandler trait, ProxyResponseBody
+├── router.rs            Router (path-based route matching, implements Middleware)
 └── types.rs             BucketConfig, RoleConfig, StoredCredential, etc.
 ```
 
@@ -53,40 +66,32 @@ This crate is not used directly. Runtime crates depend on it and provide concret
 
 ```rust
 use multistore::proxy::ProxyGateway;
+use multistore::cors::CorsMiddleware;
 use multistore_static_config::StaticProvider;
 
 let backend = MyBackend::new();
+let forwarder = MyForwarder::new();
 let config = StaticProvider::from_file("config.toml")?;
+let domain = Some("s3.example.com".into());
 
-let gateway = ProxyGateway::new(
-    backend,
-    config.clone(),       // as BucketRegistry
-    config,               // as CredentialRegistry
-    Some("s3.example.com".into()),
-);
-// Optional: enable session token verification for STS temporary credentials.
-// let gateway = gateway.with_credential_resolver(token_key);
-// Optional: register route handlers for STS, OIDC discovery, etc.
-// let gateway = gateway.with_route_handler(sts_handler);
-// Optional: register middleware (e.g., OIDC-based backend credential resolution).
-// let gateway = gateway.with_middleware(oidc_auth);
+let gateway = ProxyGateway::new(backend, forwarder, domain.clone())
+    // Optional: CORS support (place before S3 defaults so preflight skips auth)
+    .with_middleware(CorsMiddleware::new(config.clone(), domain.clone()))
+    // Register S3 request processing middleware (op parsing, auth, bucket resolution)
+    .with_s3_defaults(config.clone(), config);
+
+// Optional: register a Router for STS, OIDC discovery, etc.
+// let router = Router::new().with_sts(...).with_oidc_discovery(...);
+// let gateway = gateway.with_middleware(router);
 
 // In your HTTP handler, use handle_request for a two-variant match:
-let req_info = RequestInfo {
-    method: &method,
-    path: &path,
-    query: query.as_deref(),
-    headers: &headers,
-    source_ip: None,
-    params: Default::default(),
-};
+let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => {
         // Return the complete response (LIST, errors, STS, etc.)
     }
-    GatewayResponse::Forward(fwd, body) => {
-        // Execute presigned URL with your HTTP client
-        // Stream request body (PUT) or response body (GET)
+    GatewayResponse::Forward(fwd) => {
+        // Stream the forwarded response to the client
     }
 }
 ```
@@ -127,7 +132,7 @@ impl BucketRegistry for MyBucketRegistry {
 
 The core defines a `TemporaryCredentialResolver` trait for resolving session tokens (from `x-amz-security-token`) into `TemporaryCredentials`. The core proxy calls this during identity resolution without knowing the token format.
 
-The `multistore-sts` crate provides `TokenKey`, a sealed-token implementation using AES-256-GCM. Register it via `ProxyGateway::with_credential_resolver()`. See the [sealed tokens documentation](../docs/auth/sealed-tokens.md) for details.
+The `multistore-sts` crate provides `TokenKey`, a sealed-token implementation using AES-256-GCM. Register it via `ProxyGateway::with_s3_defaults_and_resolver()`. See the [sealed tokens documentation](../docs/auth/sealed-tokens.md) for details.
 
 ## Feature Flags
 

@@ -31,7 +31,7 @@ use std::net::IpAddr;
 use multistore::api::response::ErrorResponse;
 use multistore::error::ProxyError;
 use multistore::maybe_send::{MaybeSend, MaybeSync};
-use multistore::middleware::{CompletedRequest, DispatchContext, Middleware, Next};
+use multistore::middleware::{CompletedRequest, Middleware, Next, RequestContext};
 use multistore::route_handler::{HandlerAction, ProxyResponseBody, ProxyResult};
 use multistore::types::{ResolvedIdentity, S3Operation};
 
@@ -136,7 +136,7 @@ impl<Q, U> MeteringMiddleware<Q, U> {
 impl<Q: QuotaChecker, U: UsageRecorder> Middleware for MeteringMiddleware<Q, U> {
     async fn handle<'a>(
         &'a self,
-        ctx: DispatchContext<'a>,
+        ctx: RequestContext<'a>,
         next: Next<'a>,
     ) -> Result<HandlerAction, ProxyError> {
         let estimated_bytes = ctx
@@ -146,13 +146,15 @@ impl<Q: QuotaChecker, U: UsageRecorder> Middleware for MeteringMiddleware<Q, U> 
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(0);
 
-        let bucket_name = ctx.bucket_config.as_ref().map(|b| b.name.as_str());
+        let identity = ctx.identity().unwrap_or(&ResolvedIdentity::Anonymous);
+        let operation = ctx.operation().unwrap_or(&S3Operation::ListBuckets);
+        let bucket_name = ctx.resolved_bucket().map(|b| b.config.name.as_str());
 
         if let Err(_exceeded) = self
             .quota_checker
             .check_quota(
-                ctx.identity,
-                ctx.operation,
+                identity,
+                operation,
                 bucket_name,
                 estimated_bytes,
                 ctx.source_ip,
@@ -160,7 +162,7 @@ impl<Q: QuotaChecker, U: UsageRecorder> Middleware for MeteringMiddleware<Q, U> 
             .await
         {
             tracing::warn!(bucket = bucket_name, "quota exceeded, returning 429");
-            let xml = ErrorResponse::slow_down(ctx.request_id).to_xml();
+            let xml = ErrorResponse::slow_down(&ctx.request_id).to_xml();
             let mut headers = HeaderMap::new();
             headers.insert("content-type", "application/xml".parse().unwrap());
             return Ok(HandlerAction::Response(ProxyResult {

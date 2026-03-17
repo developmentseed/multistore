@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
+use crate::cors::CorsConfig;
+
 /// Owner identity for S3 ListBuckets responses.
 #[derive(Debug, Clone, Serialize)]
 pub struct BucketOwner {
@@ -41,6 +43,10 @@ pub struct BucketConfig {
     /// GCS: "bucket_name", "service_account_key", "skip_signature"
     #[serde(default)]
     pub backend_options: HashMap<String, String>,
+
+    /// Per-bucket CORS configuration. If `None`, CORS headers are not emitted.
+    #[serde(default)]
+    pub cors: Option<CorsConfig>,
 }
 
 /// Keys in `backend_options` that hold secret values.
@@ -73,6 +79,7 @@ impl fmt::Debug for BucketConfig {
             .field("anonymous_access", &self.anonymous_access)
             .field("allowed_roles", &self.allowed_roles)
             .field("backend_options", &redacted_opts)
+            .field("cors", &self.cors)
             .finish()
     }
 }
