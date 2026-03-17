@@ -52,7 +52,7 @@ pub(crate) fn parse_list_query_params(raw_query: Option<&str>) -> ListQueryParam
 
     ListQueryParams {
         prefix: prefix.unwrap_or_default(),
-        delimiter: delimiter.unwrap_or_else(|| "/".to_string()),
+        delimiter: delimiter.unwrap_or_default(),
         max_keys: max_keys
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000)

@@ -743,7 +743,11 @@ where
 
         let opts = PaginatedListOptions {
             offset,
-            delimiter: Some(Cow::Owned(delimiter.clone())),
+            delimiter: if delimiter.is_empty() {
+                None
+            } else {
+                Some(Cow::Owned(delimiter.clone()))
+            },
             max_keys: Some(list_params.max_keys),
             page_token: list_params.continuation_token.clone(),
             ..Default::default()

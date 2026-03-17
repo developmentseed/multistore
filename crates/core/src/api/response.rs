@@ -167,7 +167,7 @@ pub struct ListBucketResult {
     pub name: String,
     #[serde(rename = "Prefix")]
     pub prefix: String,
-    #[serde(rename = "Delimiter")]
+    #[serde(rename = "Delimiter", skip_serializing_if = "String::is_empty")]
     pub delimiter: String,
     #[serde(rename = "MaxKeys")]
     pub max_keys: usize,
