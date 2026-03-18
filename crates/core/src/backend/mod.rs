@@ -20,7 +20,9 @@ pub mod url_signer;
 pub use url_signer::build_signer;
 
 use crate::error::ProxyError;
+use crate::forwarder::ForwardResponse;
 use crate::maybe_send::{MaybeSend, MaybeSync};
+use crate::route_handler::ForwardRequest;
 use crate::types::{BackendType, BucketConfig};
 use bytes::Bytes;
 use http::HeaderMap;
@@ -41,6 +43,17 @@ use object_store::gcp::GoogleCloudStorageBuilder;
 /// - Server runtime: uses `reqwest` for raw HTTP, default `object_store` HTTP connector
 /// - Worker runtime: uses `web_sys::fetch` for raw HTTP, custom `FetchConnector` for `object_store`
 pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
+    /// The streaming body type in forwarded backend responses.
+    type ResponseBody: MaybeSend + 'static;
+
+    /// Execute a presigned [`ForwardRequest`] against the backend and return
+    /// the response with a streaming body.
+    fn forward<Body: MaybeSend + 'static>(
+        &self,
+        request: ForwardRequest,
+        body: Body,
+    ) -> impl Future<Output = Result<ForwardResponse<Self::ResponseBody>, ProxyError>> + MaybeSend;
+
     /// Create a [`PaginatedListStore`] for the given bucket configuration.
     ///
     /// Used for LIST operations with backend-side pagination via
