@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/cf-workers",
     "crates/metering",
     "crates/static-config",
     "crates/sts",
@@ -100,4 +101,5 @@ multistore = { path = "crates/core" }
 multistore-static-config = { path = "crates/static-config" }
 multistore-sts = { path = "crates/sts" }
 multistore-metering = { path = "crates/metering" }
+multistore-cf-workers = { path = "crates/cf-workers" }
 multistore-oidc-provider = { path = "crates/oidc-provider" }
