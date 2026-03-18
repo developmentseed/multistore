@@ -64,6 +64,8 @@ pub struct DispatchContext<'a> {
     pub request_id: &'a str,
     /// List rewrite rules for prefix-based bucket views.
     pub list_rewrite: Option<&'a ListRewrite>,
+    /// Optional display name for the bucket in LIST responses.
+    pub display_name: Option<&'a str>,
     /// Arbitrary typed data for middleware to share downstream.
     pub extensions: http::Extensions,
 }
@@ -292,6 +294,7 @@ mod tests {
             source_ip: None,
             request_id: "test-request-id",
             list_rewrite: None,
+            display_name: None,
             extensions: http::Extensions::new(),
         }
     }
