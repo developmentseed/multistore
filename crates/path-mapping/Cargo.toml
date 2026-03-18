@@ -1,0 +1,10 @@
+[package]
+name = "multistore-path-mapping"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hierarchical path mapping for the multistore S3 proxy gateway"
+
+[dependencies]
+multistore = { workspace = true }
+tracing = { workspace = true }
