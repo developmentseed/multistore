@@ -53,9 +53,9 @@ use crate::auth;
 use crate::auth::TemporaryCredentialResolver;
 use crate::backend::multipart::{build_backend_url, sign_s3_request};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
+use crate::backend::ForwardResponse;
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
-use crate::forwarder::ForwardResponse;
 use crate::maybe_send::MaybeSend;
 use crate::middleware::{
     CompletedRequest, Dispatch, DispatchContext, DispatchFuture, ErasedMiddleware, Middleware, Next,

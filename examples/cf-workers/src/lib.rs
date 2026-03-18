@@ -30,7 +30,7 @@ mod tracing_layer;
 pub use bandwidth::BandwidthMeter;
 
 use client::{FetchHttpExchange, WorkerBackend};
-use multistore::forwarder::ForwardResponse;
+use multistore::backend::ForwardResponse;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{ProxyResponseBody, ProxyResult, RequestInfo};
 use multistore::router::Router;
