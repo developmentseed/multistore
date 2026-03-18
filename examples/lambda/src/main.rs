@@ -21,12 +21,8 @@ mod client;
 
 use client::{LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
-use multistore::error::ProxyError;
-use multistore::forwarder::{ForwardResponse, Forwarder};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::route_handler::{
-    ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo, RESPONSE_HEADER_ALLOWLIST,
-};
+use multistore::route_handler::{ProxyResponseBody, ProxyResult, RequestInfo};
 use multistore::router::Router;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
@@ -39,69 +35,7 @@ use multistore_sts::TokenKey;
 use std::sync::OnceLock;
 use std::time::Duration;
 
-/// Forwards presigned requests to the backend using `reqwest`, buffering the
-/// full response body for Lambda (which does not support streaming responses).
-struct LambdaForwarder {
-    client: reqwest::Client,
-}
-
-impl Forwarder<Body> for LambdaForwarder {
-    type ResponseBody = Body;
-
-    async fn forward(
-        &self,
-        request: ForwardRequest,
-        body: Body,
-    ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
-        let mut req_builder = self
-            .client
-            .request(request.method.clone(), request.url.as_str());
-
-        for (k, v) in request.headers.iter() {
-            req_builder = req_builder.header(k, v);
-        }
-
-        // Attach body for PUT requests
-        if request.method == http::Method::PUT {
-            let bytes = body_to_bytes(body)
-                .await
-                .map_err(|e| ProxyError::Internal(format!("failed to read PUT body: {e}")))?;
-            req_builder = req_builder.body(bytes);
-        }
-
-        let backend_resp = req_builder
-            .send()
-            .await
-            .map_err(|e| ProxyError::Internal(format!("forward request failed: {e}")))?;
-
-        let status = backend_resp.status().as_u16();
-
-        // Forward allowlisted response headers
-        let mut headers = http::HeaderMap::new();
-        for name in RESPONSE_HEADER_ALLOWLIST {
-            if let Some(v) = backend_resp.headers().get(*name) {
-                headers.insert(*name, v.clone());
-            }
-        }
-
-        let content_length = backend_resp.content_length();
-
-        // Buffer the response body (Lambda doesn't support streaming responses)
-        let body_bytes = backend_resp
-            .bytes()
-            .await
-            .map_err(|e| ProxyError::Internal(format!("failed to read backend response: {e}")))?;
-
-        Ok(ForwardResponse {
-            status,
-            headers,
-            body: Body::Binary(body_bytes.to_vec()),
-            content_length,
-        })
-    }
-}
-
-type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider, LambdaForwarder>;
+type Handler = ProxyGateway<LambdaBackend, StaticProvider, StaticProvider>;
 
 struct AppState {
     handler: Handler,
@@ -163,12 +97,8 @@ async fn main() -> Result<(), Error> {
     }
     router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
-    let forwarder = LambdaForwarder {
-        client: reqwest_client,
-    };
-
     // Build the gateway with the router.
-    let mut handler = ProxyGateway::new(backend, config.clone(), config, forwarder, domain)
+    let mut handler = ProxyGateway::new(backend, config.clone(), config, domain)
         .with_middleware(oidc_auth)
         .with_router(router);
     if let Some(resolver) = token_key {

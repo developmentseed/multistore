@@ -2,8 +2,11 @@
 
 use bytes::Bytes;
 use http::HeaderMap;
+use lambda_http::Body;
 use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
+use multistore::forwarder::ForwardResponse;
+use multistore::route_handler::{ForwardRequest, RESPONSE_HEADER_ALLOWLIST};
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
 use object_store::list::PaginatedListStore;
@@ -34,7 +37,75 @@ impl LambdaBackend {
     }
 }
 
+/// Collect a Lambda body into bytes.
+async fn body_to_bytes(body: Body) -> Result<Bytes, Box<dyn std::error::Error>> {
+    match body {
+        Body::Empty => Ok(Bytes::new()),
+        Body::Text(s) => Ok(Bytes::from(s)),
+        Body::Binary(b) => Ok(Bytes::from(b)),
+    }
+}
+
 impl ProxyBackend for LambdaBackend {
+    type ResponseBody = Body;
+
+    async fn forward<B: Send + 'static>(
+        &self,
+        request: ForwardRequest,
+        body: B,
+    ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
+        let mut req_builder = self
+            .client
+            .request(request.method.clone(), request.url.as_str());
+
+        for (k, v) in request.headers.iter() {
+            req_builder = req_builder.header(k, v);
+        }
+
+        // Attach body for PUT requests
+        if request.method == http::Method::PUT {
+            // Downcast to the concrete lambda_http::Body type used by the Lambda runtime.
+            let any_body: Box<dyn std::any::Any> = Box::new(body);
+            let lambda_body = any_body
+                .downcast::<Body>()
+                .map_err(|_| ProxyError::Internal("unexpected body type".into()))?;
+            let bytes = body_to_bytes(*lambda_body)
+                .await
+                .map_err(|e| ProxyError::Internal(format!("failed to read PUT body: {e}")))?;
+            req_builder = req_builder.body(bytes);
+        }
+
+        let backend_resp = req_builder
+            .send()
+            .await
+            .map_err(|e| ProxyError::Internal(format!("forward request failed: {e}")))?;
+
+        let status = backend_resp.status().as_u16();
+
+        // Forward allowlisted response headers
+        let mut headers = http::HeaderMap::new();
+        for name in RESPONSE_HEADER_ALLOWLIST {
+            if let Some(v) = backend_resp.headers().get(*name) {
+                headers.insert(*name, v.clone());
+            }
+        }
+
+        let content_length = backend_resp.content_length();
+
+        // Buffer the response body (Lambda doesn't support streaming responses)
+        let body_bytes = backend_resp
+            .bytes()
+            .await
+            .map_err(|e| ProxyError::Internal(format!("failed to read backend response: {e}")))?;
+
+        Ok(ForwardResponse {
+            status,
+            headers,
+            body: Body::Binary(body_bytes.to_vec()),
+            content_length,
+        })
+    }
+
     fn create_paginated_store(
         &self,
         config: &BucketConfig,
