@@ -39,14 +39,36 @@ struct UnsignedUrlSigner {
 
 impl UnsignedUrlSigner {
     fn from_config(config: &BucketConfig) -> Result<Self, ProxyError> {
-        let endpoint = config
-            .option("endpoint")
-            .unwrap_or("https://s3.amazonaws.com");
-        let bucket = config.option("bucket_name").unwrap_or("");
-        Ok(Self {
-            endpoint: endpoint.trim_end_matches('/').to_string(),
-            bucket: bucket.to_string(),
-        })
+        use crate::types::BackendType;
+
+        match config.parsed_backend_type() {
+            Some(BackendType::Azure) => {
+                let account_name = config.option("account_name").unwrap_or("");
+                let container = config.option("container_name").unwrap_or("");
+                Ok(Self {
+                    endpoint: format!("https://{}.blob.core.windows.net", account_name),
+                    bucket: container.to_string(),
+                })
+            }
+            Some(BackendType::Gcs) => {
+                let bucket = config.option("bucket_name").unwrap_or("");
+                Ok(Self {
+                    endpoint: "https://storage.googleapis.com".to_string(),
+                    bucket: bucket.to_string(),
+                })
+            }
+            _ => {
+                // S3 or unknown — use endpoint + bucket_name
+                let endpoint = config
+                    .option("endpoint")
+                    .unwrap_or("https://s3.amazonaws.com");
+                let bucket = config.option("bucket_name").unwrap_or("");
+                Ok(Self {
+                    endpoint: endpoint.trim_end_matches('/').to_string(),
+                    bucket: bucket.to_string(),
+                })
+            }
+        }
     }
 }
 
