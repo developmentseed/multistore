@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "Cloudflare Workers runtime adapters for the multistore S3 proxy gateway"
 
+[features]
+default = []
+azure = ["multistore/azure"]
+gcp = ["multistore/gcp"]
+
 [dependencies]
 multistore.workspace = true
 bytes.workspace = true
