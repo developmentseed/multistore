@@ -429,6 +429,7 @@ where
             source_ip,
             request_id: &request_id,
             list_rewrite: resolved.as_ref().and_then(|r| r.list_rewrite.as_ref()),
+            display_name: resolved.as_ref().and_then(|r| r.display_name.as_deref()),
             extensions: http::Extensions::new(),
         };
 
@@ -637,7 +638,12 @@ where
             }
             S3Operation::ListBucket { raw_query, .. } => {
                 let result = self
-                    .handle_list(bucket_config, raw_query.as_deref(), list_rewrite)
+                    .handle_list(
+                        bucket_config,
+                        raw_query.as_deref(),
+                        list_rewrite,
+                        ctx.display_name,
+                    )
                     .await?;
                 Ok(HandlerAction::Response(result))
             }
@@ -705,6 +711,7 @@ where
         config: &BucketConfig,
         raw_query: Option<&str>,
         list_rewrite: Option<&ListRewrite>,
+        display_name: Option<&str>,
     ) -> Result<ProxyResult, ProxyError> {
         let store = self.backend.create_paginated_store(config)?;
 
@@ -755,9 +762,10 @@ where
 
         // Build S3 XML response from paginated result
         let key_count = paginated.result.objects.len() + paginated.result.common_prefixes.len();
+        let bucket_name = display_name.unwrap_or(&config.name);
         let xml = build_list_xml(
             &ListXmlParams {
-                bucket_name: &config.name,
+                bucket_name,
                 client_prefix,
                 delimiter,
                 max_keys: list_params.max_keys,
@@ -953,6 +961,7 @@ mod tests {
             Ok(ResolvedBucket {
                 config: test_bucket_config(name),
                 list_rewrite: None,
+                display_name: None,
             })
         }
 

@@ -208,6 +208,7 @@ impl BucketRegistry for StaticProvider {
         Ok(ResolvedBucket {
             config: bucket_config,
             list_rewrite: None,
+            display_name: None,
         })
     }
 

@@ -37,6 +37,8 @@ pub struct ResolvedBucket {
     pub config: BucketConfig,
     /// Optional rewrite rule for list response XML.
     pub list_rewrite: Option<ListRewrite>,
+    /// Optional display name for the bucket in LIST responses.
+    pub display_name: Option<String>,
 }
 ```
 
@@ -74,6 +76,7 @@ impl BucketRegistry for MyRegistry {
         Ok(ResolvedBucket {
             config: bucket_config,
             list_rewrite: None,
+            display_name: None,
         })
     }
 
@@ -125,6 +128,7 @@ Ok(ResolvedBucket {
         strip_prefix: "internal/mirror/".to_string(),
         add_prefix: "public/".to_string(),
     }),
+    display_name: None,
 })
 ```
 

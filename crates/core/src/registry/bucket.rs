@@ -18,6 +18,11 @@ pub struct ResolvedBucket {
     pub config: BucketConfig,
     /// Optional rewrite rule for list response XML.
     pub list_rewrite: Option<ListRewrite>,
+    /// Optional display name for the bucket, used in LIST responses.
+    ///
+    /// When set, this name is used in the `<Name>` element of
+    /// `ListBucketResult` XML instead of the backend bucket name.
+    pub display_name: Option<String>,
 }
 
 /// Trait for resolving virtual buckets and authorizing access.
