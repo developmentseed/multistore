@@ -18,7 +18,7 @@ pub mod response;
 pub mod tracing_layer;
 
 pub use backend::WorkerBackend;
-pub use body::JsBody;
+pub use body::{collect_js_body, JsBody};
 pub use fetch_connector::FetchConnector;
 pub use noop_creds::NoopCredentialRegistry;
 pub use response::{

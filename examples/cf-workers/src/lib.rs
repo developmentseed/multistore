@@ -1,8 +1,7 @@
 //! Cloudflare Workers runtime for the S3 proxy gateway.
 //!
-//! This crate provides implementations of core traits using Cloudflare Workers
-//! primitives. Uses zero-copy body forwarding: request and response
-//! `ReadableStream`s flow through the JS runtime without touching WASM memory.
+//! This crate provides an example deployment using the `multistore-cf-workers` crate
+//! for runtime primitives and static config for bucket/credential registries.
 //!
 //! # Architecture
 //!
@@ -21,39 +20,28 @@
 //! - Workers KV for dynamic configuration
 
 mod bandwidth;
-mod client;
-mod fetch_connector;
 mod metering;
 mod rate_limit;
-mod tracing_layer;
 
 pub use bandwidth::BandwidthMeter;
 
-use client::{FetchHttpExchange, WorkerBackend};
-use multistore::backend::ForwardResponse;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::route_handler::{ProxyResponseBody, ProxyResult, RequestInfo};
 use multistore::router::Router;
+use multistore_cf_workers::{
+    collect_js_body, convert_ws_headers, forward_response_to_ws, proxy_result_to_ws_response,
+    JsBody, WorkerBackend, WorkerSubscriber,
+};
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
 use multistore_oidc_provider::route_handler::OidcRouterExt;
-use multistore_oidc_provider::OidcCredentialProvider;
+use multistore_oidc_provider::{HttpExchange, OidcCredentialProvider, OidcProviderError};
 use multistore_static_config::{StaticConfig, StaticProvider};
 use multistore_sts::route_handler::StsRouterExt;
 use multistore_sts::JwksCache;
 use multistore_sts::TokenKey;
 use rate_limit::CfRateLimiter;
 
-use bytes::Bytes;
-use http::HeaderMap;
 use worker::*;
-
-/// Zero-copy body wrapper. Holds the raw `ReadableStream` from the incoming
-/// request, passing it through the Gateway untouched for Forward requests.
-pub(crate) struct JsBody(pub(crate) Option<web_sys::ReadableStream>);
-// SAFETY: Workers is single-threaded; these are required by Gateway's generic bounds.
-unsafe impl Send for JsBody {}
-unsafe impl Sync for JsBody {}
 
 /// The Worker entry point.
 ///
@@ -71,7 +59,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     console_error_panic_hook::set_once();
 
     // Initialize tracing subscriber (idempotent — ignored if already set)
-    tracing::subscriber::set_global_default(tracing_layer::WorkerSubscriber::new()).ok();
+    tracing::subscriber::set_global_default(WorkerSubscriber::new()).ok();
 
     let reqwest_client = reqwest::Client::new();
     let jwks_cache = JwksCache::new(reqwest_client.clone(), std::time::Duration::from_secs(900));
@@ -117,7 +105,13 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     let query = uri.query().map(|q| q.to_string());
     let headers = convert_ws_headers(&req.headers());
 
-    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
+    let req_info = multistore::route_handler::RequestInfo::new(
+        &method,
+        &path,
+        query.as_deref(),
+        &headers,
+        None,
+    );
 
     Ok(
         match gateway
@@ -130,114 +124,30 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     )
 }
 
-// ── Forward response conversion ─────────────────────────────────────
+// ── OIDC HTTP exchange ─────────────────────────────────────────────
 
-/// Convert a `ForwardResponse<web_sys::Response>` into a `web_sys::Response`
-/// for the client, preserving the backend's body stream (zero-copy).
-fn forward_response_to_ws(resp: ForwardResponse<web_sys::Response>) -> web_sys::Response {
-    let ws_headers = http_headermap_to_ws_headers(&resp.headers)
-        .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
+/// [`HttpExchange`] implementation using reqwest on WASM (wraps `web_sys::fetch`).
+#[derive(Clone)]
+pub struct FetchHttpExchange;
 
-    let resp_init = web_sys::ResponseInit::new();
-    resp_init.set_status(resp.status);
-    resp_init.set_headers(&ws_headers.into());
+impl HttpExchange for FetchHttpExchange {
+    async fn post_form(
+        &self,
+        url: &str,
+        form: &[(&str, &str)],
+    ) -> Result<String, OidcProviderError> {
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(url)
+            .form(form)
+            .send()
+            .await
+            .map_err(|e| OidcProviderError::HttpError(e.to_string()))?;
 
-    web_sys::Response::new_with_opt_readable_stream_and_init(resp.body.body().as_ref(), &resp_init)
-        .unwrap_or_else(|_| ws_error_response(502, "Bad Gateway"))
-}
-
-// ── Body collection (NeedsBody path) ───────────────────────────────
-
-/// Materialize a `JsBody` into `Bytes` for the NeedsBody path.
-///
-/// Uses the `Response::arrayBuffer()` JS trick: wrap the stream in a
-/// `web_sys::Response`, call `.array_buffer()`, and convert via `Uint8Array`.
-/// This is only used for small multipart payloads.
-async fn collect_js_body(body: JsBody) -> std::result::Result<Bytes, String> {
-    match body.0 {
-        None => Ok(Bytes::new()),
-        Some(stream) => {
-            let resp = web_sys::Response::new_with_opt_readable_stream(Some(&stream))
-                .map_err(|e| format!("Response::new failed: {:?}", e))?;
-            let promise = resp
-                .array_buffer()
-                .map_err(|e| format!("arrayBuffer() failed: {:?}", e))?;
-            let buf = wasm_bindgen_futures::JsFuture::from(promise)
-                .await
-                .map_err(|e| format!("arrayBuffer await failed: {:?}", e))?;
-            let uint8 = js_sys::Uint8Array::new(&buf);
-            Ok(Bytes::from(uint8.to_vec()))
-        }
+        resp.text()
+            .await
+            .map_err(|e| OidcProviderError::HttpError(e.to_string()))
     }
-}
-
-// ── Response builders ───────────────────────────────────────────────
-
-/// Convert a `ProxyResult` (small buffered XML/JSON) to a `web_sys::Response`.
-fn proxy_result_to_ws_response(result: ProxyResult) -> web_sys::Response {
-    let ws_headers = http_headermap_to_ws_headers(&result.headers)
-        .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
-
-    let resp_init = web_sys::ResponseInit::new();
-    resp_init.set_status(result.status);
-    resp_init.set_headers(&ws_headers.into());
-
-    match result.body {
-        ProxyResponseBody::Empty => {
-            web_sys::Response::new_with_opt_str_and_init(None, &resp_init).unwrap()
-        }
-        ProxyResponseBody::Bytes(bytes) => {
-            let uint8 = js_sys::Uint8Array::from(bytes.as_ref());
-            web_sys::Response::new_with_opt_buffer_source_and_init(Some(&uint8), &resp_init)
-                .unwrap()
-        }
-    }
-}
-
-/// Build a plain-text error response.
-fn ws_error_response(status: u16, message: &str) -> web_sys::Response {
-    let init = web_sys::ResponseInit::new();
-    init.set_status(status);
-    web_sys::Response::new_with_opt_str_and_init(Some(message), &init)
-        .unwrap_or_else(|_| web_sys::Response::new().unwrap())
-}
-
-// ── Header conversion helpers ───────────────────────────────────────
-
-/// Convert `web_sys::Headers` to `http::HeaderMap` by iterating all entries.
-fn convert_ws_headers(ws_headers: &web_sys::Headers) -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    for entry in ws_headers.entries() {
-        let Ok(pair) = entry else { continue };
-        let arr: js_sys::Array = pair.into();
-        let Some(key) = arr.get(0).as_string() else {
-            continue;
-        };
-        let Some(value) = arr.get(1).as_string() else {
-            continue;
-        };
-        let Ok(name) = http::header::HeaderName::from_bytes(key.as_bytes()) else {
-            continue;
-        };
-        let Ok(val) = http::header::HeaderValue::from_str(&value) else {
-            continue;
-        };
-        headers.append(name, val);
-    }
-    headers
-}
-
-/// Convert `http::HeaderMap` to `web_sys::Headers`.
-fn http_headermap_to_ws_headers(
-    headers: &HeaderMap,
-) -> std::result::Result<web_sys::Headers, wasm_bindgen::JsValue> {
-    let ws = web_sys::Headers::new()?;
-    for (key, value) in headers.iter() {
-        if let Ok(v) = value.to_str() {
-            ws.set(key.as_str(), v)?;
-        }
-    }
-    Ok(ws)
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────
