@@ -21,7 +21,7 @@ name = "public-data"
 access_key_id = "minioadmin"
 bucket_name = "public-data"
 endpoint = "http://localhost:9000"
-region = "us-east-1"
+region = "us-west-2"
 secret_access_key = "minioadmin"
 
 [[vars.PROXY_CONFIG.buckets]]
@@ -34,7 +34,6 @@ name = "private-uploads"
 access_key_id = "minioadmin"
 bucket_name = "private-uploads"
 endpoint = "http://localhost:9000"
-region = "us-east-1"
 secret_access_key = "minioadmin"
 
 [[vars.PROXY_CONFIG.buckets]]
@@ -60,7 +59,7 @@ name = "cholmes"
 [vars.PROXY_CONFIG.buckets.backend_options]
 bucket_name = "us-west-2.opendata.source.coop"
 endpoint = "https://s3.us-west-2.amazonaws.com"
-region = "us-east-1"
+region = "us-west-2"
 skip_signature = "true"
 
 [[vars.PROXY_CONFIG.credentials]]
