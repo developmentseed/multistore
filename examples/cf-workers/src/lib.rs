@@ -29,11 +29,10 @@ mod tracing_layer;
 
 pub use bandwidth::BandwidthMeter;
 
-use client::{extract_response_headers, FetchHttpExchange, WorkerBackend};
-use multistore::error::ProxyError;
-use multistore::forwarder::{ForwardResponse, Forwarder};
+use client::{FetchHttpExchange, WorkerBackend};
+use multistore::forwarder::ForwardResponse;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
-use multistore::route_handler::{ForwardRequest, ProxyResponseBody, ProxyResult, RequestInfo};
+use multistore::route_handler::{ProxyResponseBody, ProxyResult, RequestInfo};
 use multistore::router::Router;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
@@ -51,84 +50,10 @@ use worker::*;
 
 /// Zero-copy body wrapper. Holds the raw `ReadableStream` from the incoming
 /// request, passing it through the Gateway untouched for Forward requests.
-struct JsBody(Option<web_sys::ReadableStream>);
+pub(crate) struct JsBody(pub(crate) Option<web_sys::ReadableStream>);
 // SAFETY: Workers is single-threaded; these are required by Gateway's generic bounds.
 unsafe impl Send for JsBody {}
 unsafe impl Sync for JsBody {}
-
-/// Zero-copy HTTP forwarder for Cloudflare Workers.
-///
-/// Executes presigned backend requests via the Fetch API, passing
-/// `ReadableStream` bodies through JS without touching WASM memory.
-struct WorkerForwarder;
-
-impl Forwarder<JsBody> for WorkerForwarder {
-    type ResponseBody = web_sys::Response;
-
-    async fn forward(
-        &self,
-        request: ForwardRequest,
-        body: JsBody,
-    ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
-        // Build web_sys::Headers from the forwarding headers.
-        let ws_headers = web_sys::Headers::new()
-            .map_err(|e| ProxyError::Internal(format!("failed to create Headers: {:?}", e)))?;
-        for (key, value) in request.headers.iter() {
-            if let Ok(v) = value.to_str() {
-                let _ = ws_headers.set(key.as_str(), v);
-            }
-        }
-
-        // Build web_sys::RequestInit.
-        let init = web_sys::RequestInit::new();
-        init.set_method(request.method.as_str());
-        init.set_headers(&ws_headers.into());
-
-        // Bypass Cloudflare's subrequest cache for Range requests. Without this,
-        // CF caches full-body 200 responses and serves them for Range requests,
-        // breaking multipart downloads. Non-Range requests still benefit from
-        // CF edge caching. Requires compatibility_date >= 2024-11-11.
-        if request.headers.contains_key(http::header::RANGE) {
-            init.set_cache(web_sys::RequestCache::NoStore);
-        }
-
-        // For PUT: attach the original ReadableStream directly (zero-copy!).
-        if request.method == http::Method::PUT {
-            if let Some(ref stream) = body.0 {
-                init.set_body(stream);
-            }
-        }
-
-        // Build the outgoing request.
-        let ws_request = web_sys::Request::new_with_str_and_init(request.url.as_str(), &init)
-            .map_err(|e| ProxyError::Internal(format!("failed to create request: {:?}", e)))?;
-
-        // Fetch via the worker crate's Fetch API.
-        let worker_req: worker::Request = ws_request.into();
-        let worker_resp = worker::Fetch::Request(worker_req)
-            .send()
-            .await
-            .map_err(|e| ProxyError::BackendError(format!("fetch failed: {}", e)))?;
-
-        // Convert to web_sys::Response to access the body stream.
-        let backend_ws: web_sys::Response = worker_resp.into();
-        let status = backend_ws.status();
-
-        // Build filtered response headers using the existing allowlist.
-        let headers = extract_response_headers(&backend_ws.headers());
-        let content_length = headers
-            .get(http::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
-
-        Ok(ForwardResponse {
-            status,
-            headers,
-            body: backend_ws,
-            content_length,
-        })
-    }
-}
 
 /// The Worker entry point.
 ///
@@ -167,15 +92,9 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
     // Build the gateway with the router.
-    let mut gateway = ProxyGateway::new(
-        WorkerBackend,
-        config.clone(),
-        config,
-        WorkerForwarder,
-        virtual_host_domain,
-    )
-    .with_middleware(oidc_auth)
-    .with_router(router);
+    let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)
+        .with_middleware(oidc_auth)
+        .with_router(router);
 
     if let Some(rate_limiter) = load_rate_limiter(&env) {
         gateway = gateway.with_middleware(rate_limiter);
