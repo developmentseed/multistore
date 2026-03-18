@@ -3,6 +3,7 @@ members = [
     "crates/core",
     "crates/cf-workers",
     "crates/metering",
+    "crates/path-mapping",
     "crates/static-config",
     "crates/sts",
     "crates/oidc-provider",
@@ -13,6 +14,7 @@ members = [
 default-members = [
     "crates/core",
     "crates/metering",
+    "crates/path-mapping",
     "crates/static-config",
     "crates/sts",
     "crates/oidc-provider",
@@ -103,3 +105,4 @@ multistore-sts = { path = "crates/sts" }
 multistore-metering = { path = "crates/metering" }
 multistore-cf-workers = { path = "crates/cf-workers" }
 multistore-oidc-provider = { path = "crates/oidc-provider" }
+multistore-path-mapping = { path = "crates/path-mapping" }

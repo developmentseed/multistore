@@ -1239,6 +1239,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "multistore-path-mapping"
+version = "0.1.0"
+dependencies = [
+ "multistore",
+ "tracing",
+]
+
+[[package]]
 name = "multistore-server"
 version = "0.1.0"
 dependencies = [
