@@ -17,7 +17,7 @@
 //! - [`api::response`] — serialize S3 XML responses
 //! - [`route_handler::RouteHandler`] — pluggable pre-dispatch request interception (OIDC, STS, etc.)
 //! - [`middleware::Middleware`] — composable post-auth middleware for dispatch
-//! - [`forwarder::Forwarder`] — runtime-agnostic HTTP forwarding for backend requests
+//! - [`forwarder::ForwardResponse`] — response type for backend forwarding (method now on [`backend::ProxyBackend`])
 //! - [`router::Router`] — path-based route matching via `matchit` for efficient dispatch
 //! - [`proxy::ProxyGateway`] — the main request handler that ties everything together
 
