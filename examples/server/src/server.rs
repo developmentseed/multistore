@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::response::Response;
 use axum::Router;
-use multistore::forwarder::ForwardResponse;
+use multistore::backend::ForwardResponse;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::registry::{BucketRegistry, CredentialRegistry};
 use multistore::route_handler::RequestInfo;

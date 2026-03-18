@@ -7,9 +7,9 @@
 use crate::fetch_connector::FetchConnector;
 use bytes::Bytes;
 use http::HeaderMap;
+use multistore::backend::ForwardResponse;
 use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse, StoreBuilder};
 use multistore::error::ProxyError;
-use multistore::forwarder::ForwardResponse;
 use multistore::route_handler::ForwardRequest;
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};

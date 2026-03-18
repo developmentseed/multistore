@@ -20,7 +20,6 @@ pub mod url_signer;
 pub use url_signer::build_signer;
 
 use crate::error::ProxyError;
-use crate::forwarder::ForwardResponse;
 use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::route_handler::ForwardRequest;
 use crate::types::{BackendType, BucketConfig};
@@ -87,6 +86,22 @@ pub struct RawResponse {
     pub status: u16,
     pub headers: HeaderMap,
     pub body: Bytes,
+}
+
+/// The response returned after executing a backend request.
+///
+/// `S` is the streaming body type, which varies per runtime — for example,
+/// a Hyper `Incoming` body on native targets or a Workers `ReadableStream`
+/// on the edge.
+pub struct ForwardResponse<S> {
+    /// HTTP status code from the backend.
+    pub status: u16,
+    /// Response headers from the backend.
+    pub headers: HeaderMap,
+    /// The streaming response body.
+    pub body: S,
+    /// Content length reported by the backend, if known.
+    pub content_length: Option<u64>,
 }
 
 /// Wrapper around provider-specific `object_store` builders.

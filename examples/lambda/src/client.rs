@@ -3,9 +3,9 @@
 use bytes::Bytes;
 use http::HeaderMap;
 use lambda_http::Body;
+use multistore::backend::ForwardResponse;
 use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
-use multistore::forwarder::ForwardResponse;
 use multistore::route_handler::{ForwardRequest, RESPONSE_HEADER_ALLOWLIST};
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
