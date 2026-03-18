@@ -55,8 +55,8 @@ use crate::backend::multipart::{build_backend_url, sign_s3_request};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
-use crate::forwarder::{ForwardResponse, Forwarder};
-use crate::maybe_send::{MaybeSend, MaybeSync};
+use crate::forwarder::ForwardResponse;
+use crate::maybe_send::MaybeSend;
 use crate::middleware::{
     CompletedRequest, Dispatch, DispatchContext, DispatchFuture, ErasedMiddleware, Middleware, Next,
 };
@@ -82,7 +82,7 @@ pub use crate::route_handler::{
 
 /// Simplified two-variant result from [`ProxyGateway::handle_request`].
 ///
-/// The response body type `S` is the `Forwarder`'s `ResponseBody` — opaque
+/// The response body type `S` is the `ProxyBackend`'s `ResponseBody` — opaque
 /// to the core, passed through to the runtime for client delivery.
 pub enum GatewayResponse<S> {
     /// A fully formed response ready to send to the client.
@@ -115,15 +115,13 @@ pub struct RequestMetadata {
 ///
 /// # Type Parameters
 ///
-/// - `B`: The runtime's backend for object store creation, signing, and raw HTTP
+/// - `B`: The runtime's backend for object store creation, signing, forwarding, and raw HTTP
 /// - `R`: The bucket registry for bucket lookup and authorization
 /// - `C`: The credential registry for credential and role lookup
-/// - `F`: The forwarder that executes presigned backend requests
-pub struct ProxyGateway<B, R, C, F> {
+pub struct ProxyGateway<B, R, C> {
     backend: B,
     bucket_registry: R,
     credential_registry: C,
-    forwarder: F,
     middleware: Vec<Box<dyn ErasedMiddleware>>,
     virtual_host_domain: Option<String>,
     credential_resolver: Option<Box<dyn TemporaryCredentialResolver>>,
@@ -133,25 +131,22 @@ pub struct ProxyGateway<B, R, C, F> {
     debug_errors: bool,
 }
 
-impl<B, R, C, F> ProxyGateway<B, R, C, F>
+impl<B, R, C> ProxyGateway<B, R, C>
 where
     B: ProxyBackend,
     R: BucketRegistry,
     C: CredentialRegistry,
-    F: MaybeSend + MaybeSync,
 {
     pub fn new(
         backend: B,
         bucket_registry: R,
         credential_registry: C,
-        forwarder: F,
         virtual_host_domain: Option<String>,
     ) -> Self {
         Self {
             backend,
             bucket_registry,
             credential_registry,
-            forwarder,
             middleware: Vec::new(),
             virtual_host_domain,
             credential_resolver: None,
@@ -203,9 +198,9 @@ where
     }
 
     /// Convenience entry point that resolves `NeedsBody` internally and
-    /// executes forwarding via the [`Forwarder`].
+    /// executes forwarding via the [`ProxyBackend`].
     ///
-    /// Route handler matches bypass the forwarder/after_dispatch path for
+    /// Route handler matches bypass the forwarding/after_dispatch path for
     /// simplicity. For the proxy pipeline, `after_dispatch` is fired on all
     /// middleware after the response is determined.
     ///
@@ -222,9 +217,9 @@ where
         req: &RequestInfo<'_>,
         body: Body,
         collect_body: CF,
-    ) -> GatewayResponse<F::ResponseBody>
+    ) -> GatewayResponse<B::ResponseBody>
     where
-        F: Forwarder<Body>,
+        Body: MaybeSend + 'static,
         CF: FnOnce(Body) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes, E>>,
         E: std::fmt::Display,
@@ -233,7 +228,7 @@ where
         if let Some(action) = self.router.dispatch(req).await {
             return match action {
                 HandlerAction::Response(r) => GatewayResponse::Response(r),
-                HandlerAction::Forward(fwd) => match self.forwarder.forward(fwd, body).await {
+                HandlerAction::Forward(fwd) => match self.backend.forward(fwd, body).await {
                     Ok(resp) => GatewayResponse::Forward(resp),
                     Err(e) => GatewayResponse::Response(error_response(
                         &e,
@@ -285,7 +280,7 @@ where
                 let rb = response_body_bytes(&r.body);
                 (GatewayResponse::Response(r), s, rb, false)
             }
-            HandlerAction::Forward(fwd) => match self.forwarder.forward(fwd, body).await {
+            HandlerAction::Forward(fwd) => match self.backend.forward(fwd, body).await {
                 Ok(resp) => {
                     let s = resp.status;
                     let cl = resp.content_length;
@@ -837,12 +832,11 @@ where
     }
 }
 
-impl<B, R, C, F> Dispatch for ProxyGateway<B, R, C, F>
+impl<B, R, C> Dispatch for ProxyGateway<B, R, C>
 where
     B: ProxyBackend,
     R: BucketRegistry,
     C: CredentialRegistry,
-    F: MaybeSend + MaybeSync,
 {
     fn dispatch<'a>(&'a self, ctx: DispatchContext<'a>) -> DispatchFuture<'a> {
         Box::pin(async move { self.dispatch_operation(&ctx).await })
@@ -900,7 +894,6 @@ mod tests {
     use super::*;
     use crate::api::response::BucketEntry;
     use crate::backend::RawResponse;
-    use crate::forwarder::{ForwardResponse, Forwarder};
     use crate::registry::{BucketRegistry, CredentialRegistry, ResolvedBucket};
     use crate::types::{ResolvedIdentity, RoleConfig, StoredCredential};
     use object_store::list::PaginatedListStore;
@@ -914,6 +907,16 @@ mod tests {
     struct MockBackend;
 
     impl ProxyBackend for MockBackend {
+        type ResponseBody = ();
+
+        async fn forward<Body: MaybeSend + 'static>(
+            &self,
+            _request: ForwardRequest,
+            _body: Body,
+        ) -> Result<ForwardResponse<()>, ProxyError> {
+            unimplemented!("not needed for resolve_request tests")
+        }
+
         fn create_paginated_store(
             &self,
             _config: &BucketConfig,
@@ -1000,25 +1003,12 @@ mod tests {
         }
     }
 
-    struct MockForwarder;
-
-    impl Forwarder<()> for MockForwarder {
-        type ResponseBody = ();
-        async fn forward(
-            &self,
-            _request: ForwardRequest,
-            _body: (),
-        ) -> Result<ForwardResponse<()>, ProxyError> {
-            unimplemented!("not needed for resolve_request tests")
-        }
-    }
-
     fn run<F: std::future::Future>(f: F) -> F::Output {
         futures::executor::block_on(f)
     }
 
-    fn gateway() -> ProxyGateway<MockBackend, MockRegistry, MockCreds, MockForwarder> {
-        ProxyGateway::new(MockBackend, MockRegistry, MockCreds, MockForwarder, None)
+    fn gateway() -> ProxyGateway<MockBackend, MockRegistry, MockCreds> {
+        ProxyGateway::new(MockBackend, MockRegistry, MockCreds, None)
     }
 
     // ── Tests ───────────────────────────────────────────────────────
