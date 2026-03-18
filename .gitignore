@@ -8,7 +8,9 @@ dist
 
 # Plans
 .plans
+docs/plans
 
 # CF Workers
 node_modules
 .dev.vars
+*.pyc
