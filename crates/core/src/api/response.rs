@@ -184,6 +184,9 @@ pub struct ListBucketResult {
     /// The delimiter used to group common prefixes.
     #[serde(rename = "Delimiter", skip_serializing_if = "String::is_empty")]
     pub delimiter: String,
+    /// Encoding type applied to keys and prefixes in this response.
+    #[serde(rename = "EncodingType", skip_serializing_if = "Option::is_none")]
+    pub encoding_type: Option<String>,
     /// Maximum number of keys returned per page.
     #[serde(rename = "MaxKeys")]
     pub max_keys: usize,
@@ -262,6 +265,7 @@ mod tests {
             name: "my-bucket".to_string(),
             prefix: "photos/".to_string(),
             delimiter: "/".to_string(),
+            encoding_type: None,
             max_keys: 1000,
             is_truncated: false,
             key_count: 1,
@@ -298,6 +302,7 @@ mod tests {
             name: "bucket".to_string(),
             prefix: String::new(),
             delimiter: "/".to_string(),
+            encoding_type: None,
             max_keys: 1000,
             is_truncated: false,
             key_count: 0,

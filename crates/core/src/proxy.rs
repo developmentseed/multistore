@@ -781,6 +781,7 @@ where
                 start_after: &list_params.start_after,
                 continuation_token: &list_params.continuation_token,
                 next_continuation_token: paginated.page_token,
+                encoding_type: &list_params.encoding_type,
             },
             &paginated.result,
             config,
