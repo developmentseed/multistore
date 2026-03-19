@@ -22,10 +22,15 @@ pub(crate) struct ListXmlParams<'a> {
 
 /// All query parameters needed for a LIST operation, parsed in a single pass.
 pub struct ListQueryParams {
+    /// Key prefix filter (empty string means no filter).
     pub prefix: String,
+    /// Delimiter for grouping keys into common prefixes (e.g. "/").
     pub delimiter: String,
+    /// Maximum number of keys to return per page (capped at 1000).
     pub max_keys: usize,
+    /// Opaque token for fetching the next page of results.
     pub continuation_token: Option<String>,
+    /// Return keys lexicographically after this value.
     pub start_after: Option<String>,
 }
 

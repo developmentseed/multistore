@@ -27,6 +27,7 @@ impl Default for CredentialCache {
 }
 
 impl CredentialCache {
+    /// Create an empty credential cache.
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),

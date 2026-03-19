@@ -7,8 +7,11 @@ use multistore::error::ProxyError;
 /// Parsed STS `AssumeRoleWithWebIdentity` request parameters.
 #[derive(Debug, Clone)]
 pub struct StsRequest {
+    /// The ARN of the IAM role to assume.
     pub role_arn: String,
+    /// The OIDC identity token provided by the caller.
     pub web_identity_token: String,
+    /// Optional session duration in seconds.
     pub duration_seconds: Option<u64>,
 }
 

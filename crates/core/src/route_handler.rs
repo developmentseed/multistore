@@ -70,8 +70,11 @@ pub struct ForwardRequest {
 
 /// The result of handling a proxy request.
 pub struct ProxyResult {
+    /// HTTP status code for the response.
     pub status: u16,
+    /// Response headers to send to the client.
     pub headers: HeaderMap,
+    /// Response body (XML, JSON, or empty).
     pub body: ProxyResponseBody,
 }
 
@@ -163,9 +166,13 @@ impl Params {
 
 /// Parsed request metadata passed to route handlers.
 pub struct RequestInfo<'a> {
+    /// The HTTP method (GET, PUT, HEAD, etc.).
     pub method: &'a Method,
+    /// The URL path (e.g. "/bucket/key").
     pub path: &'a str,
+    /// The raw query string, if present.
     pub query: Option<&'a str>,
+    /// The HTTP request headers.
     pub headers: &'a HeaderMap,
     /// The IP address of the client that originated this request.
     ///

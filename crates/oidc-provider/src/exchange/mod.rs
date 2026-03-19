@@ -17,6 +17,7 @@ use crate::{CloudCredentials, HttpExchange, OidcProviderError};
 pub trait CredentialExchange<H: HttpExchange>:
     multistore::maybe_send::MaybeSend + multistore::maybe_send::MaybeSync
 {
+    /// Trade a self-signed JWT for temporary cloud credentials.
     fn exchange(
         &self,
         http: &H,

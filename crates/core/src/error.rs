@@ -2,47 +2,62 @@
 
 use thiserror::Error;
 
+/// Central error type for the proxy, mapping each variant to an S3-compatible HTTP response.
 #[derive(Debug, Error)]
 pub enum ProxyError {
+    /// The requested virtual bucket does not exist in the registry.
     #[error("bucket not found: {0}")]
     BucketNotFound(String),
 
+    /// The requested object key was not found in the backend store.
     #[error("no such key: {0}")]
     NoSuchKey(String),
 
+    /// The caller's identity lacks permission for the requested operation.
     #[error("access denied")]
     AccessDenied,
 
+    /// The SigV4 signature in the request does not match the expected value.
     #[error("signature mismatch")]
     SignatureDoesNotMatch,
 
+    /// The request is malformed or contains invalid parameters.
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
+    /// The request contains no authentication credentials.
     #[error("missing authentication")]
     MissingAuth,
 
+    /// The credentials used to sign the request have expired.
     #[error("expired credentials")]
     ExpiredCredentials,
 
+    /// The OIDC token provided for STS role assumption is invalid or untrusted.
     #[error("invalid OIDC token: {0}")]
     InvalidOidcToken(String),
 
+    /// The IAM role specified in an STS request does not exist.
     #[error("role not found: {0}")]
     RoleNotFound(String),
 
+    /// The upstream object store backend returned an error.
     #[error("backend error: {0}")]
     BackendError(String),
 
+    /// A conditional request header (e.g. `If-Match`) was not satisfied.
     #[error("precondition failed")]
     PreconditionFailed,
 
+    /// The object has not been modified since the time specified by `If-Modified-Since`.
     #[error("not modified")]
     NotModified,
 
+    /// The proxy configuration is invalid or incomplete.
     #[error("config error: {0}")]
     ConfigError(String),
 
+    /// An unexpected internal error occurred.
     #[error("internal error: {0}")]
     Internal(String),
 }

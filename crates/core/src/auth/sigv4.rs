@@ -10,11 +10,17 @@ type HmacSha256 = Hmac<Sha256>;
 /// Parsed SigV4 Authorization header.
 #[derive(Debug, Clone)]
 pub struct SigV4Auth {
+    /// The access key ID from the credential scope.
     pub access_key_id: String,
+    /// The date stamp (YYYYMMDD) from the credential scope.
     pub date_stamp: String,
+    /// The AWS region from the credential scope.
     pub region: String,
+    /// The AWS service name from the credential scope (e.g. "s3").
     pub service: String,
+    /// The list of header names included in the signature.
     pub signed_headers: Vec<String>,
+    /// The hex-encoded HMAC-SHA256 signature.
     pub signature: String,
 }
 

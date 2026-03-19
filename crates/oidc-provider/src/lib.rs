@@ -31,9 +31,13 @@ use jwt::JwtSigner;
 /// Temporary cloud credentials obtained via token exchange.
 #[derive(Debug, Clone)]
 pub struct CloudCredentials {
+    /// AWS access key ID. Empty string for Azure/GCP (bearer-token-only providers).
     pub access_key_id: String,
+    /// AWS secret access key. Empty string for Azure/GCP (bearer-token-only providers).
     pub secret_access_key: String,
+    /// Session or bearer token. For Azure/GCP this is the sole credential.
     pub session_token: String,
+    /// When these credentials expire.
     pub expires_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -44,6 +48,7 @@ pub struct CloudCredentials {
 pub trait HttpExchange:
     Clone + multistore::maybe_send::MaybeSend + multistore::maybe_send::MaybeSync + 'static
 {
+    /// Send a `POST` request with form-encoded body and return the response text.
     fn post_form(
         &self,
         url: &str,
@@ -62,6 +67,12 @@ pub struct OidcCredentialProvider<H: HttpExchange> {
 }
 
 impl<H: HttpExchange> OidcCredentialProvider<H> {
+    /// Create a new provider.
+    ///
+    /// * `signer`   — RSA JWT signer used to mint self-signed tokens.
+    /// * `http`     — runtime-specific HTTP client for outbound STS calls.
+    /// * `issuer`   — `iss` claim written into minted JWTs (must match OIDC discovery).
+    /// * `audience` — `aud` claim written into minted JWTs (must match the cloud provider's expected audience).
     pub fn new(signer: JwtSigner, http: H, issuer: String, audience: String) -> Self {
         Self {
             signer,

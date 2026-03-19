@@ -25,6 +25,7 @@ pub struct AwsBackendAuth<H: HttpExchange> {
 }
 
 impl<H: HttpExchange> AwsBackendAuth<H> {
+    /// Wrap an [`OidcCredentialProvider`] as middleware for AWS credential resolution.
     pub fn new(provider: OidcCredentialProvider<H>) -> Self {
         Self { provider }
     }
@@ -114,7 +115,9 @@ impl<H: HttpExchange> Middleware for AwsBackendAuth<H> {
 /// When disabled and a bucket specifies `auth_type=oidc`, a `ConfigError`
 /// is returned.
 pub enum MaybeOidcAuth<H: HttpExchange> {
+    /// OIDC provider is configured; delegates to [`AwsBackendAuth`].
     Enabled(Box<AwsBackendAuth<H>>),
+    /// No OIDC provider configured; requests requiring OIDC auth will fail with a config error.
     Disabled,
 }
 

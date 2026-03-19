@@ -1,8 +1,10 @@
 //! Hierarchical path mapping for the multistore S3 proxy gateway.
 //!
-//! This crate translates hierarchical URL paths (e.g., `/{account}/{product}/{key}`)
-//! into flat internal bucket names (e.g., `account--product`) and configures the
-//! appropriate list rewrite rules so XML responses show the expected key structure.
+//! This crate provides [`PathMapping`] for translating hierarchical URL paths
+//! (e.g., `/{account}/{product}/{key}`) into flat internal bucket names
+//! (e.g., `account--product`), and [`MappedRegistry`] for wrapping a
+//! [`BucketRegistry`] so that path-based routing and list rewrite rules are
+//! applied automatically.
 
 use multistore::api::list_rewrite::ListRewrite;
 use multistore::registry::{BucketRegistry, ResolvedBucket};

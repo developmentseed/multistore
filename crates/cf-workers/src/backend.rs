@@ -1,7 +1,8 @@
 //! Backend client for the Cloudflare Workers runtime.
 //!
-//! Contains `WorkerBackend` which implements `ProxyBackend` using the Fetch API
-//! and `FetchConnector` for `object_store` HTTP requests.
+//! Contains [`WorkerBackend`], which implements [`ProxyBackend`] by forwarding
+//! requests through the Workers Fetch API and reading responses as
+//! `web_sys::Response` streams.
 
 use crate::body::JsBody;
 use crate::fetch_connector::FetchConnector;

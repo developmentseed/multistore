@@ -8,6 +8,10 @@ use crate::{CloudCredentials, HttpExchange, OidcProviderError};
 use super::CredentialExchange;
 
 /// Configuration for exchanging a JWT for Azure credentials.
+///
+/// Azure returns a bearer token only; the resulting [`CloudCredentials`](crate::CloudCredentials)
+/// will have `access_key_id` and `secret_access_key` set to empty strings while
+/// `session_token` carries the bearer token.
 #[derive(Debug, Clone)]
 pub struct AzureExchange {
     /// Azure AD tenant ID.
@@ -21,6 +25,7 @@ pub struct AzureExchange {
 }
 
 impl AzureExchange {
+    /// Create an exchange for the given Azure AD tenant and app registration, using the default storage scope.
     pub fn new(tenant_id: String, client_id: String) -> Self {
         Self {
             tenant_id,
@@ -29,6 +34,7 @@ impl AzureExchange {
         }
     }
 
+    /// Override the OAuth 2.0 scope requested during token exchange.
     pub fn with_scope(mut self, scope: String) -> Self {
         self.scope = scope;
         self

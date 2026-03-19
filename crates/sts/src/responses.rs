@@ -13,6 +13,7 @@ pub struct AssumeRoleWithWebIdentityResponse {
     pub result: AssumeRoleWithWebIdentityResult,
 }
 
+/// The result payload nested inside an `AssumeRoleWithWebIdentityResponse`.
 #[derive(Debug, Serialize)]
 pub struct AssumeRoleWithWebIdentityResult {
     #[serde(rename = "Credentials")]
@@ -21,6 +22,7 @@ pub struct AssumeRoleWithWebIdentityResult {
     pub assumed_role_user: AssumedRoleUser,
 }
 
+/// Temporary AWS credentials returned by an STS assume-role call.
 #[derive(Debug, Serialize)]
 pub struct StsCredentials {
     #[serde(rename = "AccessKeyId")]
@@ -33,6 +35,7 @@ pub struct StsCredentials {
     pub expiration: String,
 }
 
+/// Identity information for the assumed role session.
 #[derive(Debug, Serialize)]
 pub struct AssumedRoleUser {
     #[serde(rename = "AssumedRoleId")]
@@ -42,6 +45,7 @@ pub struct AssumedRoleUser {
 }
 
 impl AssumeRoleWithWebIdentityResponse {
+    /// Serialize this response to an XML string with an XML declaration header.
     pub fn to_xml(&self) -> String {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",

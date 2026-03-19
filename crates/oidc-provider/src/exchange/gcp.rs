@@ -10,6 +10,10 @@ use crate::{CloudCredentials, HttpExchange, OidcProviderError};
 use super::CredentialExchange;
 
 /// Configuration for exchanging a JWT for GCP credentials.
+///
+/// GCP returns a bearer token only; the resulting [`CloudCredentials`](crate::CloudCredentials)
+/// will have `access_key_id` and `secret_access_key` set to empty strings while
+/// `session_token` carries the bearer token.
 #[derive(Debug, Clone)]
 pub struct GcpExchange {
     /// The Workload Identity Pool provider resource name.
@@ -28,6 +32,7 @@ pub struct GcpExchange {
 }
 
 impl GcpExchange {
+    /// Create an exchange for the given Workload Identity Pool provider and service account, using default STS endpoint and scopes.
     pub fn new(provider_resource_name: String, service_account_email: String) -> Self {
         Self {
             provider_resource_name,

@@ -23,10 +23,13 @@ pub struct StaticConfig {
     pub owner_id: Option<String>,
     /// Owner display name returned in ListBuckets responses.
     pub owner_display_name: Option<String>,
+    /// Backend bucket definitions exposed through the proxy.
     #[serde(default)]
     pub buckets: Vec<BucketConfig>,
+    /// OIDC role definitions for token-based access control.
     #[serde(default)]
     pub roles: Vec<RoleConfig>,
+    /// Static access-key credentials for signature-based authentication.
     #[serde(default)]
     pub credentials: Vec<StoredCredential>,
 }
@@ -147,7 +150,10 @@ impl StaticProvider {
         Self::from_config(config)
     }
 
-    /// Read and parse a TOML file.
+    /// Read and parse a TOML or JSON configuration file.
+    ///
+    /// The format is auto-detected by file extension: `.json` is parsed as JSON,
+    /// everything else is parsed as TOML.
     pub fn from_file(path: &str) -> Result<Self, ProxyError> {
         let content =
             std::fs::read_to_string(path).map_err(|e| ProxyError::ConfigError(e.to_string()))?;
@@ -158,6 +164,9 @@ impl StaticProvider {
         }
     }
 
+    /// Validate and wrap a pre-built [`StaticConfig`] into a provider.
+    ///
+    /// Returns an error if validation fails (e.g., duplicate names or empty IDs).
     pub fn from_config(config: StaticConfig) -> Result<Self, ProxyError> {
         config.validate()?;
         Ok(Self {

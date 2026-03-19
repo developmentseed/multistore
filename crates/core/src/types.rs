@@ -80,8 +80,11 @@ impl fmt::Debug for BucketConfig {
 /// Known backend provider types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendType {
+    /// Amazon S3 or S3-compatible storage.
     S3,
+    /// Azure Blob Storage.
     Azure,
+    /// Google Cloud Storage.
     Gcs,
 }
 
@@ -139,10 +142,11 @@ pub struct RoleConfig {
 /// Defines what a credential is allowed to access.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessScope {
+    /// The virtual bucket name this scope grants access to.
     pub bucket: String,
     /// Allowed key prefixes. Empty means full bucket access.
     pub prefixes: Vec<String>,
-    /// Allowed actions.
+    /// The set of S3 actions permitted under this scope.
     pub actions: Vec<Action>,
 }
 
@@ -164,13 +168,19 @@ pub enum Action {
 /// A long-lived access credential stored in the config backend.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StoredCredential {
+    /// The access key ID used in SigV4 authentication.
     pub access_key_id: String,
-    /// This is the HMAC signing key, not stored in plaintext ideally.
+    /// The secret key used for HMAC signing.
     pub secret_access_key: String,
+    /// Human-readable identity of the credential owner.
     pub principal_name: String,
+    /// The buckets and actions this credential is authorized for.
     pub allowed_scopes: Vec<AccessScope>,
+    /// When this credential was created.
     pub created_at: DateTime<Utc>,
+    /// Optional expiration time; `None` means the credential does not expire.
     pub expires_at: Option<DateTime<Utc>>,
+    /// Whether this credential is active and can be used for authentication.
     pub enabled: bool,
 }
 
@@ -191,12 +201,19 @@ impl fmt::Debug for StoredCredential {
 /// Temporary credentials minted by the STS API.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TemporaryCredentials {
+    /// The temporary access key ID.
     pub access_key_id: String,
+    /// The temporary secret key for HMAC signing.
     pub secret_access_key: String,
+    /// The session token that must accompany requests using these credentials.
     pub session_token: String,
+    /// When these temporary credentials expire.
     pub expiration: DateTime<Utc>,
+    /// The buckets and actions these credentials are authorized for.
     pub allowed_scopes: Vec<AccessScope>,
+    /// The IAM role that was assumed to produce these credentials.
     pub assumed_role_id: String,
+    /// The identity (e.g. OIDC subject) that assumed the role.
     pub source_identity: String,
 }
 

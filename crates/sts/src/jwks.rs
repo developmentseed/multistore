@@ -15,18 +15,27 @@ use rsa::{BigUint, RsaPublicKey};
 use serde::Deserialize;
 use sha2::Sha256;
 
+/// A JSON Web Key Set (JWKS) containing one or more public keys.
 #[derive(Debug, Clone, Deserialize)]
 pub struct JwksResponse {
     pub keys: Vec<JwkKey>,
 }
 
+/// A single JSON Web Key used to verify JWT signatures.
 #[derive(Debug, Clone, Deserialize)]
 pub struct JwkKey {
+    /// Key ID, used to match a specific key from the JWKS.
     pub kid: String,
+    /// Key type (e.g. `"RSA"`).
     pub kty: String,
+    /// Signing algorithm (e.g. `"RS256"`), if specified.
     pub alg: Option<String>,
+    /// Base64url-encoded RSA modulus.
     pub n: Option<String>,
+    /// Base64url-encoded RSA public exponent.
     pub e: Option<String>,
+    /// Intended use of the key (e.g. `"sig"`). Renamed from the JSON `use` field
+    /// because `use` is a reserved keyword in Rust.
     #[serde(rename = "use")]
     pub use_: Option<String>,
 }

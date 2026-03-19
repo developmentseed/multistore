@@ -22,12 +22,16 @@ pub struct WorkerSubscriber {
 }
 
 impl WorkerSubscriber {
+    /// Create a subscriber with the default max level (`DEBUG`).
     pub fn new() -> Self {
         Self {
             max_level: Level::DEBUG,
         }
     }
 
+    /// Set the maximum verbosity level that will be logged.
+    ///
+    /// Events above this level are silently discarded. Defaults to `DEBUG`.
     pub fn with_max_level(mut self, level: Level) -> Self {
         self.max_level = level;
         self

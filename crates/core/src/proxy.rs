@@ -137,6 +137,13 @@ where
     R: BucketRegistry,
     C: CredentialRegistry,
 {
+    /// Create a new proxy gateway.
+    ///
+    /// - `backend`: the runtime-specific backend for signing, forwarding, and raw HTTP
+    /// - `bucket_registry`: resolves virtual bucket names to backend configs and authorizes access
+    /// - `credential_registry`: looks up long-lived credentials and IAM roles
+    /// - `virtual_host_domain`: when set, enables virtual-hosted-style bucket addressing
+    ///   (e.g. `bucket.example.com`)
     pub fn new(
         backend: B,
         bucket_registry: R,

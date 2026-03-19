@@ -11,14 +11,20 @@ use http::HeaderMap;
 
 /// Signs outbound HTTP requests using AWS SigV4.
 pub struct S3RequestSigner {
+    /// AWS access key ID.
     pub access_key_id: String,
+    /// AWS secret access key used for HMAC signing.
     pub secret_access_key: String,
+    /// AWS region (e.g. "us-east-1").
     pub region: String,
+    /// AWS service name (typically "s3").
     pub service: String,
+    /// Optional session token for temporary credentials.
     pub session_token: Option<String>,
 }
 
 impl S3RequestSigner {
+    /// Create a new signer for the given credentials and region.
     pub fn new(
         access_key_id: String,
         secret_access_key: String,

@@ -28,6 +28,7 @@ impl Default for AwsExchange {
 }
 
 impl AwsExchange {
+    /// Create an exchange targeting the given IAM role ARN, using default STS endpoint and session name.
     pub fn new(role_arn: String) -> Self {
         Self {
             role_arn,
@@ -35,11 +36,13 @@ impl AwsExchange {
         }
     }
 
+    /// Override the STS endpoint (e.g. for regional or FIPS endpoints).
     pub fn with_endpoint(mut self, endpoint: String) -> Self {
         self.sts_endpoint = endpoint;
         self
     }
 
+    /// Override the session name embedded in the assumed-role credentials.
     pub fn with_session_name(mut self, name: String) -> Self {
         self.session_name = name;
         self

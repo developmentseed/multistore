@@ -55,6 +55,7 @@ impl ErrorResponse {
         }
     }
 
+    /// Serialize this error response to an S3-compatible XML string.
     pub fn to_xml(&self) -> String {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
@@ -77,6 +78,7 @@ pub struct InitiateMultipartUploadResult {
 }
 
 impl InitiateMultipartUploadResult {
+    /// Serialize this result to an S3-compatible XML string.
     pub fn to_xml(&self) -> String {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
@@ -100,6 +102,7 @@ pub struct CompleteMultipartUploadResult {
 }
 
 impl CompleteMultipartUploadResult {
+    /// Serialize this result to an S3-compatible XML string.
     pub fn to_xml(&self) -> String {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
@@ -108,7 +111,7 @@ impl CompleteMultipartUploadResult {
     }
 }
 
-/// Request body for CompleteMultipartUpload.
+/// Deserialized XML body of a CompleteMultipartUpload request.
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename = "CompleteMultipartUpload")]
 pub struct CompleteMultipartUploadRequest {
@@ -116,10 +119,13 @@ pub struct CompleteMultipartUploadRequest {
     pub parts: Vec<CompletePart>,
 }
 
+/// A single part entry in a CompleteMultipartUpload request.
 #[derive(Debug, serde::Deserialize)]
 pub struct CompletePart {
+    /// The part number assigned during UploadPart.
     #[serde(rename = "PartNumber")]
     pub part_number: u32,
+    /// The ETag returned by the backend for this part.
     #[serde(rename = "ETag")]
     pub etag: String,
 }
@@ -134,21 +140,26 @@ pub struct ListAllMyBucketsResult {
     pub buckets: BucketList,
 }
 
+/// Wrapper for the `<Buckets>` element in a ListAllMyBucketsResult response.
 #[derive(Debug, Serialize)]
 pub struct BucketList {
     #[serde(rename = "Bucket")]
     pub buckets: Vec<BucketEntry>,
 }
 
+/// A single bucket entry in a ListAllMyBucketsResult response.
 #[derive(Debug, Serialize)]
 pub struct BucketEntry {
+    /// The virtual bucket name.
     #[serde(rename = "Name")]
     pub name: String,
+    /// ISO 8601 creation timestamp.
     #[serde(rename = "CreationDate")]
     pub creation_date: String,
 }
 
 impl ListAllMyBucketsResult {
+    /// Serialize this result to an S3-compatible XML string.
     pub fn to_xml(&self) -> String {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
@@ -161,56 +172,77 @@ impl ListAllMyBucketsResult {
 #[derive(Debug, Serialize)]
 #[serde(rename = "ListBucketResult")]
 pub struct ListBucketResult {
+    /// XML namespace URI for the S3 ListBucketResult schema.
     #[serde(rename = "@xmlns")]
     pub xmlns: &'static str,
+    /// The bucket name.
     #[serde(rename = "Name")]
     pub name: String,
+    /// The key prefix used to filter results.
     #[serde(rename = "Prefix")]
     pub prefix: String,
+    /// The delimiter used to group common prefixes.
     #[serde(rename = "Delimiter", skip_serializing_if = "String::is_empty")]
     pub delimiter: String,
+    /// Maximum number of keys returned per page.
     #[serde(rename = "MaxKeys")]
     pub max_keys: usize,
+    /// Whether additional pages of results are available.
     #[serde(rename = "IsTruncated")]
     pub is_truncated: bool,
+    /// Number of keys returned in this response (contents + common prefixes).
     #[serde(rename = "KeyCount")]
     pub key_count: usize,
+    /// The `start-after` value from the request, if provided.
     #[serde(rename = "StartAfter", skip_serializing_if = "Option::is_none")]
     pub start_after: Option<String>,
+    /// The continuation token from the request, echoed back.
     #[serde(rename = "ContinuationToken", skip_serializing_if = "Option::is_none")]
     pub continuation_token: Option<String>,
+    /// Token to pass in the next request to fetch the next page.
     #[serde(
         rename = "NextContinuationToken",
         skip_serializing_if = "Option::is_none"
     )]
     pub next_continuation_token: Option<String>,
+    /// The object entries matching the list request.
     #[serde(rename = "Contents", default)]
     pub contents: Vec<ListContents>,
+    /// Common prefix entries when a delimiter is used.
     #[serde(rename = "CommonPrefixes", default)]
     pub common_prefixes: Vec<ListCommonPrefix>,
 }
 
+/// A single object entry in a ListObjectsV2 response.
 #[derive(Debug, Clone, Serialize)]
 pub struct ListContents {
+    /// The object key.
     #[serde(rename = "Key")]
     pub key: String,
+    /// ISO 8601 timestamp of the last modification.
     #[serde(rename = "LastModified")]
     pub last_modified: String,
+    /// The entity tag (ETag) for the object.
     #[serde(rename = "ETag")]
     pub etag: String,
+    /// Object size in bytes.
     #[serde(rename = "Size")]
     pub size: u64,
+    /// Storage class of the object (always "STANDARD" in this proxy).
     #[serde(rename = "StorageClass")]
     pub storage_class: &'static str,
 }
 
+/// A common prefix entry in a ListObjectsV2 response (delimiter-based grouping).
 #[derive(Debug, Serialize)]
 pub struct ListCommonPrefix {
+    /// The shared prefix for grouped keys.
     #[serde(rename = "Prefix")]
     pub prefix: String,
 }
 
 impl ListBucketResult {
+    /// Serialize this result to an S3-compatible XML string.
     pub fn to_xml(&self) -> String {
         format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
