@@ -39,7 +39,11 @@ jobs:
         run: |
           for crate in $CRATES; do
             echo "::group::Dry-run $crate"
-            cargo publish -p "$crate" --dry-run
+            if [ "$crate" = "multistore-cf-workers" ]; then
+              cargo publish -p "$crate" --dry-run --target wasm32-unknown-unknown
+            else
+              cargo publish -p "$crate" --dry-run
+            fi
             echo "::endgroup::"
           done
 
@@ -52,6 +56,10 @@ jobs:
         run: |
           for crate in $CRATES; do
             echo "::group::Publishing $crate"
-            cargo publish -p "$crate"
+            if [ "$crate" = "multistore-cf-workers" ]; then
+              cargo publish -p "$crate" --target wasm32-unknown-unknown
+            else
+              cargo publish -p "$crate"
+            fi
             echo "::endgroup::"
           done
