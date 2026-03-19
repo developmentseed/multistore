@@ -99,10 +99,10 @@ console_error_panic_hook = "0.1.7"
 lambda_http = "0.13"
 
 # Internal crates
-multistore = { path = "crates/core" }
-multistore-static-config = { path = "crates/static-config" }
-multistore-sts = { path = "crates/sts" }
-multistore-metering = { path = "crates/metering" }
-multistore-cf-workers = { path = "crates/cf-workers" }
-multistore-oidc-provider = { path = "crates/oidc-provider" }
-multistore-path-mapping = { path = "crates/path-mapping" }
+multistore = { path = "crates/core", version = "0.1.0" }
+multistore-static-config = { path = "crates/static-config", version = "0.1.0" }
+multistore-sts = { path = "crates/sts", version = "0.1.0" }
+multistore-metering = { path = "crates/metering", version = "0.1.0" }
+multistore-cf-workers = { path = "crates/cf-workers", version = "0.1.0" }
+multistore-oidc-provider = { path = "crates/oidc-provider", version = "0.1.0" }
+multistore-path-mapping = { path = "crates/path-mapping", version = "0.1.0" }
