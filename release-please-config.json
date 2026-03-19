@@ -3,6 +3,7 @@
     ".": {
       "release-type": "simple",
       "package-name": "multistore",
+      "include-component-in-tag": false,
       "extra-files": [
         {
           "type": "toml",
