@@ -147,13 +147,12 @@ pub(crate) fn build_list_xml(
         if url_encode {
             // S3 URL-encodes per RFC 3986: leave unreserved chars + '/' unencoded.
             // Unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
-            const S3_ENCODE_SET: &percent_encoding::AsciiSet =
-                &percent_encoding::NON_ALPHANUMERIC
-                    .remove(b'-')
-                    .remove(b'.')
-                    .remove(b'_')
-                    .remove(b'~')
-                    .remove(b'/');
+            const S3_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+                .remove(b'-')
+                .remove(b'.')
+                .remove(b'_')
+                .remove(b'~')
+                .remove(b'/');
             percent_encoding::utf8_percent_encode(&s, S3_ENCODE_SET).to_string()
         } else {
             s
@@ -375,16 +374,36 @@ mod tests {
         let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
 
         // EncodingType element should be present
-        assert!(xml.contains("<EncodingType>url</EncodingType>"), "Missing EncodingType element: {}", xml);
+        assert!(
+            xml.contains("<EncodingType>url</EncodingType>"),
+            "Missing EncodingType element: {}",
+            xml
+        );
         // Key: spaces encoded, but '/', '.', '-' preserved (RFC 3986 unreserved + '/')
-        assert!(xml.contains("<Key>dir/file%20with%20spaces.txt</Key>"), "Key not encoded correctly: {}", xml);
+        assert!(
+            xml.contains("<Key>dir/file%20with%20spaces.txt</Key>"),
+            "Key not encoded correctly: {}",
+            xml
+        );
         // CommonPrefix: spaces encoded, '/' preserved
-        assert!(xml.contains("<Prefix>dir/sub%20dir/</Prefix>"), "CommonPrefix not encoded correctly: {}", xml);
+        assert!(
+            xml.contains("<Prefix>dir/sub%20dir/</Prefix>"),
+            "CommonPrefix not encoded correctly: {}",
+            xml
+        );
         // Prefix: '/' preserved
-        assert!(xml.contains("<Prefix>dir/</Prefix>") || xml.contains("<Prefix>dir/sub%20dir/</Prefix>"),
-            "Prefix not encoded correctly: {}", xml);
+        assert!(
+            xml.contains("<Prefix>dir/</Prefix>")
+                || xml.contains("<Prefix>dir/sub%20dir/</Prefix>"),
+            "Prefix not encoded correctly: {}",
+            xml
+        );
         // Delimiter: '/' preserved
-        assert!(xml.contains("<Delimiter>/</Delimiter>"), "Delimiter should not encode '/': {}", xml);
+        assert!(
+            xml.contains("<Delimiter>/</Delimiter>"),
+            "Delimiter should not encode '/': {}",
+            xml
+        );
     }
 
     #[test]
@@ -409,8 +428,11 @@ mod tests {
 
         let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
 
-        assert!(xml.contains("<Key>test_file%283%29.png</Key>"),
-            "Expected S3-style encoding of parens: {}", xml);
+        assert!(
+            xml.contains("<Key>test_file%283%29.png</Key>"),
+            "Expected S3-style encoding of parens: {}",
+            xml
+        );
     }
 
     #[test]
@@ -434,9 +456,17 @@ mod tests {
         let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
 
         // No EncodingType element
-        assert!(!xml.contains("<EncodingType>"), "EncodingType should not be present: {}", xml);
+        assert!(
+            !xml.contains("<EncodingType>"),
+            "EncodingType should not be present: {}",
+            xml
+        );
         // Key should NOT be URL-encoded (spaces are XML-safe)
-        assert!(xml.contains("<Key>dir/file with spaces.txt</Key>"), "Key should be raw: {}", xml);
+        assert!(
+            xml.contains("<Key>dir/file with spaces.txt</Key>"),
+            "Key should be raw: {}",
+            xml
+        );
     }
 
     #[test]
