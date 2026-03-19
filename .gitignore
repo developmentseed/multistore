@@ -9,6 +9,7 @@ dist
 # Plans
 .plans
 docs/plans
+.claude/worktrees
 
 # CF Workers
 node_modules
