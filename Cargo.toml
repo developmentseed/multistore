@@ -24,7 +24,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 
@@ -100,10 +100,10 @@ console_error_panic_hook = "0.1.7"
 lambda_http = "0.13"
 
 # Internal crates
-multistore = { path = "crates/core", version = "0.1.1" }
-multistore-static-config = { path = "crates/static-config", version = "0.1.1" }
-multistore-sts = { path = "crates/sts", version = "0.1.1" }
-multistore-metering = { path = "crates/metering", version = "0.1.1" }
-multistore-cf-workers = { path = "crates/cf-workers", version = "0.1.1" }
-multistore-oidc-provider = { path = "crates/oidc-provider", version = "0.1.1" }
-multistore-path-mapping = { path = "crates/path-mapping", version = "0.1.1" }
+multistore = { path = "crates/core", version = "0.2.0" }
+multistore-static-config = { path = "crates/static-config", version = "0.2.0" }
+multistore-sts = { path = "crates/sts", version = "0.2.0" }
+multistore-metering = { path = "crates/metering", version = "0.2.0" }
+multistore-cf-workers = { path = "crates/cf-workers", version = "0.2.0" }
+multistore-oidc-provider = { path = "crates/oidc-provider", version = "0.2.0" }
+multistore-path-mapping = { path = "crates/path-mapping", version = "0.2.0" }
