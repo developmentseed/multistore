@@ -21,7 +21,7 @@ pub(crate) struct ListXmlParams<'a> {
 }
 
 /// All query parameters needed for a LIST operation, parsed in a single pass.
-pub(crate) struct ListQueryParams {
+pub struct ListQueryParams {
     pub prefix: String,
     pub delimiter: String,
     pub max_keys: usize,
@@ -30,7 +30,7 @@ pub(crate) struct ListQueryParams {
 }
 
 /// Parse prefix, delimiter, and pagination params from a LIST query string in one pass.
-pub(crate) fn parse_list_query_params(raw_query: Option<&str>) -> ListQueryParams {
+pub fn parse_list_query_params(raw_query: Option<&str>) -> ListQueryParams {
     let mut prefix = None;
     let mut delimiter = None;
     let mut max_keys = None;
