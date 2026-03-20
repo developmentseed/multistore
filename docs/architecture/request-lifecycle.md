@@ -141,9 +141,9 @@ The handler generates a presigned URL using the backend's `Signer`, then the cor
 
 Used for: **LIST, errors, synthetic responses**
 
-For LIST operations, the handler calls `list_paginated()` via the backend's `PaginatedListStore`, builds S3 `ListObjectsV2` XML from the results, and returns it as a complete response. If a `ListRewrite` is configured, key prefixes are transformed in the XML.
+For LIST operations, the handler calls `list_paginated()` via the backend's `PaginatedListStore`, builds S3 XML from the results, and returns it as a complete response. Both ListObjectsV1 and ListObjectsV2 are supported — the proxy detects the version from the `list-type` query parameter and produces the appropriate XML format. If a `ListRewrite` is configured, key prefixes are transformed in the XML.
 
-LIST supports backend-side pagination via `max-keys`, `continuation-token`, and `start-after` query parameters, fetching only one page per request.
+LIST supports backend-side pagination. V2 uses `continuation-token` and `start-after`; V1 uses `marker`. Both versions support `max-keys`, fetching only one page per request.
 
 ### `NeedsBody(PendingRequest)` (internal)
 

@@ -254,6 +254,55 @@ impl ListBucketResult {
     }
 }
 
+/// S3 ListObjectsV1 response.
+#[derive(Debug, Serialize)]
+#[serde(rename = "ListBucketResult")]
+pub struct ListBucketResultV1 {
+    /// XML namespace URI for the S3 ListBucketResult schema.
+    #[serde(rename = "@xmlns")]
+    pub xmlns: &'static str,
+    /// The bucket name.
+    #[serde(rename = "Name")]
+    pub name: String,
+    /// The key prefix used to filter results.
+    #[serde(rename = "Prefix")]
+    pub prefix: String,
+    /// The delimiter used to group common prefixes.
+    #[serde(rename = "Delimiter", skip_serializing_if = "String::is_empty")]
+    pub delimiter: String,
+    /// Encoding type applied to keys and prefixes in this response.
+    #[serde(rename = "EncodingType", skip_serializing_if = "Option::is_none")]
+    pub encoding_type: Option<String>,
+    /// Maximum number of keys returned per page.
+    #[serde(rename = "MaxKeys")]
+    pub max_keys: usize,
+    /// Whether additional pages of results are available.
+    #[serde(rename = "IsTruncated")]
+    pub is_truncated: bool,
+    /// The marker from the request, echoed back.
+    #[serde(rename = "Marker")]
+    pub marker: String,
+    /// When `IsTruncated` is true, the key to use as `marker` in the next request.
+    #[serde(rename = "NextMarker", skip_serializing_if = "Option::is_none")]
+    pub next_marker: Option<String>,
+    /// The object entries matching the list request.
+    #[serde(rename = "Contents", default)]
+    pub contents: Vec<ListContents>,
+    /// Common prefix entries when a delimiter is used.
+    #[serde(rename = "CommonPrefixes", default)]
+    pub common_prefixes: Vec<ListCommonPrefix>,
+}
+
+impl ListBucketResultV1 {
+    /// Serialize this result to an S3-compatible XML string.
+    pub fn to_xml(&self) -> String {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
+            xml_to_string(self).unwrap_or_default()
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +366,45 @@ mod tests {
         assert!(xml.contains("<KeyCount>0</KeyCount>"));
         assert!(!xml.contains("<Contents>"));
         assert!(!xml.contains("<CommonPrefixes>"));
+    }
+
+    #[test]
+    fn test_list_bucket_result_v1_xml() {
+        let result = ListBucketResultV1 {
+            xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+            name: "my-bucket".to_string(),
+            prefix: "photos/".to_string(),
+            delimiter: "/".to_string(),
+            encoding_type: None,
+            max_keys: 1000,
+            is_truncated: true,
+            marker: "photos/a.jpg".to_string(),
+            next_marker: Some("photos/z.jpg".to_string()),
+            contents: vec![ListContents {
+                key: "photos/image.jpg".to_string(),
+                last_modified: "2024-01-01T00:00:00.000Z".to_string(),
+                etag: "\"abc123\"".to_string(),
+                size: 1024,
+                storage_class: "STANDARD",
+            }],
+            common_prefixes: vec![ListCommonPrefix {
+                prefix: "photos/thumbs/".to_string(),
+            }],
+        };
+
+        let xml = result.to_xml();
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assert!(xml.contains("<Marker>photos/a.jpg</Marker>"));
+        assert!(xml.contains("<NextMarker>photos/z.jpg</NextMarker>"));
+        assert!(xml.contains("<Name>my-bucket</Name>"));
+        assert!(xml.contains("<Key>photos/image.jpg</Key>"));
+
+        // V2-only elements must be absent
+        assert!(!xml.contains("<KeyCount>"), "V1 must not have KeyCount");
+        assert!(!xml.contains("<StartAfter>"), "V1 must not have StartAfter");
+        assert!(
+            !xml.contains("<ContinuationToken>"),
+            "V1 must not have ContinuationToken"
+        );
     }
 }

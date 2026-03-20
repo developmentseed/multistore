@@ -3,7 +3,7 @@
 //! Extracted from `proxy.rs` to keep the gateway focused on orchestration.
 
 use crate::api::list_rewrite::ListRewrite;
-use crate::api::response::{ListBucketResult, ListCommonPrefix, ListContents};
+use crate::api::response::{ListBucketResult, ListBucketResultV1, ListCommonPrefix, ListContents};
 use crate::error::ProxyError;
 use crate::types::BucketConfig;
 
@@ -29,12 +29,16 @@ pub struct ListQueryParams {
     pub delimiter: String,
     /// Maximum number of keys to return per page (capped at 1000).
     pub max_keys: usize,
-    /// Opaque token for fetching the next page of results.
+    /// Opaque token for fetching the next page of results (V2 only).
     pub continuation_token: Option<String>,
-    /// Return keys lexicographically after this value.
+    /// Return keys lexicographically after this value (V2 only).
     pub start_after: Option<String>,
     /// Encoding type for keys/prefixes in the response (e.g. "url").
     pub encoding_type: Option<String>,
+    /// V1 pagination marker — return keys after this value.
+    pub marker: Option<String>,
+    /// Whether this is a V2 list request (`list-type=2`).
+    pub is_v2: bool,
 }
 
 /// Parse prefix, delimiter, and pagination params from a LIST query string in one pass.
@@ -45,6 +49,8 @@ pub fn parse_list_query_params(raw_query: Option<&str>) -> ListQueryParams {
     let mut continuation_token = None;
     let mut start_after = None;
     let mut encoding_type = None;
+    let mut marker = None;
+    let mut is_v2 = false;
 
     if let Some(q) = raw_query {
         for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
@@ -55,6 +61,12 @@ pub fn parse_list_query_params(raw_query: Option<&str>) -> ListQueryParams {
                 "continuation-token" => continuation_token = Some(v.into_owned()),
                 "start-after" => start_after = Some(v.into_owned()),
                 "encoding-type" => encoding_type = Some(v.into_owned()),
+                "marker" => marker = Some(v.into_owned()),
+                "list-type" => {
+                    if v.as_ref() == "2" {
+                        is_v2 = true;
+                    }
+                }
                 _ => {}
             }
         }
@@ -70,6 +82,8 @@ pub fn parse_list_query_params(raw_query: Option<&str>) -> ListQueryParams {
         continuation_token,
         start_after,
         encoding_type,
+        marker,
+        is_v2,
     }
 }
 
@@ -188,6 +202,112 @@ pub(crate) fn build_list_xml(
         start_after: params.start_after.as_ref().map(|s| encode(s.clone())),
         continuation_token: params.continuation_token.clone(),
         next_continuation_token: params.next_continuation_token.clone(),
+        contents,
+        common_prefixes,
+    }
+    .to_xml())
+}
+
+/// Parameters for building the S3 ListObjectsV1 XML response.
+pub(crate) struct ListXmlParamsV1<'a> {
+    pub bucket_name: &'a str,
+    pub client_prefix: &'a str,
+    pub delimiter: &'a str,
+    pub max_keys: usize,
+    pub is_truncated: bool,
+    pub marker: &'a str,
+    pub next_marker: Option<String>,
+    pub encoding_type: &'a Option<String>,
+}
+
+/// Build S3 ListObjectsV1 XML from an object_store ListResult.
+pub(crate) fn build_list_xml_v1(
+    params: &ListXmlParamsV1<'_>,
+    list_result: &object_store::ListResult,
+    config: &BucketConfig,
+    list_rewrite: Option<&ListRewrite>,
+) -> Result<String, ProxyError> {
+    let backend_prefix = config
+        .backend_prefix
+        .as_deref()
+        .unwrap_or("")
+        .trim_end_matches('/');
+    let strip_prefix = if backend_prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", backend_prefix)
+    };
+
+    let mut contents: Vec<ListContents> = list_result
+        .objects
+        .iter()
+        .map(|obj| {
+            let raw_key = obj.location.to_string();
+            ListContents {
+                key: rewrite_key(&raw_key, &strip_prefix, list_rewrite),
+                last_modified: obj
+                    .last_modified
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+                etag: obj.e_tag.as_deref().unwrap_or("\"\"").to_string(),
+                size: obj.size,
+                storage_class: "STANDARD",
+            }
+        })
+        .collect();
+
+    let mut common_prefixes: Vec<ListCommonPrefix> = list_result
+        .common_prefixes
+        .iter()
+        .map(|p| {
+            let raw_prefix = format!("{}/", p);
+            ListCommonPrefix {
+                prefix: rewrite_key(&raw_prefix, &strip_prefix, list_rewrite),
+            }
+        })
+        .collect();
+
+    let url_encode = matches!(params.encoding_type, Some(ref t) if t == "url");
+    let encode = |s: String| -> String {
+        if url_encode {
+            const S3_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+                .remove(b'-')
+                .remove(b'.')
+                .remove(b'_')
+                .remove(b'~')
+                .remove(b'/');
+            percent_encoding::utf8_percent_encode(&s, S3_ENCODE_SET).to_string()
+        } else {
+            s
+        }
+    };
+
+    let prefix_value = match list_rewrite {
+        Some(rewrite) if !rewrite.add_prefix.is_empty() => {
+            format!("{}{}", rewrite.add_prefix, params.client_prefix)
+        }
+        _ => params.client_prefix.to_string(),
+    };
+
+    if url_encode {
+        for item in &mut contents {
+            item.key = encode(std::mem::take(&mut item.key));
+        }
+        for cp in &mut common_prefixes {
+            cp.prefix = encode(std::mem::take(&mut cp.prefix));
+        }
+    }
+
+    Ok(ListBucketResultV1 {
+        xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+        name: params.bucket_name.to_string(),
+        prefix: encode(prefix_value),
+        delimiter: encode(params.delimiter.to_string()),
+        encoding_type: params.encoding_type.clone(),
+        max_keys: params.max_keys,
+        is_truncated: params.is_truncated,
+        marker: params.marker.to_string(),
+        next_marker: params.next_marker.clone(),
         contents,
         common_prefixes,
     }
@@ -477,5 +597,101 @@ mod tests {
 
         let params = parse_list_query_params(Some("list-type=2&prefix=test/"));
         assert_eq!(params.encoding_type, None);
+    }
+
+    #[test]
+    fn test_parse_list_query_params_v1_vs_v2() {
+        // V2: list-type=2 present
+        let params = parse_list_query_params(Some("list-type=2&prefix=test/"));
+        assert!(params.is_v2);
+        assert_eq!(params.marker, None);
+
+        // V1: no list-type param
+        let params = parse_list_query_params(Some("prefix=test/&marker=key123"));
+        assert!(!params.is_v2);
+        assert_eq!(params.marker, Some("key123".to_string()));
+
+        // V1: list-type=1 (not 2)
+        let params = parse_list_query_params(Some("list-type=1&marker=abc"));
+        assert!(!params.is_v2);
+        assert_eq!(params.marker, Some("abc".to_string()));
+
+        // No query string at all → V1 default
+        let params = parse_list_query_params(None);
+        assert!(!params.is_v2);
+        assert_eq!(params.marker, None);
+    }
+
+    #[test]
+    fn test_build_list_xml_v1_basic() {
+        let config = make_config(None);
+        let list_result = make_list_result(&["photos/image.jpg"], &["photos/thumbs"]);
+
+        let params = ListXmlParamsV1 {
+            bucket_name: "my-bucket",
+            client_prefix: "photos/",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            marker: "photos/abc.jpg",
+            next_marker: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml_v1(&params, &list_result, &config, None).unwrap();
+
+        // V1 elements present
+        assert!(
+            xml.contains("<Marker>photos/abc.jpg</Marker>"),
+            "Missing Marker: {xml}"
+        );
+        assert!(xml.contains("<Name>my-bucket</Name>"));
+        assert!(xml.contains("<Prefix>photos/</Prefix>"));
+        assert!(xml.contains("<Key>photos/image.jpg</Key>"));
+        assert!(xml.contains("<CommonPrefixes><Prefix>photos/thumbs/</Prefix></CommonPrefixes>"));
+
+        // V2 elements must NOT be present
+        assert!(
+            !xml.contains("<KeyCount>"),
+            "V1 should not have KeyCount: {xml}"
+        );
+        assert!(
+            !xml.contains("<StartAfter>"),
+            "V1 should not have StartAfter: {xml}"
+        );
+        assert!(
+            !xml.contains("<ContinuationToken>"),
+            "V1 should not have ContinuationToken: {xml}"
+        );
+        assert!(
+            !xml.contains("<NextMarker>"),
+            "NextMarker should be absent when not truncated: {xml}"
+        );
+    }
+
+    #[test]
+    fn test_build_list_xml_v1_truncated_with_next_marker() {
+        let config = make_config(None);
+        let list_result = make_list_result(&["a.txt", "b.txt"], &[]);
+
+        let params = ListXmlParamsV1 {
+            bucket_name: "bucket",
+            client_prefix: "",
+            delimiter: "/",
+            max_keys: 2,
+            is_truncated: true,
+            marker: "",
+            next_marker: Some("b.txt".to_string()),
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml_v1(&params, &list_result, &config, None).unwrap();
+
+        assert!(xml.contains("<IsTruncated>true</IsTruncated>"));
+        assert!(
+            xml.contains("<NextMarker>b.txt</NextMarker>"),
+            "Expected NextMarker: {xml}"
+        );
+        assert!(xml.contains("<Marker></Marker>") || xml.contains("<Marker/>"));
     }
 }

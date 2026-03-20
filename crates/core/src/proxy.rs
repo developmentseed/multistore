@@ -45,7 +45,10 @@
 //! For lower-level control, use [`ProxyGateway::resolve_request`] which returns the
 //! three-variant [`HandlerAction`] directly.
 
-use crate::api::list::{build_list_prefix, build_list_xml, parse_list_query_params, ListXmlParams};
+use crate::api::list::{
+    build_list_prefix, build_list_xml, build_list_xml_v1, parse_list_query_params, ListXmlParams,
+    ListXmlParamsV1,
+};
 use crate::api::list_rewrite::ListRewrite;
 use crate::api::request::{self, HostStyle};
 use crate::api::response::{BucketList, ErrorResponse, ListAllMyBucketsResult};
@@ -735,11 +738,18 @@ where
         // Build the full prefix including backend_prefix
         let full_prefix = build_list_prefix(config, client_prefix);
 
-        // Map start-after to raw key space by prepending backend_prefix
-        let offset = list_params
-            .start_after
-            .as_ref()
-            .map(|sa| build_list_prefix(config, sa));
+        // Map start-after (V2) or marker (V1) to raw key space by prepending backend_prefix
+        let offset = if list_params.is_v2 {
+            list_params
+                .start_after
+                .as_ref()
+                .map(|sa| build_list_prefix(config, sa))
+        } else {
+            list_params
+                .marker
+                .as_ref()
+                .map(|m| build_list_prefix(config, m))
+        };
 
         tracing::debug!(
             full_prefix = %full_prefix,
@@ -773,25 +783,55 @@ where
             .map_err(ProxyError::from_object_store_error)?;
 
         // Build S3 XML response from paginated result
-        let key_count = paginated.result.objects.len() + paginated.result.common_prefixes.len();
         let bucket_name = display_name.unwrap_or(&config.name);
-        let xml = build_list_xml(
-            &ListXmlParams {
-                bucket_name,
-                client_prefix,
-                delimiter,
-                max_keys: list_params.max_keys,
-                is_truncated: paginated.page_token.is_some(),
-                key_count,
-                start_after: &list_params.start_after,
-                continuation_token: &list_params.continuation_token,
-                next_continuation_token: paginated.page_token,
-                encoding_type: &list_params.encoding_type,
-            },
-            &paginated.result,
-            config,
-            list_rewrite,
-        )?;
+        let is_truncated = paginated.page_token.is_some();
+
+        let xml = if list_params.is_v2 {
+            let key_count = paginated.result.objects.len() + paginated.result.common_prefixes.len();
+            build_list_xml(
+                &ListXmlParams {
+                    bucket_name,
+                    client_prefix,
+                    delimiter,
+                    max_keys: list_params.max_keys,
+                    is_truncated,
+                    key_count,
+                    start_after: &list_params.start_after,
+                    continuation_token: &list_params.continuation_token,
+                    next_continuation_token: paginated.page_token,
+                    encoding_type: &list_params.encoding_type,
+                },
+                &paginated.result,
+                config,
+                list_rewrite,
+            )?
+        } else {
+            // Derive NextMarker from the last returned key when truncated
+            let next_marker = if is_truncated {
+                paginated
+                    .result
+                    .objects
+                    .last()
+                    .map(|obj| obj.location.to_string())
+            } else {
+                None
+            };
+            build_list_xml_v1(
+                &ListXmlParamsV1 {
+                    bucket_name,
+                    client_prefix,
+                    delimiter,
+                    max_keys: list_params.max_keys,
+                    is_truncated,
+                    marker: list_params.marker.as_deref().unwrap_or(""),
+                    next_marker,
+                    encoding_type: &list_params.encoding_type,
+                },
+                &paginated.result,
+                config,
+                list_rewrite,
+            )?
+        };
 
         let mut resp_headers = HeaderMap::new();
         resp_headers.insert("content-type", "application/xml".parse().unwrap());

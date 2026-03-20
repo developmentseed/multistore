@@ -8,7 +8,7 @@
 | HeadObject | `HEAD /{bucket}/{key}` | Forward | Get file metadata |
 | PutObject | `PUT /{bucket}/{key}` | Forward | Upload a file |
 | DeleteObject | `DELETE /{bucket}/{key}` | Forward | Delete a file |
-| ListBucket | `GET /{bucket}` | Response | List objects in a bucket (ListObjectsV2) |
+| ListBucket | `GET /{bucket}` | Response | List objects in a bucket (ListObjectsV1 and V2) |
 | ListBuckets | `GET /` | Response | List all virtual buckets |
 | CreateMultipartUpload | `POST /{bucket}/{key}?uploads` | NeedsBody | Initiate a multipart upload |
 | UploadPart | `PUT /{bucket}/{key}?partNumber=N&uploadId=ID` | NeedsBody | Upload a part |
