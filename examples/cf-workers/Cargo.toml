@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Cloudflare Workers runtime for the S3 proxy gateway"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]

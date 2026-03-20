@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Tokio/Hyper runtime for the S3 proxy gateway"
+publish = false
 
 [dependencies]
 multistore = { workspace = true, features = ["azure", "gcp"] }
