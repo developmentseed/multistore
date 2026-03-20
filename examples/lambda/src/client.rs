@@ -6,7 +6,7 @@ use lambda_http::Body;
 use multistore::backend::ForwardResponse;
 use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
-use multistore::route_handler::{ForwardRequest, RESPONSE_HEADER_ALLOWLIST};
+use multistore::route_handler::ForwardRequest;
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
 use object_store::list::PaginatedListStore;
@@ -82,13 +82,7 @@ impl ProxyBackend for LambdaBackend {
 
         let status = backend_resp.status().as_u16();
 
-        // Forward allowlisted response headers
-        let mut headers = http::HeaderMap::new();
-        for name in RESPONSE_HEADER_ALLOWLIST {
-            if let Some(v) = backend_resp.headers().get(*name) {
-                headers.insert(*name, v.clone());
-            }
-        }
+        let headers = backend_resp.headers().clone();
 
         let content_length = backend_resp.content_length();
 

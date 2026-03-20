@@ -156,10 +156,13 @@ For lower-level control, `ProxyGateway::handle` returns the raw three-variant `H
 > [!WARNING]
 > Multipart uploads are only supported for `backend_type = "s3"`. Non-S3 backends should use single PUT requests (object_store handles chunking internally).
 
-## Response Header Forwarding
+## Response Header Filtering
 
-The proxy forwards only specific headers from the backend response to the client:
+The proxy uses a denylist to strip dangerous headers from backend responses before forwarding to clients. All headers pass through except:
 
-`content-type`, `content-length`, `content-range`, `etag`, `last-modified`, `accept-ranges`, `content-encoding`, `content-disposition`, `cache-control`, `x-amz-request-id`, `x-amz-version-id`, `location`
+- **Hop-by-hop** (RFC 7230 §6.1): `transfer-encoding`, `connection`, `keep-alive`, `te`, `trailer`, `upgrade`, `proxy-connection`
+- **Auth/cookies**: `proxy-authenticate`, `proxy-authorization`, `www-authenticate`, `set-cookie`
+- **Proxy routing**: `forwarded`, `x-forwarded-for`, `x-forwarded-proto`, `x-forwarded-host`, `x-forwarded-port`, `via`
+- **Encryption key material**: `x-amz-server-side-encryption-customer-key-md5`, `x-amz-server-side-encryption-aws-kms-key-id`, `x-ms-encryption-key-sha256`, `x-goog-encryption-key-sha256`
 
-All other backend headers are filtered out.
+This means content headers, cloud provider metadata (e.g. `x-amz-storage-class`), and user metadata from any provider (`x-amz-meta-*`, `x-ms-meta-*`, `x-goog-meta-*`) all flow through to clients automatically.

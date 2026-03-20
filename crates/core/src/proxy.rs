@@ -77,7 +77,8 @@ const PRESIGNED_URL_TTL: Duration = Duration::from_secs(300);
 
 // Re-export types that were historically defined here for backwards compatibility.
 pub use crate::route_handler::{
-    ForwardRequest, HandlerAction, PendingRequest, ProxyResult, RESPONSE_HEADER_ALLOWLIST,
+    filter_response_headers, ForwardRequest, HandlerAction, PendingRequest, ProxyResult,
+    RESPONSE_HEADER_DENYLIST,
 };
 
 /// Simplified two-variant result from [`ProxyGateway::handle_request`].
@@ -236,7 +237,10 @@ where
             return match action {
                 HandlerAction::Response(r) => GatewayResponse::Response(r),
                 HandlerAction::Forward(fwd) => match self.backend.forward(fwd, body).await {
-                    Ok(resp) => GatewayResponse::Forward(resp),
+                    Ok(mut resp) => {
+                        resp.headers = filter_response_headers(&resp.headers);
+                        GatewayResponse::Forward(resp)
+                    }
                     Err(e) => GatewayResponse::Response(error_response(
                         &e,
                         req.path,
@@ -288,7 +292,8 @@ where
                 (GatewayResponse::Response(r), s, rb, false)
             }
             HandlerAction::Forward(fwd) => match self.backend.forward(fwd, body).await {
-                Ok(resp) => {
+                Ok(mut resp) => {
+                    resp.headers = filter_response_headers(&resp.headers);
                     let s = resp.status;
                     let cl = resp.content_length;
                     (GatewayResponse::Forward(resp), s, cl, true)
@@ -842,7 +847,7 @@ where
 
         Ok(ProxyResult {
             status: raw_resp.status,
-            headers: raw_resp.headers,
+            headers: filter_response_headers(&raw_resp.headers),
             body: ProxyResponseBody::from_bytes(raw_resp.body),
         })
     }
