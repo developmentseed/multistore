@@ -16,6 +16,7 @@ use multistore::types::BucketConfig;
 
 use object_store::list::PaginatedListStore;
 use object_store::signer::Signer;
+use object_store::RetryConfig;
 use std::sync::Arc;
 use worker::Fetch;
 
@@ -99,12 +100,25 @@ impl ProxyBackend for WorkerBackend {
         &self,
         config: &BucketConfig,
     ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
+        // Disable retries: object_store's retry logic uses `tokio::time::sleep`
+        // which panics on WASM (`std::time::Instant::now` is unsupported).
+        // See: https://github.com/apache/arrow-rs-object-store/issues/624
+        let no_retry = RetryConfig {
+            max_retries: 0,
+            ..Default::default()
+        };
         let builder = match create_builder(config)? {
-            StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(FetchConnector)),
+            StoreBuilder::S3(s) => {
+                StoreBuilder::S3(s.with_http_connector(FetchConnector).with_retry(no_retry))
+            }
             #[cfg(feature = "azure")]
-            StoreBuilder::Azure(a) => StoreBuilder::Azure(a.with_http_connector(FetchConnector)),
+            StoreBuilder::Azure(a) => {
+                StoreBuilder::Azure(a.with_http_connector(FetchConnector).with_retry(no_retry))
+            }
             #[cfg(feature = "gcp")]
-            StoreBuilder::Gcs(g) => StoreBuilder::Gcs(g.with_http_connector(FetchConnector)),
+            StoreBuilder::Gcs(g) => {
+                StoreBuilder::Gcs(g.with_http_connector(FetchConnector).with_retry(no_retry))
+            }
         };
         builder.build()
     }
