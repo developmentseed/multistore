@@ -156,6 +156,19 @@ For lower-level control, `ProxyGateway::handle` returns the raw three-variant `H
 > [!WARNING]
 > Multipart uploads are only supported for `backend_type = "s3"`. Non-S3 backends should use single PUT requests (object_store handles chunking internally).
 
+## Outbound User-Agent
+
+All outbound requests to backend object stores include a `User-Agent` header identifying multistore as the caller. This applies to both presigned URL forwards (GET, HEAD, PUT, DELETE) and raw signed requests (multipart operations).
+
+The default value is `multistore/{version}` (e.g. `multistore/0.2.0`). Override it via the gateway builder to include your application name:
+
+```rust
+let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
+    .with_user_agent("myapp/1.0 multistore/0.2.0");
+```
+
+This is useful for backend access log analysis and debugging.
+
 ## Response Header Filtering
 
 The proxy uses a denylist to strip dangerous headers from backend responses before forwarding to clients. All headers pass through except:

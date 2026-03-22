@@ -78,6 +78,13 @@ use uuid::Uuid;
 /// TTL for presigned URLs. Short because they're used immediately.
 const PRESIGNED_URL_TTL: Duration = Duration::from_secs(300);
 
+/// Default User-Agent header value sent with outbound backend requests.
+///
+/// Identifies multistore as the caller to backend object stores, useful for
+/// access log analysis and debugging. Override via
+/// [`ProxyGateway::with_user_agent`] to include your application name.
+pub const DEFAULT_USER_AGENT: &str = concat!("multistore/", env!("CARGO_PKG_VERSION"));
+
 // Re-export types that were historically defined here for backwards compatibility.
 pub use crate::route_handler::{
     filter_response_headers, ForwardRequest, HandlerAction, PendingRequest, ProxyResult,
@@ -133,6 +140,8 @@ pub struct ProxyGateway<B, R, C> {
     /// When true, error responses include full internal details (for development).
     /// When false, server-side errors use generic messages.
     debug_errors: bool,
+    /// User-Agent header value for outbound backend requests.
+    user_agent: String,
 }
 
 impl<B, R, C> ProxyGateway<B, R, C>
@@ -163,6 +172,7 @@ where
             credential_resolver: None,
             router: Router::new(),
             debug_errors: false,
+            user_agent: DEFAULT_USER_AGENT.to_string(),
         }
     }
 
@@ -205,6 +215,15 @@ where
     /// avoid leaking infrastructure details to clients.
     pub fn with_debug_errors(mut self, enabled: bool) -> Self {
         self.debug_errors = enabled;
+        self
+    }
+
+    /// Override the User-Agent header sent with outbound backend requests.
+    ///
+    /// Defaults to [`DEFAULT_USER_AGENT`] (`multistore/{version}`). Use this
+    /// to include your application name, e.g. `"myapp/1.0 multistore/0.2.0"`.
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = user_agent.into();
         self
     }
 
@@ -708,6 +727,7 @@ where
                 fwd_headers.insert(*name, v.clone());
             }
         }
+        fwd_headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
 
         Ok(ForwardRequest {
             method,
@@ -861,6 +881,7 @@ where
                 headers.insert(*header_name, val.clone());
             }
         }
+        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
 
         let payload_hash = if body.is_empty() {
             UNSIGNED_PAYLOAD.to_string()
@@ -1120,6 +1141,128 @@ mod tests {
                 }
                 other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
             }
+        });
+    }
+
+    // -- User-Agent tests ----------------------------------------------------
+
+    #[test]
+    fn forward_includes_user_agent_header() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let ua = fwd
+                        .headers
+                        .get(http::header::USER_AGENT)
+                        .expect("forward should include User-Agent header");
+                    assert!(
+                        ua.to_str().unwrap().starts_with("multistore/"),
+                        "User-Agent should start with 'multistore/', got: {}",
+                        ua.to_str().unwrap()
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn put_forward_includes_user_agent_header() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("content-type", "application/octet-stream".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let ua = fwd
+                        .headers
+                        .get(http::header::USER_AGENT)
+                        .expect("PUT forward should include User-Agent header");
+                    assert!(
+                        ua.to_str().unwrap().starts_with("multistore/"),
+                        "User-Agent should start with 'multistore/', got: {}",
+                        ua.to_str().unwrap()
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn delete_forward_includes_user_agent_header() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::DELETE, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let ua = fwd
+                        .headers
+                        .get(http::header::USER_AGENT)
+                        .expect("DELETE forward should include User-Agent header");
+                    assert_eq!(ua.to_str().unwrap(), DEFAULT_USER_AGENT);
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn custom_user_agent_is_used_in_forward() {
+        run(async {
+            let gw = gateway().with_user_agent("myapp/1.0 multistore/0.2.0");
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let ua = fwd
+                        .headers
+                        .get(http::header::USER_AGENT)
+                        .expect("forward should include User-Agent header");
+                    assert_eq!(ua.to_str().unwrap(), "myapp/1.0 multistore/0.2.0");
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn multipart_needs_body_then_includes_user_agent() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(
+                    Method::POST,
+                    "/test-bucket/key.txt",
+                    Some("uploads"),
+                    &headers,
+                    None,
+                )
+                .await;
+
+            // CreateMultipartUpload should return NeedsBody
+            assert!(
+                matches!(action, HandlerAction::NeedsBody(_)),
+                "CreateMultipartUpload should return NeedsBody"
+            );
         });
     }
 
