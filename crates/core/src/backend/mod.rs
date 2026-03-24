@@ -3,17 +3,17 @@
 //! [`ProxyBackend`] is the main trait runtimes implement. It provides three
 //! capabilities:
 //!
-//! 1. **`create_paginated_store()`** — build a `PaginatedListStore` for LIST
-//!    operations with backend-side pagination.
-//! 2. **`create_signer()`** — build a `Signer` for generating presigned URLs
+//! 1. **`create_signer()`** — build a `Signer` for generating presigned URLs
 //!    for GET, HEAD, PUT, DELETE operations.
-//! 3. **`send_raw()`** — send a pre-signed HTTP request for operations not
-//!    covered by `ObjectStore` (multipart uploads).
+//! 2. **`send_raw()`** — send a pre-signed HTTP request for operations not
+//!    covered by `ObjectStore` (multipart uploads, LIST).
 //!
 //! The [`url_signer`] submodule handles `object_store` signer construction.
 //! The [`request_signer`] submodule handles outbound SigV4 request signing.
 //! The [`multipart`] submodule builds URLs and signs multipart upload requests.
+//! The [`list`] submodule handles direct S3 ListObjectsV2 via raw HTTP.
 
+pub mod list;
 pub mod multipart;
 pub mod request_signer;
 pub mod url_signer;
@@ -26,7 +26,6 @@ use crate::types::{BackendType, BucketConfig};
 use bytes::Bytes;
 use http::HeaderMap;
 use object_store::aws::AmazonS3Builder;
-use object_store::list::PaginatedListStore;
 use object_store::signer::Signer;
 use std::future::Future;
 use std::sync::Arc;
@@ -53,16 +52,6 @@ pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
         body: Body,
     ) -> impl Future<Output = Result<ForwardResponse<Self::ResponseBody>, ProxyError>> + MaybeSend;
 
-    /// Create a [`PaginatedListStore`] for the given bucket configuration.
-    ///
-    /// Used for LIST operations with backend-side pagination via
-    /// [`PaginatedListStore::list_paginated`], avoiding loading all results
-    /// into memory.
-    fn create_paginated_store(
-        &self,
-        config: &BucketConfig,
-    ) -> Result<Box<dyn PaginatedListStore>, ProxyError>;
-
     /// Create a `Signer` for generating presigned URLs.
     ///
     /// Used for GET, HEAD, PUT, DELETE operations. The handler generates
@@ -70,8 +59,8 @@ pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
     /// native HTTP client, enabling zero-copy streaming.
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError>;
 
-    /// Send a raw HTTP request (used for multipart operations that
-    /// `ObjectStore` doesn't expose at the right abstraction level).
+    /// Send a raw HTTP request (used for multipart operations and LIST
+    /// that `ObjectStore` doesn't expose at the right abstraction level).
     fn send_raw(
         &self,
         method: http::Method,
@@ -107,8 +96,7 @@ pub struct ForwardResponse<S> {
 /// Wrapper around provider-specific `object_store` builders.
 ///
 /// Obtain one via [`create_builder`], customize it (e.g. inject an HTTP
-/// connector), then call [`build`](Self::build) or
-/// [`build_signer`](Self::build_signer).
+/// connector), then call [`build_signer`](Self::build_signer).
 pub enum StoreBuilder {
     S3(AmazonS3Builder),
     #[cfg(feature = "azure")]
@@ -118,23 +106,6 @@ pub enum StoreBuilder {
 }
 
 impl StoreBuilder {
-    /// Build a `PaginatedListStore` for backend-side paginated listing.
-    pub fn build(self) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        match self {
-            StoreBuilder::S3(b) => Ok(Box::new(b.build().map_err(|e| {
-                ProxyError::ConfigError(format!("failed to build S3 paginated store: {}", e))
-            })?)),
-            #[cfg(feature = "azure")]
-            StoreBuilder::Azure(b) => Ok(Box::new(b.build().map_err(|e| {
-                ProxyError::ConfigError(format!("failed to build Azure paginated store: {}", e))
-            })?)),
-            #[cfg(feature = "gcp")]
-            StoreBuilder::Gcs(b) => Ok(Box::new(b.build().map_err(|e| {
-                ProxyError::ConfigError(format!("failed to build GCS paginated store: {}", e))
-            })?)),
-        }
-    }
-
     /// Build a `Signer` for presigned URL generation.
     pub fn build_signer(self) -> Result<Arc<dyn Signer>, ProxyError> {
         match self {
@@ -156,8 +127,7 @@ impl StoreBuilder {
 /// Create a [`StoreBuilder`] from a [`BucketConfig`], dispatching on `backend_type`.
 ///
 /// Runtimes call this to get a half-built store, customize it (e.g. inject
-/// an HTTP connector), then call [`StoreBuilder::build`] or
-/// [`StoreBuilder::build_signer`].
+/// an HTTP connector), then call [`StoreBuilder::build_signer`].
 pub fn create_builder(config: &BucketConfig) -> Result<StoreBuilder, ProxyError> {
     let backend_type = config.parsed_backend_type().ok_or_else(|| {
         ProxyError::ConfigError(format!(

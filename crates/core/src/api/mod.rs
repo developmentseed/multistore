@@ -2,5 +2,6 @@
 
 pub mod list;
 pub mod list_rewrite;
+pub mod raw_list;
 pub mod request;
 pub mod response;

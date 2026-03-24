@@ -3,6 +3,7 @@
 //! Extracted from `proxy.rs` to keep the gateway focused on orchestration.
 
 use crate::api::list_rewrite::ListRewrite;
+use crate::api::raw_list::RawListResult;
 use crate::api::response::{ListBucketResult, ListBucketResultV1, ListCommonPrefix, ListContents};
 use crate::error::ProxyError;
 use crate::types::BucketConfig;
@@ -106,13 +107,13 @@ pub(crate) fn build_list_prefix(config: &BucketConfig, client_prefix: &str) -> S
     }
 }
 
-/// Build S3 ListObjectsV2 XML from an object_store ListResult.
+/// Build S3 ListObjectsV2 XML from a [`RawListResult`].
 ///
 /// Pagination is handled by the backend — `is_truncated` and
 /// `next_continuation_token` are passed through from the backend's response.
 pub(crate) fn build_list_xml(
     params: &ListXmlParams<'_>,
-    list_result: &object_store::ListResult,
+    list_result: &RawListResult,
     config: &BucketConfig,
     list_rewrite: Option<&ListRewrite>,
 ) -> Result<String, ProxyError> {
@@ -131,9 +132,8 @@ pub(crate) fn build_list_xml(
         .objects
         .iter()
         .map(|obj| {
-            let raw_key = obj.location.to_string();
             ListContents {
-                key: rewrite_key(&raw_key, &strip_prefix, list_rewrite),
+                key: rewrite_key(&obj.location, &strip_prefix, list_rewrite),
                 last_modified: obj
                     .last_modified
                     .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -149,9 +149,9 @@ pub(crate) fn build_list_xml(
         .common_prefixes
         .iter()
         .map(|p| {
-            let raw_prefix = format!("{}/", p);
+            // Raw prefixes already include trailing '/'
             ListCommonPrefix {
-                prefix: rewrite_key(&raw_prefix, &strip_prefix, list_rewrite),
+                prefix: rewrite_key(p, &strip_prefix, list_rewrite),
             }
         })
         .collect();
@@ -220,10 +220,10 @@ pub(crate) struct ListXmlParamsV1<'a> {
     pub encoding_type: &'a Option<String>,
 }
 
-/// Build S3 ListObjectsV1 XML from an object_store ListResult.
+/// Build S3 ListObjectsV1 XML from a [`RawListResult`].
 pub(crate) fn build_list_xml_v1(
     params: &ListXmlParamsV1<'_>,
-    list_result: &object_store::ListResult,
+    list_result: &RawListResult,
     config: &BucketConfig,
     list_rewrite: Option<&ListRewrite>,
 ) -> Result<String, ProxyError> {
@@ -242,9 +242,8 @@ pub(crate) fn build_list_xml_v1(
         .objects
         .iter()
         .map(|obj| {
-            let raw_key = obj.location.to_string();
             ListContents {
-                key: rewrite_key(&raw_key, &strip_prefix, list_rewrite),
+                key: rewrite_key(&obj.location, &strip_prefix, list_rewrite),
                 last_modified: obj
                     .last_modified
                     .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -260,9 +259,9 @@ pub(crate) fn build_list_xml_v1(
         .common_prefixes
         .iter()
         .map(|p| {
-            let raw_prefix = format!("{}/", p);
+            // Raw prefixes already include trailing '/'
             ListCommonPrefix {
-                prefix: rewrite_key(&raw_prefix, &strip_prefix, list_rewrite),
+                prefix: rewrite_key(p, &strip_prefix, list_rewrite),
             }
         })
         .collect();
@@ -353,22 +352,22 @@ fn rewrite_key(raw: &str, strip_prefix: &str, list_rewrite: Option<&ListRewrite>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::raw_list::RawObjectMeta;
     use chrono::Utc;
-    use object_store::{path::Path, ListResult, ObjectMeta};
 
-    fn make_list_result(keys: &[&str], common_prefixes: &[&str]) -> ListResult {
-        ListResult {
+    fn make_list_result(keys: &[&str], common_prefixes: &[&str]) -> RawListResult {
+        RawListResult {
             objects: keys
                 .iter()
-                .map(|k| ObjectMeta {
-                    location: Path::from(*k),
+                .map(|k| RawObjectMeta {
+                    location: k.to_string(),
                     last_modified: Utc::now(),
                     size: 100,
                     e_tag: Some("\"abc\"".to_string()),
-                    version: None,
                 })
                 .collect(),
-            common_prefixes: common_prefixes.iter().map(|p| Path::from(*p)).collect(),
+            // S3 common prefixes include trailing '/'
+            common_prefixes: common_prefixes.iter().map(|p| format!("{}/", p)).collect(),
         }
     }
 
@@ -693,5 +692,83 @@ mod tests {
             "Expected NextMarker: {xml}"
         );
         assert!(xml.contains("<Marker></Marker>") || xml.contains("<Marker/>"));
+    }
+
+    #[test]
+    fn test_double_slash_keys_preserved() {
+        let config = make_config(None);
+        // Simulate raw S3 keys with // — these would fail with object_store Path
+        let list_result = RawListResult {
+            objects: vec![RawObjectMeta {
+                location: "media//nested/file.txt".to_string(),
+                last_modified: Utc::now(),
+                size: 42,
+                e_tag: Some("\"xyz\"".to_string()),
+            }],
+            common_prefixes: vec!["media//".to_string()],
+        };
+
+        let params = ListXmlParams {
+            bucket_name: "test-bucket",
+            client_prefix: "media/",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            key_count: 2,
+            start_after: &None,
+            continuation_token: &None,
+            next_continuation_token: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
+
+        assert!(
+            xml.contains("<Key>media//nested/file.txt</Key>"),
+            "Double-slash key should be preserved: {xml}"
+        );
+        assert!(
+            xml.contains("<Prefix>media//</Prefix>"),
+            "Double-slash common prefix should be preserved: {xml}"
+        );
+    }
+
+    #[test]
+    fn test_double_slash_keys_with_backend_prefix() {
+        let config = make_config(Some("data/prefix"));
+        let list_result = RawListResult {
+            objects: vec![RawObjectMeta {
+                location: "data/prefix/media//file.txt".to_string(),
+                last_modified: Utc::now(),
+                size: 100,
+                e_tag: Some("\"abc\"".to_string()),
+            }],
+            common_prefixes: vec!["data/prefix/media//".to_string()],
+        };
+
+        let params = ListXmlParams {
+            bucket_name: "test-bucket",
+            client_prefix: "media/",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            key_count: 2,
+            start_after: &None,
+            continuation_token: &None,
+            next_continuation_token: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
+
+        // Backend prefix should be stripped, but // preserved
+        assert!(
+            xml.contains("<Key>media//file.txt</Key>"),
+            "Expected key with backend prefix stripped: {xml}"
+        );
+        assert!(
+            xml.contains("<Prefix>media//</Prefix>"),
+            "Expected prefix with backend prefix stripped: {xml}"
+        );
     }
 }

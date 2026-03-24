@@ -5,18 +5,15 @@
 //! `web_sys::Response` streams.
 
 use crate::body::JsBody;
-use crate::fetch_connector::FetchConnector;
 use bytes::Bytes;
 use http::HeaderMap;
 use multistore::backend::ForwardResponse;
-use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse, StoreBuilder};
+use multistore::backend::{build_signer, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
 use multistore::route_handler::ForwardRequest;
 use multistore::types::BucketConfig;
 
-use object_store::list::PaginatedListStore;
 use object_store::signer::Signer;
-use object_store::RetryConfig;
 use std::sync::Arc;
 use worker::Fetch;
 
@@ -96,33 +93,6 @@ impl ProxyBackend for WorkerBackend {
         })
     }
 
-    fn create_paginated_store(
-        &self,
-        config: &BucketConfig,
-    ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        // Disable retries: object_store's retry logic uses `tokio::time::sleep`
-        // which panics on WASM (`std::time::Instant::now` is unsupported).
-        // See: https://github.com/apache/arrow-rs-object-store/issues/624
-        let no_retry = RetryConfig {
-            max_retries: 0,
-            ..Default::default()
-        };
-        let builder = match create_builder(config)? {
-            StoreBuilder::S3(s) => {
-                StoreBuilder::S3(s.with_http_connector(FetchConnector).with_retry(no_retry))
-            }
-            #[cfg(feature = "azure")]
-            StoreBuilder::Azure(a) => {
-                StoreBuilder::Azure(a.with_http_connector(FetchConnector).with_retry(no_retry))
-            }
-            #[cfg(feature = "gcp")]
-            StoreBuilder::Gcs(g) => {
-                StoreBuilder::Gcs(g.with_http_connector(FetchConnector).with_retry(no_retry))
-            }
-        };
-        builder.build()
-    }
-
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
         build_signer(config)
     }
@@ -173,14 +143,16 @@ impl ProxyBackend for WorkerBackend {
 
         let status = worker_resp.status_code();
 
-        // Read response body as bytes (multipart responses are small)
+        // Extract headers BEFORE reading the body — reading consumes the
+        // ReadableStream, which makes a subsequent conversion to
+        // web_sys::Response panic ("ReadableStream is disturbed").
+        let resp_headers = convert_worker_headers(&worker_resp.headers());
+
+        // Read response body as bytes
         let resp_bytes = worker_resp
             .bytes()
             .await
             .map_err(|e| ProxyError::Internal(format!("failed to read response: {}", e)))?;
-
-        let ws_response: web_sys::Response = worker_resp.into();
-        let resp_headers = convert_ws_headers(&ws_response.headers());
 
         Ok(RawResponse {
             status,
@@ -208,6 +180,24 @@ fn convert_ws_headers(ws_headers: &web_sys::Headers) -> HeaderMap {
                     }
                 }
             }
+        }
+    }
+    out
+}
+
+/// Convert `worker::Headers` into an `http::HeaderMap`.
+///
+/// Use this instead of `convert_ws_headers` when you need headers from a
+/// `worker::Response` before consuming its body — converting a
+/// `worker::Response` to `web_sys::Response` after body consumption panics.
+fn convert_worker_headers(headers: &worker::Headers) -> HeaderMap {
+    let mut out = HeaderMap::new();
+    for (name, value) in headers.entries() {
+        if let (Ok(hn), Ok(hv)) = (
+            name.parse::<http::header::HeaderName>(),
+            value.parse::<http::header::HeaderValue>(),
+        ) {
+            out.insert(hn, hv);
         }
     }
     out

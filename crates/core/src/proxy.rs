@@ -54,6 +54,7 @@ use crate::api::request::{self, HostStyle};
 use crate::api::response::{BucketList, ErrorResponse, ListAllMyBucketsResult};
 use crate::auth;
 use crate::auth::TemporaryCredentialResolver;
+use crate::backend::list::s3_list;
 use crate::backend::multipart::{build_backend_url, sign_s3_request};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ForwardResponse;
@@ -69,7 +70,6 @@ use crate::router::Router;
 use crate::types::{BucketConfig, ResolvedIdentity, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
-use object_store::list::PaginatedListOptions;
 use std::borrow::Cow;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -717,10 +717,10 @@ where
         })
     }
 
-    /// LIST via object_store's `PaginatedListStore`.
+    /// LIST via direct S3 HTTP request.
     ///
-    /// Pagination is pushed to the backend — only one page of results is fetched
-    /// per request, avoiding loading all objects into memory.
+    /// Uses raw HTTP to call ListObjectsV2 directly, bypassing `object_store`'s
+    /// `Path::parse()` which rejects keys containing `//`.
     async fn handle_list(
         &self,
         config: &BucketConfig,
@@ -728,8 +728,6 @@ where
         list_rewrite: Option<&ListRewrite>,
         display_name: Option<&str>,
     ) -> Result<ProxyResult, ProxyError> {
-        let store = self.backend.create_paginated_store(config)?;
-
         // Parse all query parameters in a single pass
         let list_params = parse_list_query_params(raw_query);
         let client_prefix = &list_params.prefix;
@@ -739,7 +737,7 @@ where
         let full_prefix = build_list_prefix(config, client_prefix);
 
         // Map start-after (V2) or marker (V1) to raw key space by prepending backend_prefix
-        let offset = if list_params.is_v2 {
+        let start_after = if list_params.is_v2 {
             list_params
                 .start_after
                 .as_ref()
@@ -756,7 +754,7 @@ where
             delimiter = %delimiter,
             max_keys = list_params.max_keys,
             has_page_token = list_params.continuation_token.is_some(),
-            "LIST via PaginatedListStore"
+            "LIST via raw S3 HTTP"
         );
 
         let prefix = if full_prefix.is_empty() {
@@ -765,22 +763,22 @@ where
             Some(full_prefix.as_str())
         };
 
-        let opts = PaginatedListOptions {
-            offset,
-            delimiter: if delimiter.is_empty() {
-                None
-            } else {
-                Some(Cow::Owned(delimiter.clone()))
-            },
-            max_keys: Some(list_params.max_keys),
-            page_token: list_params.continuation_token.clone(),
-            ..Default::default()
+        let delimiter_opt = if delimiter.is_empty() {
+            None
+        } else {
+            Some(delimiter.as_str())
         };
 
-        let paginated = store
-            .list_paginated(prefix, opts)
-            .await
-            .map_err(ProxyError::from_object_store_error)?;
+        let paginated = s3_list(
+            &self.backend,
+            config,
+            prefix,
+            delimiter_opt,
+            list_params.max_keys,
+            list_params.continuation_token.as_deref(),
+            start_after.as_deref(),
+        )
+        .await?;
 
         // Build S3 XML response from paginated result
         let bucket_name = display_name.unwrap_or(&config.name);
@@ -812,7 +810,7 @@ where
                     .result
                     .objects
                     .last()
-                    .map(|obj| obj.location.to_string())
+                    .map(|obj| obj.location.clone())
             } else {
                 None
             };
@@ -957,7 +955,6 @@ mod tests {
     use crate::backend::RawResponse;
     use crate::registry::{BucketRegistry, CredentialRegistry, ResolvedBucket};
     use crate::types::{ResolvedIdentity, RoleConfig, StoredCredential};
-    use object_store::list::PaginatedListStore;
     use object_store::signer::Signer;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -976,13 +973,6 @@ mod tests {
             _body: Body,
         ) -> Result<ForwardResponse<()>, ProxyError> {
             unimplemented!("not needed for resolve_request tests")
-        }
-
-        fn create_paginated_store(
-            &self,
-            _config: &BucketConfig,
-        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-            unimplemented!("not needed for forward tests")
         }
 
         fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {

@@ -4,12 +4,11 @@ use bytes::Bytes;
 use http::HeaderMap;
 use lambda_http::Body;
 use multistore::backend::ForwardResponse;
-use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse};
+use multistore::backend::{build_signer, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
 use multistore::route_handler::ForwardRequest;
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
-use object_store::list::PaginatedListStore;
 use object_store::signer::Signer;
 use std::sync::Arc;
 
@@ -98,13 +97,6 @@ impl ProxyBackend for LambdaBackend {
             body: Body::Binary(body_bytes.to_vec()),
             content_length,
         })
-    }
-
-    fn create_paginated_store(
-        &self,
-        config: &BucketConfig,
-    ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        create_builder(config)?.build()
     }
 
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
