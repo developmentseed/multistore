@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/developmentseed/multistore/compare/v0.2.0...v0.3.0) (2026-03-24)
+
+
+### Features
+
+* **cf-workers:** streamline response handling and header conversion ([80f8543](https://github.com/developmentseed/multistore/commit/80f8543122a43367f1341329eb7d57104692bcb3))
+* **core:** support ListObjectsV1 ([1d61dfc](https://github.com/developmentseed/multistore/commit/1d61dfc401110776e53be80ace1dfd0bf2bb793c))
+* **path-mapping:** add more convenience tooling ([9c4f5bb](https://github.com/developmentseed/multistore/commit/9c4f5bbb84d903845f50af059efcc55288a788b9))
+
+
+### Bug Fixes
+
+* **cf-workers:** disable retry on buckets to avoid WASM panic ([804b0bb](https://github.com/developmentseed/multistore/commit/804b0bb9903b3c958f0f50f78de53fe934270ce9))
+* **core:** support custom backend response headers ([a5c5b9f](https://github.com/developmentseed/multistore/commit/a5c5b9f794fd113b66df11d0302c0490b02b6160))
+
 ## [0.2.0](https://github.com/developmentseed/multistore/compare/multistore-v0.1.1...multistore-v0.2.0) (2026-03-19)
 
 
