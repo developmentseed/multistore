@@ -7,4 +7,5 @@ description = "Hierarchical path mapping for the multistore S3 proxy gateway"
 
 [dependencies]
 multistore = { workspace = true }
+percent-encoding = { workspace = true }
 tracing = { workspace = true }
