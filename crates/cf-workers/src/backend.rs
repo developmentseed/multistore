@@ -6,6 +6,7 @@
 
 use crate::body::JsBody;
 use crate::fetch_connector::FetchConnector;
+use crate::response::headermap_from_js;
 use bytes::Bytes;
 use http::HeaderMap;
 use multistore::backend::ForwardResponse;
@@ -82,7 +83,7 @@ impl ProxyBackend for WorkerBackend {
         let backend_ws: web_sys::Response = worker_resp.into();
         let status = backend_ws.status();
 
-        let headers = convert_ws_headers(&backend_ws.headers());
+        let headers = headermap_from_js(&backend_ws.headers());
         let content_length = headers
             .get(http::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
@@ -180,7 +181,7 @@ impl ProxyBackend for WorkerBackend {
             .map_err(|e| ProxyError::Internal(format!("failed to read response: {}", e)))?;
 
         let ws_response: web_sys::Response = worker_resp.into();
-        let resp_headers = convert_ws_headers(&ws_response.headers());
+        let resp_headers = headermap_from_js(&ws_response.headers());
 
         Ok(RawResponse {
             status,
@@ -188,27 +189,4 @@ impl ProxyBackend for WorkerBackend {
             body: Bytes::from(resp_bytes),
         })
     }
-}
-
-/// Convert `web_sys::Headers` into an `http::HeaderMap`.
-fn convert_ws_headers(ws_headers: &web_sys::Headers) -> HeaderMap {
-    let mut out = HeaderMap::new();
-    if let Ok(iter) = js_sys::try_iter(&ws_headers.entries()) {
-        if let Some(iter) = iter {
-            for entry in iter.flatten() {
-                let pair = js_sys::Array::from(&entry);
-                if let (Some(name), Some(value)) =
-                    (pair.get(0).as_string(), pair.get(1).as_string())
-                {
-                    if let (Ok(hn), Ok(hv)) = (
-                        name.parse::<http::header::HeaderName>(),
-                        value.parse::<http::header::HeaderValue>(),
-                    ) {
-                        out.insert(hn, hv);
-                    }
-                }
-            }
-        }
-    }
-    out
 }

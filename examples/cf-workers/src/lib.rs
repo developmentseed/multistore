@@ -25,11 +25,11 @@ mod rate_limit;
 
 pub use bandwidth::BandwidthMeter;
 
-use multistore::proxy::{GatewayResponse, ProxyGateway};
+use multistore::proxy::ProxyGateway;
 use multistore::router::Router;
 use multistore_cf_workers::{
-    collect_js_body, convert_ws_headers, forward_response_to_ws, proxy_result_to_ws_response,
-    JsBody, WorkerBackend, WorkerSubscriber,
+    collect_js_body, headermap_from_js, response_from_gateway, JsBody, WorkerBackend,
+    WorkerSubscriber,
 };
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
@@ -103,7 +103,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     let uri: http::Uri = url_str.parse().unwrap();
     let path = uri.path().to_string();
     let query = uri.query().map(|q| q.to_string());
-    let headers = convert_ws_headers(&req.headers());
+    let headers = headermap_from_js(&req.headers());
 
     let req_info = multistore::route_handler::RequestInfo::new(
         &method,
@@ -113,15 +113,10 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
         None,
     );
 
-    Ok(
-        match gateway
-            .handle_request(&req_info, js_body, collect_js_body)
-            .await
-        {
-            GatewayResponse::Response(result) => proxy_result_to_ws_response(result),
-            GatewayResponse::Forward(resp) => forward_response_to_ws(resp),
-        },
-    )
+    let result = gateway
+        .handle_request(&req_info, js_body, collect_js_body)
+        .await;
+    Ok(response_from_gateway(result))
 }
 
 // ── OIDC HTTP exchange ─────────────────────────────────────────────

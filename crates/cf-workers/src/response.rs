@@ -4,12 +4,14 @@
 //! `web_sys::Response`, including header conversion utilities.
 
 use http::HeaderMap;
+use multistore::api::response::ErrorResponse;
 use multistore::backend::ForwardResponse;
+use multistore::proxy::GatewayResponse;
 use multistore::route_handler::{ProxyResponseBody, ProxyResult};
 
 /// Convert a `ProxyResult` (small buffered XML/JSON) to a `web_sys::Response`.
-pub fn proxy_result_to_ws_response(result: ProxyResult) -> web_sys::Response {
-    let ws_headers = http_headermap_to_ws_headers(&result.headers)
+pub fn response_from_proxy_result(result: ProxyResult) -> web_sys::Response {
+    let ws_headers = headers_to_js(&result.headers)
         .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
 
     let resp_init = web_sys::ResponseInit::new();
@@ -30,8 +32,8 @@ pub fn proxy_result_to_ws_response(result: ProxyResult) -> web_sys::Response {
 
 /// Convert a `ForwardResponse<web_sys::Response>` into a `web_sys::Response`
 /// for the client, preserving the backend's body stream (zero-copy).
-pub fn forward_response_to_ws(resp: ForwardResponse<web_sys::Response>) -> web_sys::Response {
-    let ws_headers = http_headermap_to_ws_headers(&resp.headers)
+pub fn response_from_forward(resp: ForwardResponse<web_sys::Response>) -> web_sys::Response {
+    let ws_headers = headers_to_js(&resp.headers)
         .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
 
     let resp_init = web_sys::ResponseInit::new();
@@ -39,11 +41,11 @@ pub fn forward_response_to_ws(resp: ForwardResponse<web_sys::Response>) -> web_s
     resp_init.set_headers(&ws_headers.into());
 
     web_sys::Response::new_with_opt_readable_stream_and_init(resp.body.body().as_ref(), &resp_init)
-        .unwrap_or_else(|_| ws_error_response(502, "Bad Gateway"))
+        .unwrap_or_else(|_| error_response(502, "Bad Gateway"))
 }
 
 /// Build a plain-text error response.
-pub fn ws_error_response(status: u16, message: &str) -> web_sys::Response {
+pub fn error_response(status: u16, message: &str) -> web_sys::Response {
     let init = web_sys::ResponseInit::new();
     init.set_status(status);
     web_sys::Response::new_with_opt_str_and_init(Some(message), &init)
@@ -51,7 +53,7 @@ pub fn ws_error_response(status: u16, message: &str) -> web_sys::Response {
 }
 
 /// Build an XML response with `content-type: application/xml`.
-pub fn ws_xml_response(status: u16, xml_body: &str) -> web_sys::Response {
+pub fn xml_response(status: u16, xml_body: &str) -> web_sys::Response {
     let init = web_sys::ResponseInit::new();
     init.set_status(status);
 
@@ -60,13 +62,26 @@ pub fn ws_xml_response(status: u16, xml_body: &str) -> web_sys::Response {
     init.set_headers(&headers.into());
 
     web_sys::Response::new_with_opt_str_and_init(Some(xml_body), &init)
-        .unwrap_or_else(|_| ws_error_response(500, "Internal Server Error"))
+        .unwrap_or_else(|_| error_response(500, "Internal Server Error"))
+}
+
+/// Convert a [`GatewayResponse`] to a `web_sys::Response`.
+pub fn response_from_gateway(response: GatewayResponse<web_sys::Response>) -> web_sys::Response {
+    match response {
+        GatewayResponse::Response(r) => response_from_proxy_result(r),
+        GatewayResponse::Forward(r) => response_from_forward(r),
+    }
+}
+
+/// Build an S3-compatible XML error response from an [`ErrorResponse`].
+pub fn s3_error_response(status: u16, error: &ErrorResponse) -> web_sys::Response {
+    xml_response(status, &error.to_xml())
 }
 
 // -- Header conversion helpers -----------------------------------------------
 
 /// Convert `web_sys::Headers` to `http::HeaderMap` by iterating all entries.
-pub fn convert_ws_headers(ws_headers: &web_sys::Headers) -> HeaderMap {
+pub fn headermap_from_js(ws_headers: &web_sys::Headers) -> HeaderMap {
     let mut headers = HeaderMap::new();
     for entry in ws_headers.entries() {
         let Ok(pair) = entry else { continue };
@@ -89,7 +104,7 @@ pub fn convert_ws_headers(ws_headers: &web_sys::Headers) -> HeaderMap {
 }
 
 /// Convert `http::HeaderMap` to `web_sys::Headers`.
-pub fn http_headermap_to_ws_headers(
+pub fn headers_to_js(
     headers: &HeaderMap,
 ) -> std::result::Result<web_sys::Headers, wasm_bindgen::JsValue> {
     let ws = web_sys::Headers::new()?;
