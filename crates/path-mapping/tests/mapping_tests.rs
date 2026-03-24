@@ -126,10 +126,7 @@ fn rewrite_multi_segment_nested_key() {
     let mapping = default_mapping();
     assert_eq!(
         mapping.rewrite_request("/account/product/dir/sub/file.parquet", None),
-        (
-            "/account--product/dir/sub/file.parquet".to_string(),
-            None
-        )
+        ("/account--product/dir/sub/file.parquet".to_string(), None)
     );
 }
 
@@ -202,19 +199,13 @@ fn rewrite_single_segment_list_no_prefix_passes_through() {
 #[test]
 fn rewrite_root_passes_through() {
     let mapping = default_mapping();
-    assert_eq!(
-        mapping.rewrite_request("/", None),
-        ("/".to_string(), None)
-    );
+    assert_eq!(mapping.rewrite_request("/", None), ("/".to_string(), None));
 }
 
 #[test]
 fn rewrite_empty_passes_through() {
     let mapping = default_mapping();
-    assert_eq!(
-        mapping.rewrite_request("", None),
-        ("".to_string(), None)
-    );
+    assert_eq!(mapping.rewrite_request("", None), ("".to_string(), None));
 }
 
 #[test]

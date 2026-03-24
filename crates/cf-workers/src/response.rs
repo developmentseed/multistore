@@ -11,8 +11,8 @@ use multistore::route_handler::{ProxyResponseBody, ProxyResult};
 
 /// Convert a `ProxyResult` (small buffered XML/JSON) to a `web_sys::Response`.
 pub fn response_from_proxy_result(result: ProxyResult) -> web_sys::Response {
-    let ws_headers = headers_to_js(&result.headers)
-        .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
+    let ws_headers =
+        headers_to_js(&result.headers).unwrap_or_else(|_| web_sys::Headers::new().unwrap());
 
     let resp_init = web_sys::ResponseInit::new();
     resp_init.set_status(result.status);
@@ -33,8 +33,8 @@ pub fn response_from_proxy_result(result: ProxyResult) -> web_sys::Response {
 /// Convert a `ForwardResponse<web_sys::Response>` into a `web_sys::Response`
 /// for the client, preserving the backend's body stream (zero-copy).
 pub fn response_from_forward(resp: ForwardResponse<web_sys::Response>) -> web_sys::Response {
-    let ws_headers = headers_to_js(&resp.headers)
-        .unwrap_or_else(|_| web_sys::Headers::new().unwrap());
+    let ws_headers =
+        headers_to_js(&resp.headers).unwrap_or_else(|_| web_sys::Headers::new().unwrap());
 
     let resp_init = web_sys::ResponseInit::new();
     resp_init.set_status(resp.status);
