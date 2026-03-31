@@ -132,19 +132,28 @@ pub(crate) fn build_list_xml(
     // Filter out S3 directory marker objects — 0-byte objects created by the
     // S3 console (or similar tools) to represent "folders". These have a
     // trailing `/` in their key which `object_store::Path` strips, causing
-    // them to leak into results in two ways:
+    // them to leak into results. We detect them in three ways:
     //
     // 1. The marker's path matches a common prefix (e.g. key `photos/` →
     //    Path("photos") collides with CommonPrefix "photos").
     // 2. The marker's path equals the backend prefix itself (e.g. the root
-    //    directory marker for the bucket/prefix being listed).
+    //    directory marker for the entire backend prefix).
+    // 3. The marker's path equals the full listing prefix
+    //    (backend_prefix + client_prefix, minus trailing `/`). This is the
+    //    most common real-world case: listing "harvard-lil/staging-gov-data/"
+    //    returns a 0-byte key "harvard-lil/staging-gov-data/" which
+    //    object_store converts to Path("harvard-lil/staging-gov-data").
     let common_prefix_set: HashSet<&object_store::path::Path> =
         list_result.common_prefixes.iter().collect();
+
+    let full_list_prefix = format!("{}{}", strip_prefix, params.client_prefix);
+    let list_prefix_trimmed = full_list_prefix.trim_end_matches('/');
 
     let is_directory_marker = |obj: &object_store::ObjectMeta| -> bool {
         obj.size == 0
             && (common_prefix_set.contains(&obj.location)
-                || obj.location.as_ref() == backend_prefix)
+                || obj.location.as_ref() == backend_prefix
+                || obj.location.as_ref() == list_prefix_trimmed)
     };
 
     let mut contents: Vec<ListContents> = list_result
@@ -263,10 +272,14 @@ pub(crate) fn build_list_xml_v1(
     let common_prefix_set: HashSet<&object_store::path::Path> =
         list_result.common_prefixes.iter().collect();
 
+    let full_list_prefix = format!("{}{}", strip_prefix, params.client_prefix);
+    let list_prefix_trimmed = full_list_prefix.trim_end_matches('/');
+
     let is_directory_marker = |obj: &object_store::ObjectMeta| -> bool {
         obj.size == 0
             && (common_prefix_set.contains(&obj.location)
-                || obj.location.as_ref() == backend_prefix)
+                || obj.location.as_ref() == backend_prefix
+                || obj.location.as_ref() == list_prefix_trimmed)
     };
 
     let mut contents: Vec<ListContents> = list_result
@@ -846,14 +859,20 @@ mod tests {
     }
 
     #[test]
-    fn test_root_directory_marker_filtered_v2() {
+    fn test_directory_marker_at_list_prefix_filtered_v2() {
         // Reproduces the real-world bug from source-cooperative/source.coop#245:
-        // S3 key "harvard-lil/staging-gov-data/" is a 0-byte directory marker
-        // whose key equals the backend_prefix. object_store::Path strips the
-        // trailing slash, so the location becomes "harvard-lil/staging-gov-data"
-        // which matches backend_prefix exactly. This marker should be filtered
-        // out of Contents.
-        let config = make_config(Some("harvard-lil/staging-gov-data"));
+        //
+        // Backend bucket: us-west-2.opendata.source.coop
+        // backend_prefix: "harvard-lil/" (the account-level prefix)
+        // Client lists with prefix: "staging-gov-data/"
+        // Full S3 prefix sent: "harvard-lil/staging-gov-data/"
+        //
+        // S3 returns a 0-byte key "harvard-lil/staging-gov-data/" in Contents
+        // (the directory marker). object_store::Path strips the trailing slash,
+        // giving location "harvard-lil/staging-gov-data". After strip_prefix
+        // ("harvard-lil/"), this becomes "staging-gov-data" — a phantom file
+        // that should not appear in the listing.
+        let config = make_config(Some("harvard-lil"));
         let list_result = make_list_result_with_sizes(
             &[
                 ("harvard-lil/staging-gov-data", 0),
@@ -864,7 +883,7 @@ mod tests {
 
         let params = ListXmlParams {
             bucket_name: "harvard-lil",
-            client_prefix: "",
+            client_prefix: "staging-gov-data/",
             delimiter: "/",
             max_keys: 1000,
             is_truncated: false,
@@ -877,26 +896,27 @@ mod tests {
 
         let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
 
-        // The root directory marker should NOT appear in Contents
+        // The directory marker should NOT appear in Contents
         assert!(
-            !xml.contains("<Key>harvard-lil/staging-gov-data</Key>"),
-            "Root directory marker should be filtered out: {xml}"
+            !xml.contains("<Key>staging-gov-data</Key>"),
+            "Directory marker at list prefix should be filtered out: {xml}"
         );
         // The real file should still appear (with prefix stripped)
         assert!(
-            xml.contains("<Key>data/file.parquet</Key>"),
-            "Real file should remain after prefix stripping: {xml}"
+            xml.contains("<Key>staging-gov-data/data/file.parquet</Key>"),
+            "Real file should remain: {xml}"
         );
         // The common prefix should still appear
         assert!(
-            xml.contains("<Prefix>data/</Prefix>"),
+            xml.contains("<Prefix>staging-gov-data/data/</Prefix>"),
             "Common prefix should remain: {xml}"
         );
     }
 
     #[test]
-    fn test_root_directory_marker_filtered_v1() {
-        let config = make_config(Some("harvard-lil/staging-gov-data"));
+    fn test_directory_marker_at_list_prefix_filtered_v1() {
+        // Same scenario as V2 test above, but for ListObjectsV1.
+        let config = make_config(Some("harvard-lil"));
         let list_result = make_list_result_with_sizes(
             &[
                 ("harvard-lil/staging-gov-data", 0),
@@ -907,7 +927,7 @@ mod tests {
 
         let params = ListXmlParamsV1 {
             bucket_name: "harvard-lil",
-            client_prefix: "",
+            client_prefix: "staging-gov-data/",
             delimiter: "/",
             max_keys: 1000,
             is_truncated: false,
@@ -919,11 +939,11 @@ mod tests {
         let xml = build_list_xml_v1(&params, &list_result, &config, None).unwrap();
 
         assert!(
-            !xml.contains("<Key>harvard-lil/staging-gov-data</Key>"),
-            "Root directory marker should be filtered out in V1: {xml}"
+            !xml.contains("<Key>staging-gov-data</Key>"),
+            "Directory marker at list prefix should be filtered out in V1: {xml}"
         );
         assert!(
-            xml.contains("<Key>data/file.parquet</Key>"),
+            xml.contains("<Key>staging-gov-data/data/file.parquet</Key>"),
             "Real file should remain in V1: {xml}"
         );
     }
