@@ -2,6 +2,8 @@
 //!
 //! Extracted from `proxy.rs` to keep the gateway focused on orchestration.
 
+use std::collections::HashSet;
+
 use crate::api::list_rewrite::ListRewrite;
 use crate::api::response::{ListBucketResult, ListBucketResultV1, ListCommonPrefix, ListContents};
 use crate::error::ProxyError;
@@ -127,9 +129,28 @@ pub(crate) fn build_list_xml(
         format!("{}/", backend_prefix)
     };
 
+    // Filter out S3 directory marker objects — 0-byte objects created by the
+    // S3 console (or similar tools) to represent "folders". These have a
+    // trailing `/` in their key which `object_store::Path` strips, causing
+    // them to leak into results in two ways:
+    //
+    // 1. The marker's path matches a common prefix (e.g. key `photos/` →
+    //    Path("photos") collides with CommonPrefix "photos").
+    // 2. The marker's path equals the backend prefix itself (e.g. the root
+    //    directory marker for the bucket/prefix being listed).
+    let common_prefix_set: HashSet<&object_store::path::Path> =
+        list_result.common_prefixes.iter().collect();
+
+    let is_directory_marker = |obj: &object_store::ObjectMeta| -> bool {
+        obj.size == 0
+            && (common_prefix_set.contains(&obj.location)
+                || obj.location.as_ref() == backend_prefix)
+    };
+
     let mut contents: Vec<ListContents> = list_result
         .objects
         .iter()
+        .filter(|obj| !is_directory_marker(obj))
         .map(|obj| {
             let raw_key = obj.location.to_string();
             ListContents {
@@ -238,9 +259,20 @@ pub(crate) fn build_list_xml_v1(
         format!("{}/", backend_prefix)
     };
 
+    // Filter out S3 directory marker objects (see build_list_xml for details).
+    let common_prefix_set: HashSet<&object_store::path::Path> =
+        list_result.common_prefixes.iter().collect();
+
+    let is_directory_marker = |obj: &object_store::ObjectMeta| -> bool {
+        obj.size == 0
+            && (common_prefix_set.contains(&obj.location)
+                || obj.location.as_ref() == backend_prefix)
+    };
+
     let mut contents: Vec<ListContents> = list_result
         .objects
         .iter()
+        .filter(|obj| !is_directory_marker(obj))
         .map(|obj| {
             let raw_key = obj.location.to_string();
             ListContents {
@@ -693,5 +725,234 @@ mod tests {
             "Expected NextMarker: {xml}"
         );
         assert!(xml.contains("<Marker></Marker>") || xml.contains("<Marker/>"));
+    }
+
+    /// Create a ListResult with objects that have explicit sizes, for testing
+    /// directory marker filtering.
+    fn make_list_result_with_sizes(
+        objects: &[(&str, u64)],
+        common_prefixes: &[&str],
+    ) -> ListResult {
+        ListResult {
+            objects: objects
+                .iter()
+                .map(|(k, size)| ObjectMeta {
+                    location: Path::from(*k),
+                    last_modified: Utc::now(),
+                    size: *size,
+                    e_tag: Some("\"abc\"".to_string()),
+                    version: None,
+                })
+                .collect(),
+            common_prefixes: common_prefixes.iter().map(|p| Path::from(*p)).collect(),
+        }
+    }
+
+    #[test]
+    fn test_directory_markers_filtered_from_v2_contents() {
+        let config = make_config(None);
+        // Simulate what object_store returns: a 0-byte "photos" object
+        // (from S3 key "photos/") alongside the "photos" common prefix,
+        // plus a real file.
+        let list_result =
+            make_list_result_with_sizes(&[("photos", 0), ("readme.txt", 42)], &["photos"]);
+
+        let params = ListXmlParams {
+            bucket_name: "my-bucket",
+            client_prefix: "",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            key_count: 1,
+            start_after: &None,
+            continuation_token: &None,
+            next_continuation_token: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
+
+        // The directory marker should NOT appear in Contents
+        assert!(
+            !xml.contains("<Key>photos</Key>"),
+            "Directory marker should be filtered out: {xml}"
+        );
+        // The real file should still be present
+        assert!(
+            xml.contains("<Key>readme.txt</Key>"),
+            "Real file should remain: {xml}"
+        );
+        // The common prefix should still be present
+        assert!(
+            xml.contains("<Prefix>photos/</Prefix>"),
+            "Common prefix should remain: {xml}"
+        );
+    }
+
+    #[test]
+    fn test_zero_byte_file_not_filtered_when_no_matching_prefix() {
+        let config = make_config(None);
+        // A 0-byte file that does NOT match any common prefix should be kept.
+        let list_result = make_list_result_with_sizes(&[("empty.txt", 0)], &[]);
+
+        let params = ListXmlParams {
+            bucket_name: "my-bucket",
+            client_prefix: "",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            key_count: 1,
+            start_after: &None,
+            continuation_token: &None,
+            next_continuation_token: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
+
+        assert!(
+            xml.contains("<Key>empty.txt</Key>"),
+            "Zero-byte file without matching prefix should be kept: {xml}"
+        );
+    }
+
+    #[test]
+    fn test_directory_markers_filtered_from_v1_contents() {
+        let config = make_config(None);
+        let list_result =
+            make_list_result_with_sizes(&[("photos", 0), ("readme.txt", 42)], &["photos"]);
+
+        let params = ListXmlParamsV1 {
+            bucket_name: "my-bucket",
+            client_prefix: "",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            marker: "",
+            next_marker: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml_v1(&params, &list_result, &config, None).unwrap();
+
+        assert!(
+            !xml.contains("<Key>photos</Key>"),
+            "Directory marker should be filtered out in V1: {xml}"
+        );
+        assert!(
+            xml.contains("<Key>readme.txt</Key>"),
+            "Real file should remain in V1: {xml}"
+        );
+    }
+
+    #[test]
+    fn test_root_directory_marker_filtered_v2() {
+        // Reproduces the real-world bug from source-cooperative/source.coop#245:
+        // S3 key "harvard-lil/staging-gov-data/" is a 0-byte directory marker
+        // whose key equals the backend_prefix. object_store::Path strips the
+        // trailing slash, so the location becomes "harvard-lil/staging-gov-data"
+        // which matches backend_prefix exactly. This marker should be filtered
+        // out of Contents.
+        let config = make_config(Some("harvard-lil/staging-gov-data"));
+        let list_result = make_list_result_with_sizes(
+            &[
+                ("harvard-lil/staging-gov-data", 0),
+                ("harvard-lil/staging-gov-data/data/file.parquet", 1000),
+            ],
+            &["harvard-lil/staging-gov-data/data"],
+        );
+
+        let params = ListXmlParams {
+            bucket_name: "harvard-lil",
+            client_prefix: "",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            key_count: 1,
+            start_after: &None,
+            continuation_token: &None,
+            next_continuation_token: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
+
+        // The root directory marker should NOT appear in Contents
+        assert!(
+            !xml.contains("<Key>harvard-lil/staging-gov-data</Key>"),
+            "Root directory marker should be filtered out: {xml}"
+        );
+        // The real file should still appear (with prefix stripped)
+        assert!(
+            xml.contains("<Key>data/file.parquet</Key>"),
+            "Real file should remain after prefix stripping: {xml}"
+        );
+        // The common prefix should still appear
+        assert!(
+            xml.contains("<Prefix>data/</Prefix>"),
+            "Common prefix should remain: {xml}"
+        );
+    }
+
+    #[test]
+    fn test_root_directory_marker_filtered_v1() {
+        let config = make_config(Some("harvard-lil/staging-gov-data"));
+        let list_result = make_list_result_with_sizes(
+            &[
+                ("harvard-lil/staging-gov-data", 0),
+                ("harvard-lil/staging-gov-data/data/file.parquet", 1000),
+            ],
+            &["harvard-lil/staging-gov-data/data"],
+        );
+
+        let params = ListXmlParamsV1 {
+            bucket_name: "harvard-lil",
+            client_prefix: "",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            marker: "",
+            next_marker: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml_v1(&params, &list_result, &config, None).unwrap();
+
+        assert!(
+            !xml.contains("<Key>harvard-lil/staging-gov-data</Key>"),
+            "Root directory marker should be filtered out in V1: {xml}"
+        );
+        assert!(
+            xml.contains("<Key>data/file.parquet</Key>"),
+            "Real file should remain in V1: {xml}"
+        );
+    }
+
+    #[test]
+    fn test_nonzero_byte_object_matching_prefix_not_filtered() {
+        let config = make_config(None);
+        // An object with size > 0 that happens to match a common prefix
+        // should NOT be filtered — only 0-byte markers are filtered.
+        let list_result = make_list_result_with_sizes(&[("photos", 100)], &["photos"]);
+
+        let params = ListXmlParams {
+            bucket_name: "my-bucket",
+            client_prefix: "",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            key_count: 1,
+            start_after: &None,
+            continuation_token: &None,
+            next_continuation_token: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
+
+        assert!(
+            xml.contains("<Key>photos</Key>"),
+            "Non-zero-byte object should not be filtered: {xml}"
+        );
     }
 }
