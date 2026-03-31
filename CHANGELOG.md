@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/developmentseed/multistore/compare/v0.3.0...v0.3.1) (2026-03-31)
+
+
+### Bug Fixes
+
+* directory marker support ([#22](https://github.com/developmentseed/multistore/issues/22)) ([7e7b487](https://github.com/developmentseed/multistore/commit/7e7b48724c4329009156a50a6c796cdcae95f165))
+
 ## [0.3.0](https://github.com/developmentseed/multistore/compare/v0.2.0...v0.3.0) (2026-03-24)
 
 
