@@ -36,21 +36,9 @@ examples/
 
 See the [full documentation](https://developmentseed.org/multistore/getting-started/) for configuration, deployment, and usage guides.
 
-## Development
+## Contributing
 
-```bash
-# Format
-cargo fmt
-
-# Lint
-cargo clippy --fix --allow-dirty --allow-staged
-
-# Check (native)
-cargo check
-
-# Check (WASM)
-cargo check -p multistore-cf-workers --target wasm32-unknown-unknown
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and release process.
 
 ## License
 

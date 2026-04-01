@@ -1,6 +1,26 @@
-# Release Process
+# Contributing
 
-## Publishable Crates
+## Development
+
+This project uses [conventional commits](https://www.conventionalcommits.org/).
+
+```bash
+# Format
+cargo fmt
+
+# Lint
+cargo clippy --fix --allow-dirty --allow-staged
+
+# Check (native)
+cargo check
+
+# Check (WASM)
+cargo check -p multistore-cf-workers --target wasm32-unknown-unknown
+```
+
+## Release Process
+
+### Publishable Crates
 
 The following crates are published to crates.io (in dependency order):
 
@@ -11,9 +31,9 @@ The following crates are published to crates.io (in dependency order):
 5. `multistore-oidc-provider`
 6. `multistore-cf-workers`
 
-## Automated Releases
+### Automated Releases
 
-Releases are managed by [release-please](https://github.com/googleapis/release-please). On every push to `main`, it maintains a PR that bumps versions and updates the changelog based on [conventional commits](https://www.conventionalcommits.org/).
+Releases are managed by [release-please](https://github.com/googleapis/release-please). On every push to `main`, it maintains a PR that bumps versions and updates the changelog based on conventional commits.
 
 When that PR is merged, release-please creates a GitHub release, which triggers the publish workflow (`.github/workflows/release.yml`). The workflow:
 
@@ -22,7 +42,7 @@ When that PR is merged, release-please creates a GitHub release, which triggers 
 3. Dry-runs all crates to catch packaging errors
 4. Publishes all crates to crates.io using OIDC trusted publishing
 
-## Pre-releases
+### Pre-releases
 
 To publish a pre-release (e.g. `0.2.0-alpha.1`):
 
