@@ -12,7 +12,7 @@
 //! use multistore_sts::route_handler::StsRouterExt;
 //!
 //! let router = Router::new()
-//!     .with_sts(config, jwks_cache, token_key);
+//!     .with_sts("/.sts", config, jwks_cache, token_key);
 //! ```
 //!
 //! # Flow
