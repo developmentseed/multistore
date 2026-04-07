@@ -218,6 +218,12 @@ pub struct RequestInfo<'a> {
     /// Populated by the router when a route pattern matches. Empty when the
     /// request is constructed via [`RequestInfo::new`].
     pub params: Params,
+    /// The original path as seen by the client, used for SigV4 signature
+    /// verification when the proxy rewrites paths before dispatch.
+    ///
+    /// When `None`, `path` is used for both operation parsing and signature
+    /// verification.
+    pub signing_path: Option<&'a str>,
 }
 
 impl<'a> RequestInfo<'a> {
@@ -236,7 +242,17 @@ impl<'a> RequestInfo<'a> {
             headers,
             source_ip,
             params: Params::default(),
+            signing_path: None,
         }
+    }
+
+    /// Set the original client-facing path for SigV4 signature verification.
+    ///
+    /// Use this when the proxy rewrites paths (e.g. path-mapping) so that
+    /// signature verification uses the path the client actually signed.
+    pub fn with_signing_path(mut self, signing_path: &'a str) -> Self {
+        self.signing_path = Some(signing_path);
+        self
     }
 }
 
