@@ -39,20 +39,22 @@
 //! assert_eq!(mapped.display_bucket, "acme");
 //!
 //! // Full request rewrite (path + query)
-//! let (path, query) = mapping.rewrite_request(
+//! let result = mapping.rewrite_request(
 //!     "/acme/data/report.csv",
 //!     None,
 //! );
-//! assert_eq!(path, "/acme:data/report.csv");
-//! assert_eq!(query, None);
+//! assert_eq!(result.path, "/acme:data/report.csv");
+//! assert_eq!(result.query, None);
+//! assert_eq!(result.signing_path, "/acme/data/report.csv");
 //!
 //! // Prefix-based list rewrite
-//! let (path, query) = mapping.rewrite_request(
+//! let result = mapping.rewrite_request(
 //!     "/acme",
 //!     Some("list-type=2&prefix=data/subdir/"),
 //! );
-//! assert_eq!(path, "/acme:data");
-//! assert_eq!(query, Some("list-type=2&prefix=subdir/".to_string()));
+//! assert_eq!(result.path, "/acme:data");
+//! assert_eq!(result.query, Some("list-type=2&prefix=subdir/".to_string()));
+//! assert_eq!(result.signing_query, Some("list-type=2&prefix=data/subdir/".to_string()));
 //! ```
 
 use multistore::api::list_rewrite::ListRewrite;
@@ -72,6 +74,22 @@ pub struct PathMapping {
     /// How many leading segments form the "display bucket" name for XML responses.
     /// E.g., 1 means `<Name>` shows just `account`.
     pub display_bucket_segments: usize,
+}
+
+/// Result of rewriting a request path and query string.
+///
+/// Contains both the rewritten values (for S3 operation parsing) and the
+/// original values (for SigV4 signature verification).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RewriteResult {
+    /// Rewritten path for S3 operation parsing.
+    pub path: String,
+    /// Rewritten query for operation parsing.
+    pub query: Option<String>,
+    /// Original client path for SigV4 verification.
+    pub signing_path: String,
+    /// Original client query for SigV4 verification.
+    pub signing_query: Option<String>,
 }
 
 /// Result of mapping a request path.
@@ -208,14 +226,22 @@ impl PathMapping {
     ///
     /// 3. **Pass-through**: all other paths are returned unchanged. Route handlers
     ///    or the gateway itself will handle them.
-    pub fn rewrite_request(&self, path: &str, query: Option<&str>) -> (String, Option<String>) {
+    pub fn rewrite_request(&self, path: &str, query: Option<&str>) -> RewriteResult {
+        let signing_path = path.to_string();
+        let signing_query = query.map(|q| q.to_string());
+
         // Case 1: enough path segments to map directly
         if let Some(mapped) = self.parse(path) {
             let rewritten_path = match mapped.key {
                 Some(ref key) => format!("/{}/{}", mapped.bucket, key),
                 None => format!("/{}", mapped.bucket),
             };
-            return (rewritten_path, query.map(|q| q.to_string()));
+            return RewriteResult {
+                path: rewritten_path,
+                query: query.map(|q| q.to_string()),
+                signing_path,
+                signing_query,
+            };
         }
 
         // Case 2: single-segment path with a list-type query and non-empty prefix
@@ -225,14 +251,26 @@ impl PathMapping {
             if is_list_request(query_str) {
                 if let Some(prefix) = extract_query_param(query_str, "prefix") {
                     if !prefix.is_empty() {
-                        return self.rewrite_prefix_to_bucket(trimmed, &prefix, query_str);
+                        let (rewritten_path, rewritten_query) =
+                            self.rewrite_prefix_to_bucket(trimmed, &prefix, query_str);
+                        return RewriteResult {
+                            path: rewritten_path,
+                            query: rewritten_query,
+                            signing_path,
+                            signing_query,
+                        };
                     }
                 }
             }
         }
 
         // Case 3: pass through unchanged
-        (path.to_string(), query.map(|q| q.to_string()))
+        RewriteResult {
+            path: path.to_string(),
+            query: query.map(|q| q.to_string()),
+            signing_path,
+            signing_query,
+        }
     }
 
     /// Fold the first prefix component into the bucket name.

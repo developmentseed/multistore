@@ -224,6 +224,12 @@ pub struct RequestInfo<'a> {
     /// When `None`, `path` is used for both operation parsing and signature
     /// verification.
     pub signing_path: Option<&'a str>,
+    /// The original query string as seen by the client, used for SigV4
+    /// signature verification when the proxy rewrites query parameters.
+    ///
+    /// When `None`, `query` is used for both operation parsing and signature
+    /// verification.
+    pub signing_query: Option<&'a str>,
 }
 
 impl<'a> RequestInfo<'a> {
@@ -243,6 +249,7 @@ impl<'a> RequestInfo<'a> {
             source_ip,
             params: Params::default(),
             signing_path: None,
+            signing_query: None,
         }
     }
 
@@ -252,6 +259,16 @@ impl<'a> RequestInfo<'a> {
     /// signature verification uses the path the client actually signed.
     pub fn with_signing_path(mut self, signing_path: &'a str) -> Self {
         self.signing_path = Some(signing_path);
+        self
+    }
+
+    /// Set the original client-facing query string for SigV4 signature verification.
+    ///
+    /// Use this when the proxy rewrites query parameters (e.g. path-mapping
+    /// strips prefix segments from the `prefix` parameter) so that signature
+    /// verification uses the query string the client actually signed.
+    pub fn with_signing_query(mut self, signing_query: Option<&'a str>) -> Self {
+        self.signing_query = signing_query;
         self
     }
 }
