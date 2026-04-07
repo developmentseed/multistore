@@ -1119,7 +1119,7 @@ dependencies = [
 
 [[package]]
 name = "multistore"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-cf-workers"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1166,7 +1166,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-cf-workers-example"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "console_error_panic_hook",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-lambda"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "http",
@@ -1210,7 +1210,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-metering"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "futures",
@@ -1222,7 +1222,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-oidc-provider"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "base64",
@@ -1241,7 +1241,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-path-mapping"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "multistore",
  "percent-encoding",
@@ -1250,7 +1250,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "axum",
  "bytes",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-static-config"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "multistore",
@@ -1286,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "multistore-sts"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
