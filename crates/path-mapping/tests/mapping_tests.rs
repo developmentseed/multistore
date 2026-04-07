@@ -115,104 +115,114 @@ fn trailing_slash_on_bucket_segments() {
 #[test]
 fn rewrite_multi_segment_path() {
     let mapping = default_mapping();
-    assert_eq!(
-        mapping.rewrite_request("/account/product/file.parquet", None),
-        ("/account--product/file.parquet".to_string(), None)
-    );
+    let result = mapping.rewrite_request("/account/product/file.parquet", None);
+    assert_eq!(result.path, "/account--product/file.parquet");
+    assert_eq!(result.query, None);
+    assert_eq!(result.signing_path, "/account/product/file.parquet");
+    assert_eq!(result.signing_query, None);
 }
 
 #[test]
 fn rewrite_multi_segment_nested_key() {
     let mapping = default_mapping();
-    assert_eq!(
-        mapping.rewrite_request("/account/product/dir/sub/file.parquet", None),
-        ("/account--product/dir/sub/file.parquet".to_string(), None)
-    );
+    let result = mapping.rewrite_request("/account/product/dir/sub/file.parquet", None);
+    assert_eq!(result.path, "/account--product/dir/sub/file.parquet");
+    assert_eq!(result.query, None);
+    assert_eq!(result.signing_path, "/account/product/dir/sub/file.parquet");
+    assert_eq!(result.signing_query, None);
 }
 
 #[test]
 fn rewrite_bucket_only_no_key() {
     let mapping = default_mapping();
-    assert_eq!(
-        mapping.rewrite_request("/account/product", Some("list-type=2")),
-        (
-            "/account--product".to_string(),
-            Some("list-type=2".to_string())
-        )
-    );
+    let result = mapping.rewrite_request("/account/product", Some("list-type=2"));
+    assert_eq!(result.path, "/account--product");
+    assert_eq!(result.query, Some("list-type=2".to_string()));
+    assert_eq!(result.signing_path, "/account/product");
+    assert_eq!(result.signing_query, Some("list-type=2".to_string()));
 }
 
 #[test]
 fn rewrite_prefix_routed_list() {
     let mapping = default_mapping();
+    let result = mapping.rewrite_request("/account", Some("list-type=2&prefix=product/"));
+    assert_eq!(result.path, "/account--product");
+    assert_eq!(result.query, Some("list-type=2&prefix=".to_string()));
+    assert_eq!(result.signing_path, "/account");
     assert_eq!(
-        mapping.rewrite_request("/account", Some("list-type=2&prefix=product/")),
-        (
-            "/account--product".to_string(),
-            Some("list-type=2&prefix=".to_string())
-        )
+        result.signing_query,
+        Some("list-type=2&prefix=product/".to_string())
     );
 }
 
 #[test]
 fn rewrite_prefix_routed_list_with_subdir() {
     let mapping = default_mapping();
+    let result =
+        mapping.rewrite_request("/account", Some("list-type=2&prefix=product/subdir/"));
+    assert_eq!(result.path, "/account--product");
+    assert_eq!(result.query, Some("list-type=2&prefix=subdir/".to_string()));
+    assert_eq!(result.signing_path, "/account");
     assert_eq!(
-        mapping.rewrite_request("/account", Some("list-type=2&prefix=product/subdir/")),
-        (
-            "/account--product".to_string(),
-            Some("list-type=2&prefix=subdir/".to_string())
-        )
+        result.signing_query,
+        Some("list-type=2&prefix=product/subdir/".to_string())
     );
 }
 
 #[test]
 fn rewrite_url_encoded_prefix() {
     let mapping = default_mapping();
+    let result =
+        mapping.rewrite_request("/account", Some("list-type=2&prefix=my%20product/subdir/"));
+    assert_eq!(result.path, "/account--my product");
+    assert_eq!(result.query, Some("list-type=2&prefix=subdir/".to_string()));
+    assert_eq!(result.signing_path, "/account");
     assert_eq!(
-        mapping.rewrite_request("/account", Some("list-type=2&prefix=my%20product/subdir/")),
-        (
-            "/account--my product".to_string(),
-            Some("list-type=2&prefix=subdir/".to_string())
-        )
+        result.signing_query,
+        Some("list-type=2&prefix=my%20product/subdir/".to_string())
     );
 }
 
 #[test]
 fn rewrite_single_segment_no_list_passes_through() {
     let mapping = default_mapping();
-    assert_eq!(
-        mapping.rewrite_request("/account", None),
-        ("/account".to_string(), None)
-    );
+    let result = mapping.rewrite_request("/account", None);
+    assert_eq!(result.path, "/account");
+    assert_eq!(result.query, None);
+    assert_eq!(result.signing_path, "/account");
+    assert_eq!(result.signing_query, None);
 }
 
 #[test]
 fn rewrite_single_segment_list_no_prefix_passes_through() {
     let mapping = default_mapping();
-    assert_eq!(
-        mapping.rewrite_request("/account", Some("list-type=2")),
-        ("/account".to_string(), Some("list-type=2".to_string()))
-    );
+    let result = mapping.rewrite_request("/account", Some("list-type=2"));
+    assert_eq!(result.path, "/account");
+    assert_eq!(result.query, Some("list-type=2".to_string()));
+    assert_eq!(result.signing_path, "/account");
+    assert_eq!(result.signing_query, Some("list-type=2".to_string()));
 }
 
 #[test]
 fn rewrite_root_passes_through() {
     let mapping = default_mapping();
-    assert_eq!(mapping.rewrite_request("/", None), ("/".to_string(), None));
+    let result = mapping.rewrite_request("/", None);
+    assert_eq!(result.path, "/");
+    assert_eq!(result.query, None);
 }
 
 #[test]
 fn rewrite_empty_passes_through() {
     let mapping = default_mapping();
-    assert_eq!(mapping.rewrite_request("", None), ("".to_string(), None));
+    let result = mapping.rewrite_request("", None);
+    assert_eq!(result.path, "");
+    assert_eq!(result.query, None);
 }
 
 #[test]
 fn rewrite_trailing_slash_passes_through() {
     let mapping = default_mapping();
-    assert_eq!(
-        mapping.rewrite_request("/account/", Some("list-type=2")),
-        ("/account/".to_string(), Some("list-type=2".to_string()))
-    );
+    let result = mapping.rewrite_request("/account/", Some("list-type=2"));
+    assert_eq!(result.path, "/account/");
+    assert_eq!(result.query, Some("list-type=2".to_string()));
 }
