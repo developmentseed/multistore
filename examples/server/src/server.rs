@@ -115,7 +115,7 @@ where
     if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
         proxy_router = proxy_router.with_oidc_discovery(issuer, vec![signer]);
     }
-    proxy_router = proxy_router.with_sts(sts_creds, jwks_cache, token_key.clone());
+    proxy_router = proxy_router.with_sts("/.sts", sts_creds, jwks_cache, token_key.clone());
 
     // Build the gateway with the router.
     let mut handler = ProxyGateway::new(

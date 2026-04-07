@@ -29,7 +29,7 @@ PROXY_URL = os.environ.get("PROXY_URL", "http://localhost:8787")
 def assume_role(role_arn: str, oidc_token: str) -> dict:
     """Assume a role via the STS proxy and return parsed credentials."""
     resp = requests.get(
-        PROXY_URL,
+        f"{PROXY_URL}/.sts",
         params={
             "Action": "AssumeRoleWithWebIdentity",
             "RoleArn": role_arn,

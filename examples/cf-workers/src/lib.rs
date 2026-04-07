@@ -77,7 +77,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
         router = router.with_oidc_discovery(issuer, vec![signer]);
     }
-    router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
+    router = router.with_sts("/.sts", sts_creds, jwks_cache, token_key.clone());
 
     // Build the gateway with the router.
     let mut gateway = ProxyGateway::new(WorkerBackend, config.clone(), config, virtual_host_domain)

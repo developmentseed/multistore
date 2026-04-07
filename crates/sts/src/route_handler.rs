@@ -27,13 +27,14 @@ impl<C: CredentialRegistry> RouteHandler for StsHandler<C> {
 
 /// Extension trait for registering STS routes on a [`Router`].
 pub trait StsRouterExt {
-    /// Register the STS handler on the root path (`/`).
+    /// Register the STS handler on the given `path`.
     ///
     /// STS requests are identified by query parameters
-    /// (`Action=AssumeRoleWithWebIdentity`), not by path, and clients
-    /// always send them to `/`.
+    /// (`Action=AssumeRoleWithWebIdentity`), not by path, so any path
+    /// can be used (e.g. `"/"` or `"/.sts"`).
     fn with_sts<C: CredentialRegistry + 'static>(
         self,
+        path: &str,
         config: C,
         cache: JwksCache,
         key: Option<TokenKey>,
@@ -43,11 +44,12 @@ pub trait StsRouterExt {
 impl StsRouterExt for Router {
     fn with_sts<C: CredentialRegistry + 'static>(
         self,
+        path: &str,
         config: C,
         cache: JwksCache,
         key: Option<TokenKey>,
     ) -> Self {
-        self.route("/", StsHandler { config, cache, key })
+        self.route(path, StsHandler { config, cache, key })
     }
 }
 
@@ -75,7 +77,7 @@ mod tests {
 
     fn test_router() -> Router {
         let cache = JwksCache::new(reqwest::Client::new(), std::time::Duration::from_secs(60));
-        Router::new().with_sts(EmptyRegistry, cache, None)
+        Router::new().with_sts("/", EmptyRegistry, cache, None)
     }
 
     #[tokio::test]
