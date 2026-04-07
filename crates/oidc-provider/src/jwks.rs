@@ -4,31 +4,31 @@ use base64::Engine;
 use rsa::traits::PublicKeyParts;
 use rsa::RsaPublicKey;
 
-/// Generate a JWKS JSON response containing the proxy's RSA public key.
+/// Generate a JWKS JSON response containing one or more RSA public keys.
 ///
 /// This is served at the JWKS URI referenced by the OIDC discovery document,
 /// allowing relying parties (cloud providers) to verify JWTs signed by the proxy.
-pub fn jwks_json(public_key: &RsaPublicKey, kid: &str) -> String {
+/// Multiple keys support key rotation.
+pub fn jwks_json(keys: &[(&RsaPublicKey, &str)]) -> String {
     let b64 = &base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-    let n = public_key.n();
-    let e = public_key.e();
+    let jwk_entries: Vec<serde_json::Value> = keys
+        .iter()
+        .map(|(public_key, kid)| {
+            let n_b64 = b64.encode(public_key.n().to_bytes_be());
+            let e_b64 = b64.encode(public_key.e().to_bytes_be());
+            serde_json::json!({
+                "kty": "RSA",
+                "alg": "RS256",
+                "use": "sig",
+                "kid": kid,
+                "n": n_b64,
+                "e": e_b64,
+            })
+        })
+        .collect();
 
-    let n_b64 = b64.encode(n.to_bytes_be());
-    let e_b64 = b64.encode(e.to_bytes_be());
-
-    let jwks = serde_json::json!({
-        "keys": [{
-            "kty": "RSA",
-            "alg": "RS256",
-            "use": "sig",
-            "kid": kid,
-            "n": n_b64,
-            "e": e_b64,
-        }]
-    });
-
-    jwks.to_string()
+    serde_json::json!({ "keys": jwk_entries }).to_string()
 }
 
 #[cfg(test)]
@@ -42,7 +42,7 @@ mod tests {
         let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let public_key: &RsaPublicKey = private_key.as_ref();
 
-        let json_str = jwks_json(public_key, "my-kid");
+        let json_str = jwks_json(&[(public_key, "my-kid")]);
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         let keys = parsed["keys"].as_array().unwrap();
@@ -58,6 +58,23 @@ mod tests {
     }
 
     #[test]
+    fn jwks_contains_multiple_keys() {
+        let mut rng = rand::rngs::OsRng;
+        let key1 = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let pub1: &RsaPublicKey = key1.as_ref();
+        let key2 = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let pub2: &RsaPublicKey = key2.as_ref();
+
+        let json_str = jwks_json(&[(pub1, "kid-1"), (pub2, "kid-2")]);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        let keys = parsed["keys"].as_array().unwrap();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0]["kid"], "kid-1");
+        assert_eq!(keys[1]["kid"], "kid-2");
+    }
+
+    #[test]
     fn jwks_roundtrips_through_rsa() {
         use rsa::BigUint;
 
@@ -65,7 +82,7 @@ mod tests {
         let private_key = RsaPrivateKey::new(&mut rng, 2048).unwrap();
         let public_key: &RsaPublicKey = private_key.as_ref();
 
-        let json_str = jwks_json(public_key, "k1");
+        let json_str = jwks_json(&[(public_key, "k1")]);
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         let key = &parsed["keys"][0];
