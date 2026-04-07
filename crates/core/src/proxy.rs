@@ -268,6 +268,7 @@ where
                 req.query,
                 req.headers,
                 req.source_ip,
+                req.signing_path,
             )
             .await;
 
@@ -362,7 +363,7 @@ where
         source_ip: Option<IpAddr>,
     ) -> HandlerAction {
         let (action, _metadata) = self
-            .resolve_request_with_metadata(method, path, query, headers, source_ip)
+            .resolve_request_with_metadata(method, path, query, headers, source_ip, None)
             .await;
         action
     }
@@ -376,6 +377,7 @@ where
         query: Option<&str>,
         headers: &HeaderMap,
         source_ip: Option<IpAddr>,
+        signing_path: Option<&str>,
     ) -> (HandlerAction, RequestMetadata) {
         let request_id = Uuid::new_v4().to_string();
 
@@ -397,10 +399,11 @@ where
         };
         tracing::debug!(operation = ?operation, "parsed S3 operation");
 
-        // Resolve identity
+        // Resolve identity — use the original client-facing path for signature
+        // verification when a signing_path is provided (e.g. path-mapping rewrites).
         let identity = match auth::resolve_identity(
             &method,
-            path,
+            signing_path.unwrap_or(path),
             query.unwrap_or(""),
             headers,
             &self.credential_registry,
