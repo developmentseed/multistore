@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/developmentseed/multistore/compare/v0.3.1...v0.4.0) (2026-04-07)
+
+
+### Features
+
+* **oidc:** support multiple signing keys ([#26](https://github.com/developmentseed/multistore/issues/26)) ([ead26d8](https://github.com/developmentseed/multistore/commit/ead26d8a5e5290492ed8b3fd93a4b9573ff03d64))
+* **sts:** enable custom STS endpoint URL ([#32](https://github.com/developmentseed/multistore/issues/32)) ([ff12fe3](https://github.com/developmentseed/multistore/commit/ff12fe37ea38f1da9d96d98e7412cc46ffbecef8))
+
 ## [0.3.1](https://github.com/developmentseed/multistore/compare/v0.3.0...v0.3.1) (2026-03-31)
 
 
