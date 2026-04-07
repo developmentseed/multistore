@@ -27,7 +27,7 @@ impl RouteHandler for OidcConfigHandler {
 
 /// Handler that serves the JWKS (JSON Web Key Set) document.
 struct OidcJwksHandler {
-    signer: JwtSigner,
+    signers: Vec<JwtSigner>,
 }
 
 impl RouteHandler for OidcJwksHandler {
@@ -35,7 +35,12 @@ impl RouteHandler for OidcJwksHandler {
         if req.method.as_str() != "GET" {
             return Box::pin(async { None });
         }
-        let json = jwks_json(self.signer.public_key(), self.signer.kid());
+        let keys: Vec<_> = self
+            .signers
+            .iter()
+            .map(|s| (s.public_key(), s.kid()))
+            .collect();
+        let json = jwks_json(&keys);
         Box::pin(async move { Some(ProxyResult::json(200, json)) })
     }
 }
@@ -44,17 +49,20 @@ impl RouteHandler for OidcJwksHandler {
 pub trait OidcRouterExt {
     /// Register `/.well-known/openid-configuration` and `/.well-known/jwks.json`
     /// routes backed by the given issuer and signer.
-    fn with_oidc_discovery(self, issuer: String, signer: JwtSigner) -> Self;
+    ///
+    /// `additional_signers` contains previous keys that should still appear in
+    /// the JWKS for key rotation (they are not used for signing new tokens).
+    fn with_oidc_discovery(self, issuer: String, signers: Vec<JwtSigner>) -> Self;
 }
 
 impl OidcRouterExt for Router {
-    fn with_oidc_discovery(self, issuer: String, signer: JwtSigner) -> Self {
+    fn with_oidc_discovery(self, issuer: String, signers: Vec<JwtSigner>) -> Self {
         let jwks_uri = format!("{}/.well-known/jwks.json", issuer);
 
         self.route(
             "/.well-known/openid-configuration",
             OidcConfigHandler { issuer, jwks_uri },
         )
-        .route("/.well-known/jwks.json", OidcJwksHandler { signer })
+        .route("/.well-known/jwks.json", OidcJwksHandler { signers })
     }
 }

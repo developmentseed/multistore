@@ -283,7 +283,7 @@ mod tests {
         let token = signer.sign("sub", "iss", "aud", &[]).unwrap();
 
         // Generate JWKS from the same signer
-        let jwks_str = jwks::jwks_json(signer.public_key(), signer.kid());
+        let jwks_str = jwks::jwks_json(&[(signer.public_key(), signer.kid())]);
         let jwks: serde_json::Value = serde_json::from_str(&jwks_str).unwrap();
 
         // Extract public key from JWKS
