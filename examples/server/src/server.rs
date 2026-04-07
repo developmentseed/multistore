@@ -113,7 +113,7 @@ where
     // Build router with OIDC discovery (if configured) and STS.
     let mut proxy_router = ProxyRouter::new();
     if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
-        proxy_router = proxy_router.with_oidc_discovery(issuer, signer);
+        proxy_router = proxy_router.with_oidc_discovery(issuer, vec![signer]);
     }
     proxy_router = proxy_router.with_sts(sts_creds, jwks_cache, token_key.clone());
 

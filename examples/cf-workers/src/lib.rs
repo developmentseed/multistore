@@ -75,7 +75,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     // Build router with OIDC discovery (if configured) and STS.
     let mut router = Router::new();
     if let (Some(signer), Some(issuer)) = (oidc_signer, oidc_issuer) {
-        router = router.with_oidc_discovery(issuer, signer);
+        router = router.with_oidc_discovery(issuer, vec![signer]);
     }
     router = router.with_sts(sts_creds, jwks_cache, token_key.clone());
 
