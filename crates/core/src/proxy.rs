@@ -261,17 +261,7 @@ where
         }
 
         // Resolve via proxy pipeline (with metadata for after_dispatch)
-        let (action, metadata) = self
-            .resolve_request_with_metadata(
-                req.method.clone(),
-                req.path,
-                req.query,
-                req.headers,
-                req.source_ip,
-                req.signing_path,
-                req.signing_query,
-            )
-            .await;
+        let (action, metadata) = self.resolve_request_with_metadata(req).await;
 
         // Helper to extract response body size
         fn response_body_bytes(body: &ProxyResponseBody) -> Option<u64> {
@@ -363,9 +353,8 @@ where
         headers: &HeaderMap,
         source_ip: Option<IpAddr>,
     ) -> HandlerAction {
-        let (action, _metadata) = self
-            .resolve_request_with_metadata(method, path, query, headers, source_ip, None, None)
-            .await;
+        let req = RequestInfo::new(&method, path, query, headers, source_ip);
+        let (action, _metadata) = self.resolve_request_with_metadata(&req).await;
         action
     }
 
@@ -373,48 +362,43 @@ where
     /// [`RequestMetadata`] for post-dispatch callbacks (e.g. metering).
     pub(crate) async fn resolve_request_with_metadata(
         &self,
-        method: Method,
-        path: &str,
-        query: Option<&str>,
-        headers: &HeaderMap,
-        source_ip: Option<IpAddr>,
-        signing_path: Option<&str>,
-        signing_query: Option<&str>,
+        req: &RequestInfo<'_>,
     ) -> (HandlerAction, RequestMetadata) {
         let request_id = Uuid::new_v4().to_string();
 
         tracing::info!(
             request_id = %request_id,
-            method = %method,
-            path = %path,
-            query = ?query,
+            method = %req.method,
+            path = %req.path,
+            query = ?req.query,
             "incoming request"
         );
 
         // Determine host style
-        let host_style = determine_host_style(headers, self.virtual_host_domain.as_deref());
+        let host_style = determine_host_style(req.headers, self.virtual_host_domain.as_deref());
 
         // Parse the S3 operation
-        let operation = match request::parse_s3_request(&method, path, query, headers, host_style) {
-            Ok(op) => op,
-            Err(err) => return self.error_result(err, path, &request_id, source_ip),
-        };
+        let operation =
+            match request::parse_s3_request(req.method, req.path, req.query, req.headers, host_style) {
+                Ok(op) => op,
+                Err(err) => return self.error_result(err, req.path, &request_id, req.source_ip),
+            };
         tracing::debug!(operation = ?operation, "parsed S3 operation");
 
         // Resolve identity — use the original client-facing path and query for
         // signature verification when provided (e.g. path-mapping rewrites).
         let identity = match auth::resolve_identity(
-            &method,
-            signing_path.unwrap_or(path),
-            signing_query.or(query).unwrap_or(""),
-            headers,
+            req.method,
+            req.signing_path.unwrap_or(req.path),
+            req.signing_query.or(req.query).unwrap_or(""),
+            req.headers,
             &self.credential_registry,
             self.credential_resolver.as_deref(),
         )
         .await
         {
             Ok(id) => id,
-            Err(err) => return self.error_result(err, path, &request_id, source_ip),
+            Err(err) => return self.error_result(err, req.path, &request_id, req.source_ip),
         };
         tracing::debug!(identity = ?identity, "resolved identity");
 
@@ -434,7 +418,7 @@ where
                     tracing::trace!("authorization passed");
                     Some(resolved)
                 }
-                Err(err) => return self.error_result(err, path, &request_id, source_ip),
+                Err(err) => return self.error_result(err, req.path, &request_id, req.source_ip),
             }
         } else {
             None
@@ -445,8 +429,8 @@ where
             identity: &identity,
             operation: &operation,
             bucket_config: resolved.as_ref().map(|r| Cow::Borrowed(&r.config)),
-            headers,
-            source_ip,
+            headers: req.headers,
+            source_ip: req.source_ip,
             request_id: &request_id,
             list_rewrite: resolved.as_ref().and_then(|r| r.list_rewrite.as_ref()),
             display_name: resolved.as_ref().and_then(|r| r.display_name.as_deref()),
@@ -459,7 +443,7 @@ where
             identity: Some(identity.clone()),
             operation: Some(operation.clone()),
             bucket: operation.bucket().map(str::to_string),
-            source_ip,
+            source_ip: req.source_ip,
         };
 
         match next.run(ctx).await {
@@ -488,7 +472,7 @@ where
                 }
                 (action, metadata)
             }
-            Err(err) => self.error_result(err, path, &request_id, source_ip),
+            Err(err) => self.error_result(err, req.path, &request_id, req.source_ip),
         }
     }
 
