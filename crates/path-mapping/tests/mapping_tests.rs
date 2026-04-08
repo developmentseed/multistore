@@ -158,8 +158,7 @@ fn rewrite_prefix_routed_list() {
 #[test]
 fn rewrite_prefix_routed_list_with_subdir() {
     let mapping = default_mapping();
-    let result =
-        mapping.rewrite_request("/account", Some("list-type=2&prefix=product/subdir/"));
+    let result = mapping.rewrite_request("/account", Some("list-type=2&prefix=product/subdir/"));
     assert_eq!(result.path, "/account--product");
     assert_eq!(result.query, Some("list-type=2&prefix=subdir/".to_string()));
     assert_eq!(result.signing_path, "/account");
