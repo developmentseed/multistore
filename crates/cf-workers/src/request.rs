@@ -42,7 +42,7 @@ impl RequestParts {
     /// Extracts the body stream **before** reading headers, so the
     /// `ReadableStream` is never locked.
     pub fn from_web_sys(req: &web_sys::Request) -> Result<(Self, JsBody), String> {
-        let body = JsBody(req.body());
+        let body = JsBody::new(req.body());
 
         let method: Method = req
             .method()

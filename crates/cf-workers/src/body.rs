@@ -7,7 +7,19 @@ use bytes::Bytes;
 
 /// Zero-copy body wrapper. Holds the raw `ReadableStream` from the incoming
 /// request, passing it through the Gateway untouched for Forward requests.
-pub struct JsBody(pub Option<web_sys::ReadableStream>);
+pub struct JsBody(Option<web_sys::ReadableStream>);
+
+impl JsBody {
+    /// Wrap an optional `ReadableStream` from a `web_sys::Request`.
+    pub fn new(stream: Option<web_sys::ReadableStream>) -> Self {
+        Self(stream)
+    }
+
+    /// Borrow the inner stream, if present.
+    pub fn stream(&self) -> Option<&web_sys::ReadableStream> {
+        self.0.as_ref()
+    }
+}
 
 // SAFETY: Workers is single-threaded; these are required by Gateway's generic bounds.
 unsafe impl Send for JsBody {}

@@ -55,7 +55,7 @@ impl ProxyBackend for WorkerBackend {
 
         // For PUT: attach the original ReadableStream directly (zero-copy!).
         if request.method == http::Method::PUT {
-            if let Some(ref stream) = js_body.0 {
+            if let Some(stream) = js_body.stream() {
                 init.set_body(stream);
             }
         }
