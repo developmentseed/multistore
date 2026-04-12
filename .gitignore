@@ -15,3 +15,4 @@ docs/plans
 node_modules
 .dev.vars
 *.pyc
+.worktrees
