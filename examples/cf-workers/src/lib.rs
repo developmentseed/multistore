@@ -28,8 +28,7 @@ pub use bandwidth::BandwidthMeter;
 use multistore::proxy::ProxyGateway;
 use multistore::router::Router;
 use multistore_cf_workers::{
-    collect_js_body, headermap_from_js, response_from_gateway, JsBody, WorkerBackend,
-    WorkerSubscriber,
+    collect_js_body, response_from_gateway, RequestParts, WorkerBackend, WorkerSubscriber,
 };
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
@@ -94,27 +93,12 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
         gateway = gateway.with_credential_resolver(resolver.clone());
     }
 
-    // Extract body stream BEFORE any wrapping — no lock, zero-cost ref.
-    let js_body = JsBody(req.body());
-
-    // Parse request metadata from the raw web_sys::Request.
-    let method: http::Method = req.method().parse().unwrap_or(http::Method::GET);
-    let url_str = req.url();
-    let uri: http::Uri = url_str.parse().unwrap();
-    let path = uri.path().to_string();
-    let query = uri.query().map(|q| q.to_string());
-    let headers = headermap_from_js(&req.headers());
-
-    let req_info = multistore::route_handler::RequestInfo::new(
-        &method,
-        &path,
-        query.as_deref(),
-        &headers,
-        None,
-    );
+    // Parse request metadata and extract the body stream (zero-copy).
+    let (parts, js_body) =
+        RequestParts::from_web_sys(&req).map_err(|e| worker::Error::RustError(e))?;
 
     let result = gateway
-        .handle_request(&req_info, js_body, collect_js_body)
+        .handle_request(&parts.as_request_info(), js_body, collect_js_body)
         .await;
     Ok(response_from_gateway(result))
 }
