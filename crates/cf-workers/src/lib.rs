@@ -23,5 +23,5 @@ pub use backend::WorkerBackend;
 pub use body::{collect_js_body, JsBody};
 pub use noop_creds::NoopCredentialRegistry;
 pub use request::RequestParts;
-pub use response::{error_response, headermap_from_js, response_from_gateway, xml_response};
+pub use response::{headermap_from_js, response_from_gateway};
 pub use tracing_layer::WorkerSubscriber;
