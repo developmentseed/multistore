@@ -6,6 +6,7 @@
 
 use crate::body::JsBody;
 use crate::fetch_connector::FetchConnector;
+use crate::headers::WsHeaders;
 use crate::response::headermap_from_js;
 use bytes::Bytes;
 use http::HeaderMap;
@@ -42,19 +43,10 @@ impl ProxyBackend for WorkerBackend {
             .downcast::<JsBody>()
             .map_err(|_| ProxyError::Internal("unexpected body type".into()))?;
 
-        // Build web_sys::Headers from the forwarding headers.
-        let ws_headers = web_sys::Headers::new()
-            .map_err(|e| ProxyError::Internal(format!("failed to create Headers: {:?}", e)))?;
-        for (key, value) in request.headers.iter() {
-            if let Ok(v) = value.to_str() {
-                let _ = ws_headers.set(key.as_str(), v);
-            }
-        }
-
         // Build web_sys::RequestInit.
         let init = web_sys::RequestInit::new();
         init.set_method(request.method.as_str());
-        init.set_headers(&ws_headers.into());
+        init.set_headers(&WsHeaders::from(&request.headers).into_inner().into());
 
         // Bypass Cloudflare's subrequest cache for Range requests.
         if request.headers.contains_key(http::header::RANGE) {
@@ -141,20 +133,10 @@ impl ProxyBackend for WorkerBackend {
             "worker: sending raw backend request via Fetch API"
         );
 
-        // Build web_sys::Headers
-        let ws_headers = web_sys::Headers::new()
-            .map_err(|e| ProxyError::Internal(format!("failed to create Headers: {:?}", e)))?;
-
-        for (key, value) in headers.iter() {
-            if let Ok(v) = value.to_str() {
-                let _ = ws_headers.set(key.as_str(), v);
-            }
-        }
-
         // Build web_sys::RequestInit
         let init = web_sys::RequestInit::new();
         init.set_method(method.as_str());
-        init.set_headers(&ws_headers.into());
+        init.set_headers(&WsHeaders::from(&headers).into_inner().into());
 
         // Set body for methods that carry one
         if !body.is_empty() {

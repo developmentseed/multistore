@@ -3,6 +3,7 @@
 //! Provides conversion functions between multistore proxy types and
 //! `web_sys::Response`, including header conversion utilities.
 
+use crate::headers::WsHeaders;
 use http::HeaderMap;
 use multistore::backend::ForwardResponse;
 use multistore::proxy::GatewayResponse;
@@ -10,12 +11,9 @@ use multistore::route_handler::{ProxyResponseBody, ProxyResult};
 
 /// Convert a `ProxyResult` (small buffered XML/JSON) to a `web_sys::Response`.
 pub(crate) fn response_from_proxy_result(result: ProxyResult) -> web_sys::Response {
-    let ws_headers =
-        headers_to_js(&result.headers).unwrap_or_else(|_| web_sys::Headers::new().unwrap());
-
     let resp_init = web_sys::ResponseInit::new();
     resp_init.set_status(result.status);
-    resp_init.set_headers(&ws_headers.into());
+    resp_init.set_headers(&WsHeaders::from(&result.headers).into_inner().into());
 
     match result.body {
         ProxyResponseBody::Empty => {
@@ -32,12 +30,9 @@ pub(crate) fn response_from_proxy_result(result: ProxyResult) -> web_sys::Respon
 /// Convert a `ForwardResponse<web_sys::Response>` into a `web_sys::Response`
 /// for the client, preserving the backend's body stream (zero-copy).
 pub(crate) fn response_from_forward(resp: ForwardResponse<web_sys::Response>) -> web_sys::Response {
-    let ws_headers =
-        headers_to_js(&resp.headers).unwrap_or_else(|_| web_sys::Headers::new().unwrap());
-
     let resp_init = web_sys::ResponseInit::new();
     resp_init.set_status(resp.status);
-    resp_init.set_headers(&ws_headers.into());
+    resp_init.set_headers(&WsHeaders::from(&resp.headers).into_inner().into());
 
     web_sys::Response::new_with_opt_readable_stream_and_init(resp.body.body().as_ref(), &resp_init)
         .unwrap_or_else(|_| error_response(502, "Bad Gateway"))
@@ -82,17 +77,4 @@ pub fn headermap_from_js(ws_headers: &web_sys::Headers) -> HeaderMap {
         headers.append(name, val);
     }
     headers
-}
-
-/// Convert `http::HeaderMap` to `web_sys::Headers`.
-pub(crate) fn headers_to_js(
-    headers: &HeaderMap,
-) -> std::result::Result<web_sys::Headers, wasm_bindgen::JsValue> {
-    let ws = web_sys::Headers::new()?;
-    for (key, value) in headers.iter() {
-        if let Ok(v) = value.to_str() {
-            ws.set(key.as_str(), v)?;
-        }
-    }
-    Ok(ws)
 }

@@ -14,6 +14,7 @@ pub(crate) mod fetch_connector;
 
 pub mod backend;
 pub mod body;
+pub mod headers;
 pub mod noop_creds;
 pub mod request;
 pub mod response;
@@ -21,6 +22,7 @@ pub mod tracing_layer;
 
 pub use backend::WorkerBackend;
 pub use body::{collect_js_body, JsBody};
+pub use headers::WsHeaders;
 pub use noop_creds::NoopCredentialRegistry;
 pub use request::RequestParts;
 pub use response::{headermap_from_js, response_from_gateway};
