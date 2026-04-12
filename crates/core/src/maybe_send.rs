@@ -4,11 +4,13 @@
 //! On native targets, `MaybeSend` resolves to `Send` and `MaybeSync` to
 //! `Sync`. On `wasm32` targets, both are no-ops.
 //!
-//! Only used for traits that genuinely need it: [`ProxyBackend`](crate::backend::ProxyBackend),
+//! Used by traits whose implementations may hold `!Send` types on WASM:
+//! [`ProxyBackend`](crate::backend::ProxyBackend),
 //! [`Middleware`](crate::middleware::Middleware),
-//! [`RouteHandler`](crate::route_handler::RouteHandler), and the
+//! [`RouteHandler`](crate::route_handler::RouteHandler),
+//! [`BucketRegistry`](crate::registry::BucketRegistry),
+//! [`CredentialRegistry`](crate::registry::CredentialRegistry), and the
 //! `oidc-provider` crate's [`HttpExchange`] / [`CredentialExchange`] traits.
-//! Other traits use plain `Send + Sync`.
 
 // --- Native targets: MaybeSend = Send, MaybeSync = Sync ---
 
