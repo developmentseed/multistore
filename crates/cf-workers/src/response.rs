@@ -46,11 +46,18 @@ pub(crate) fn error_response(status: u16, message: &str) -> web_sys::Response {
         .unwrap_or_else(|_| web_sys::Response::new().unwrap())
 }
 
-/// Convert a [`GatewayResponse`] to a `web_sys::Response`.
-pub fn response_from_gateway(response: GatewayResponse<web_sys::Response>) -> web_sys::Response {
-    match response {
-        GatewayResponse::Response(r) => response_from_proxy_result(r),
-        GatewayResponse::Forward(r) => response_from_forward(r),
+/// Extension trait for converting a [`GatewayResponse`] into a `web_sys::Response`.
+pub trait GatewayResponseExt {
+    /// Convert this gateway response into a `web_sys::Response`.
+    fn into_web_sys(self) -> web_sys::Response;
+}
+
+impl GatewayResponseExt for GatewayResponse<web_sys::Response> {
+    fn into_web_sys(self) -> web_sys::Response {
+        match self {
+            GatewayResponse::Response(r) => response_from_proxy_result(r),
+            GatewayResponse::Forward(r) => response_from_forward(r),
+        }
     }
 }
 
