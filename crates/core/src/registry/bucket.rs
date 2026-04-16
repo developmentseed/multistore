@@ -3,6 +3,7 @@
 use crate::api::list_rewrite::ListRewrite;
 use crate::api::response::BucketEntry;
 use crate::error::ProxyError;
+use crate::maybe_send::{MaybeSend, MaybeSync};
 use crate::types::{BucketConfig, BucketOwner, ResolvedIdentity, S3Operation};
 use std::future::Future;
 
@@ -32,7 +33,7 @@ pub struct ResolvedBucket {
 /// parsing the S3 request and resolving the caller's identity.
 ///
 /// Implementations should be cheap to clone (wrap inner state in `Arc`).
-pub trait BucketRegistry: Clone + Send + Sync + 'static {
+pub trait BucketRegistry: Clone + MaybeSend + MaybeSync + 'static {
     /// Resolve a bucket by name, checking authorization for the given identity and operation.
     ///
     /// Returns `Err(ProxyError::BucketNotFound)` if the bucket doesn't exist,
@@ -42,13 +43,13 @@ pub trait BucketRegistry: Clone + Send + Sync + 'static {
         name: &str,
         identity: &ResolvedIdentity,
         operation: &S3Operation,
-    ) -> impl Future<Output = Result<ResolvedBucket, ProxyError>> + Send;
+    ) -> impl Future<Output = Result<ResolvedBucket, ProxyError>> + MaybeSend;
 
     /// List all buckets visible to the given identity.
     fn list_buckets(
         &self,
         identity: &ResolvedIdentity,
-    ) -> impl Future<Output = Result<Vec<BucketEntry>, ProxyError>> + Send;
+    ) -> impl Future<Output = Result<Vec<BucketEntry>, ProxyError>> + MaybeSend;
 
     /// The owner identity returned in `ListAllMyBucketsResult` responses.
     ///
