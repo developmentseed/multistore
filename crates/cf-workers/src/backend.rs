@@ -31,17 +31,14 @@ pub struct WorkerBackend;
 
 impl ProxyBackend for WorkerBackend {
     type ResponseBody = web_sys::Response;
+    type Body = JsBody;
 
-    async fn forward<Body: 'static>(
+    async fn forward(
         &self,
         request: ForwardRequest,
-        body: Body,
+        body: JsBody,
     ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
-        // Downcast to the concrete JsBody type used by the Workers runtime.
-        let any_body: Box<dyn std::any::Any> = Box::new(body);
-        let js_body = any_body
-            .downcast::<JsBody>()
-            .map_err(|_| ProxyError::Internal("unexpected body type".into()))?;
+        let js_body = body;
 
         // Build web_sys::RequestInit.
         let init = web_sys::RequestInit::new();

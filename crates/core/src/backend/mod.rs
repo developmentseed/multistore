@@ -45,12 +45,15 @@ pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
     /// The streaming body type in forwarded backend responses.
     type ResponseBody: MaybeSend + 'static;
 
+    /// The request body type accepted by [`forward()`](Self::forward).
+    type Body: MaybeSend + 'static;
+
     /// Execute a presigned [`ForwardRequest`] against the backend and return
     /// the response with a streaming body.
-    fn forward<Body: MaybeSend + 'static>(
+    fn forward(
         &self,
         request: ForwardRequest,
-        body: Body,
+        body: Self::Body,
     ) -> impl Future<Output = Result<ForwardResponse<Self::ResponseBody>, ProxyError>> + MaybeSend;
 
     /// Create a [`PaginatedListStore`] for the given bucket configuration.
