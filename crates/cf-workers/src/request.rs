@@ -51,7 +51,9 @@ impl RequestParts {
 
         let uri: Uri = req.url().parse().map_err(|e| format!("invalid URL: {e}"))?;
 
-        let path = uri.path().to_string();
+        let path = percent_encoding::percent_decode_str(uri.path())
+            .decode_utf8_lossy()
+            .to_string();
         let query = uri.query().map(|q| q.to_string());
         let headers = headermap_from_js(&req.headers());
 
