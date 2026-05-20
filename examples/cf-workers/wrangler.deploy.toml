@@ -3,7 +3,9 @@ main = "build/worker/shim.mjs"
 name = "multistore"
 
 [build]
-command = "cargo install worker-build && worker-build --release"
+# worker-build pinned to ^0.7 to match worker = "=0.7.4" in Cargo.toml.
+# See Cargo.toml for why worker is pinned.
+command = "cargo install worker-build --version '^0.7' && worker-build --release"
 
 [vars]
 VIRTUAL_HOST_DOMAIN = "s3.local"
