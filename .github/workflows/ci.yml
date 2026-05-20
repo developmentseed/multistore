@@ -124,7 +124,10 @@ jobs:
       - name: Build worker
         working-directory: examples/cf-workers
         run: |
-          cargo install worker-build
+          # Pinned to ^0.7 to match worker = "=0.7.4" in Cargo.toml.
+          # worker-build 0.8+ requires worker 0.8+, but we cannot upgrade
+          # worker yet — see Cargo.toml for details.
+          cargo install worker-build --version "^0.7"
           worker-build --release
 
       - name: Write .dev.vars
