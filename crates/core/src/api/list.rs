@@ -64,10 +64,8 @@ pub fn parse_list_query_params(raw_query: Option<&str>) -> ListQueryParams {
                 "start-after" => start_after = Some(v.into_owned()),
                 "encoding-type" => encoding_type = Some(v.into_owned()),
                 "marker" => marker = Some(v.into_owned()),
-                "list-type" => {
-                    if v.as_ref() == "2" {
-                        is_v2 = true;
-                    }
+                "list-type" if v.as_ref() == "2" => {
+                    is_v2 = true;
                 }
                 _ => {}
             }
