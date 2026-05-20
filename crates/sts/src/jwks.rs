@@ -1,7 +1,7 @@
 //! JWKS fetching and JWT verification.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -224,23 +224,30 @@ pub fn verify_token(
 ///
 /// Uses `DateTime<Utc>` instead of `std::time::Instant` for WASM compatibility
 /// (`Instant` panics on `wasm32-unknown-unknown`).
+type JwksEntries = Arc<Mutex<HashMap<String, (DateTime<Utc>, JwksResponse)>>>;
+
+#[derive(Clone)]
 pub struct JwksCache {
     client: reqwest::Client,
     ttl: Duration,
     failure_ttl: Duration,
-    entries: Mutex<HashMap<String, (DateTime<Utc>, JwksResponse)>>,
-    failures: Mutex<HashMap<String, DateTime<Utc>>>,
+    entries: JwksEntries,
+    failures: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
 }
 
 impl JwksCache {
     /// Create a new cache with the given TTL and HTTP client.
+    ///
+    /// Cloning a `JwksCache` is cheap and shares the underlying cache state,
+    /// so a single instance can be stored in a `OnceLock`/`Arc` and cloned
+    /// per request without losing TTL benefits.
     pub fn new(client: reqwest::Client, ttl: Duration) -> Self {
         Self {
             client,
             ttl,
             failure_ttl: Duration::from_secs(30),
-            entries: Mutex::new(HashMap::new()),
-            failures: Mutex::new(HashMap::new()),
+            entries: Arc::new(Mutex::new(HashMap::new())),
+            failures: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
