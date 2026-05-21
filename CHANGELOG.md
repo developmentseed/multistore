@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/developmentseed/multistore/compare/v0.3.1...v0.4.0) (2026-05-21)
+
+
+### Features
+
+* **auth:** rewritten path support ([#34](https://github.com/developmentseed/multistore/issues/34)) ([0d7799a](https://github.com/developmentseed/multistore/commit/0d7799a21575ba3c67fc5da2aabf80793163a03b))
+* **cf-workers:** add RequestParts for ergonomic request extraction ([da8aca6](https://github.com/developmentseed/multistore/commit/da8aca61aab93b137f50a6bccf0014ca3924ce0d))
+* **cf-workers:** simplify Cloudflare Workers runtime ergonomics ([#47](https://github.com/developmentseed/multistore/issues/47)) ([b537eec](https://github.com/developmentseed/multistore/commit/b537eecd127262d37a532153c84381fd8fa1643f))
+* **core:** add User-Agent header to outbound backend requests ([#20](https://github.com/developmentseed/multistore/issues/20)) ([2a9a5f2](https://github.com/developmentseed/multistore/commit/2a9a5f2cb6f2211e4953a0bcebbcf2a65180d5fe))
+* **oidc:** support multiple signing keys ([#26](https://github.com/developmentseed/multistore/issues/26)) ([ead26d8](https://github.com/developmentseed/multistore/commit/ead26d8a5e5290492ed8b3fd93a4b9573ff03d64))
+* **sts:** enable custom STS endpoint URL ([#32](https://github.com/developmentseed/multistore/issues/32)) ([ff12fe3](https://github.com/developmentseed/multistore/commit/ff12fe37ea38f1da9d96d98e7412cc46ffbecef8))
+
+
+### Performance Improvements
+
+* support cloning JwksCache ([#46](https://github.com/developmentseed/multistore/issues/46)) ([c89dc8b](https://github.com/developmentseed/multistore/commit/c89dc8b2965ad9e9699e107a8c7457c6a527f6de))
+
 ## [0.3.1](https://github.com/developmentseed/multistore/compare/v0.3.0...v0.3.1) (2026-03-31)
 
 
