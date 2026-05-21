@@ -1157,6 +1157,7 @@ dependencies = [
  "js-sys",
  "multistore",
  "object_store",
+ "percent-encoding",
  "tracing",
  "wasm-bindgen",
  "wasm-bindgen-futures",
