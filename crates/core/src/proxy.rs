@@ -59,7 +59,6 @@ use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ForwardResponse;
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
-use crate::maybe_send::MaybeSend;
 use crate::middleware::{
     CompletedRequest, Dispatch, DispatchContext, DispatchFuture, ErasedMiddleware, Middleware, Next,
 };
@@ -1467,11 +1466,12 @@ mod tests {
 
     impl ProxyBackend for ForwardMockBackend {
         type ResponseBody = ();
+        type Body = ();
 
-        async fn forward<Body: MaybeSend + 'static>(
+        async fn forward(
             &self,
             _request: ForwardRequest,
-            _body: Body,
+            _body: (),
         ) -> Result<ForwardResponse<()>, ProxyError> {
             Ok(ForwardResponse {
                 status: 200,
