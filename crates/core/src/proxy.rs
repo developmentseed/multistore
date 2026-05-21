@@ -78,6 +78,13 @@ use uuid::Uuid;
 /// TTL for presigned URLs. Short because they're used immediately.
 const PRESIGNED_URL_TTL: Duration = Duration::from_secs(300);
 
+/// Default User-Agent header value sent with outbound backend requests.
+///
+/// Identifies multistore as the caller to backend object stores, useful for
+/// access log analysis and debugging. Override via
+/// [`ProxyGateway::with_user_agent`] to include your application name.
+pub const DEFAULT_USER_AGENT: &str = concat!("multistore/", env!("CARGO_PKG_VERSION"));
+
 // Re-export types that were historically defined here for backwards compatibility.
 pub use crate::route_handler::{
     filter_response_headers, ForwardRequest, HandlerAction, PendingRequest, ProxyResult,
@@ -133,6 +140,11 @@ pub struct ProxyGateway<B, R, C> {
     /// When true, error responses include full internal details (for development).
     /// When false, server-side errors use generic messages.
     debug_errors: bool,
+    /// User-Agent header value for outbound backend requests.
+    user_agent: String,
+    /// When true, responses include a `Server-Timing` header with gateway
+    /// processing metrics. Enabled by default.
+    server_timing: bool,
 }
 
 impl<B, R, C> ProxyGateway<B, R, C>
@@ -163,6 +175,8 @@ where
             credential_resolver: None,
             router: Router::new(),
             debug_errors: false,
+            user_agent: DEFAULT_USER_AGENT.to_string(),
+            server_timing: true,
         }
     }
 
@@ -208,6 +222,62 @@ where
         self
     }
 
+    /// Override the User-Agent header sent with outbound backend requests.
+    ///
+    /// Defaults to [`DEFAULT_USER_AGENT`] (`multistore/{version}`). Use this
+    /// to include your application name, e.g. `"myapp/1.0 multistore/0.2.0"`.
+    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
+        self.user_agent = user_agent.into();
+        self
+    }
+
+    /// Enable or disable `Server-Timing` headers on responses.
+    ///
+    /// When enabled (the default), responses include a `Server-Timing` header
+    /// with gateway processing metrics:
+    ///
+    /// - `total` — end-to-end gateway processing time (ms)
+    /// - `dispatch` — time in the middleware/dispatch pipeline (ms)
+    /// - `backend` — time waiting for the backend (ms, forwarded requests only)
+    ///
+    /// Useful for debugging latency and performance monitoring. Disable in
+    /// production if you don't want to expose timing information to clients.
+    pub fn with_server_timing(mut self, enabled: bool) -> Self {
+        self.server_timing = enabled;
+        self
+    }
+
+    /// Inject a `Server-Timing` header into the response headers if enabled.
+    fn maybe_inject_server_timing(
+        &self,
+        headers: &mut HeaderMap,
+        total_start: chrono::DateTime<chrono::Utc>,
+        dispatch_start: Option<chrono::DateTime<chrono::Utc>>,
+        backend_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        if !self.server_timing {
+            return;
+        }
+
+        let now = chrono::Utc::now();
+        let total_ms = (now - total_start).num_milliseconds().max(0);
+        let mut value = format!("total;dur={total_ms}");
+
+        if let Some(ds) = dispatch_start {
+            let dispatch_ms = (now - ds).num_milliseconds().max(0);
+            value.push_str(&format!(", dispatch;dur={dispatch_ms}"));
+        }
+
+        if let Some(bs) = backend_start {
+            let backend_ms = (now - bs).num_milliseconds().max(0);
+            value.push_str(&format!(", backend;dur={backend_ms}"));
+        }
+
+        if let Ok(hv) = value.parse() {
+            headers.insert("server-timing", hv);
+        }
+    }
+
     /// Convenience entry point that resolves `NeedsBody` internally and
     /// executes forwarding via the [`ProxyBackend`].
     ///
@@ -235,32 +305,55 @@ where
         Fut: std::future::Future<Output = Result<Bytes, E>>,
         E: std::fmt::Display,
     {
+        let total_start = chrono::Utc::now();
+
         // Route handlers first (bypass forwarder/after_dispatch for simplicity)
         if let Some(action) = self.router.dispatch(req).await {
             return match action {
-                HandlerAction::Response(r) => GatewayResponse::Response(r),
-                HandlerAction::Forward(fwd) => match self.backend.forward(fwd, body).await {
-                    Ok(mut resp) => {
-                        resp.headers = filter_response_headers(&resp.headers);
-                        GatewayResponse::Forward(resp)
+                HandlerAction::Response(mut r) => {
+                    self.maybe_inject_server_timing(&mut r.headers, total_start, None, None);
+                    GatewayResponse::Response(r)
+                }
+                HandlerAction::Forward(fwd) => {
+                    let backend_start = chrono::Utc::now();
+                    match self.backend.forward(fwd, body).await {
+                        Ok(mut resp) => {
+                            resp.headers = filter_response_headers(&resp.headers);
+                            self.maybe_inject_server_timing(
+                                &mut resp.headers,
+                                total_start,
+                                None,
+                                Some(backend_start),
+                            );
+                            GatewayResponse::Forward(resp)
+                        }
+                        Err(e) => {
+                            let mut r = error_response(&e, req.path, "", self.debug_errors);
+                            self.maybe_inject_server_timing(
+                                &mut r.headers,
+                                total_start,
+                                None,
+                                Some(backend_start),
+                            );
+                            GatewayResponse::Response(r)
+                        }
                     }
-                    Err(e) => GatewayResponse::Response(error_response(
-                        &e,
+                }
+                HandlerAction::NeedsBody(_) => {
+                    let mut r = error_response(
+                        &ProxyError::Internal("unexpected NeedsBody from route handler".into()),
                         req.path,
                         "",
                         self.debug_errors,
-                    )),
-                },
-                HandlerAction::NeedsBody(_) => GatewayResponse::Response(error_response(
-                    &ProxyError::Internal("unexpected NeedsBody from route handler".into()),
-                    req.path,
-                    "",
-                    self.debug_errors,
-                )),
+                    );
+                    self.maybe_inject_server_timing(&mut r.headers, total_start, None, None);
+                    GatewayResponse::Response(r)
+                }
             };
         }
 
         // Resolve via proxy pipeline (with metadata for after_dispatch)
+        let dispatch_start = chrono::Utc::now();
         let (action, metadata) = self
             .resolve_request_with_metadata(
                 req.method.clone(),
@@ -288,45 +381,75 @@ where
 
         let request_bytes = content_length_from_headers(req.headers);
 
-        let (response, status, resp_bytes, was_forwarded) = match action {
+        let (mut response, status, resp_bytes, was_forwarded, backend_start) = match action {
             HandlerAction::Response(r) => {
                 let s = r.status;
                 let rb = response_body_bytes(&r.body);
-                (GatewayResponse::Response(r), s, rb, false)
+                (GatewayResponse::Response(r), s, rb, false, None)
             }
-            HandlerAction::Forward(fwd) => match self.backend.forward(fwd, body).await {
-                Ok(mut resp) => {
-                    resp.headers = filter_response_headers(&resp.headers);
-                    let s = resp.status;
-                    let cl = resp.content_length;
-                    (GatewayResponse::Forward(resp), s, cl, true)
+            HandlerAction::Forward(fwd) => {
+                let backend_start = chrono::Utc::now();
+                match self.backend.forward(fwd, body).await {
+                    Ok(mut resp) => {
+                        resp.headers = filter_response_headers(&resp.headers);
+                        let s = resp.status;
+                        let cl = resp.content_length;
+                        (
+                            GatewayResponse::Forward(resp),
+                            s,
+                            cl,
+                            true,
+                            Some(backend_start),
+                        )
+                    }
+                    Err(e) => {
+                        let err_resp =
+                            error_response(&e, req.path, &metadata.request_id, self.debug_errors);
+                        let s = err_resp.status;
+                        (
+                            GatewayResponse::Response(err_resp),
+                            s,
+                            None,
+                            true,
+                            Some(backend_start),
+                        )
+                    }
                 }
-                Err(e) => {
-                    let err_resp =
-                        error_response(&e, req.path, &metadata.request_id, self.debug_errors);
-                    let s = err_resp.status;
-                    (GatewayResponse::Response(err_resp), s, None, true)
+            }
+            HandlerAction::NeedsBody(pending) => {
+                let backend_start = chrono::Utc::now();
+                match collect_body(body).await {
+                    Ok(bytes) => {
+                        let result = self.handle_with_body(pending, bytes).await;
+                        let s = result.status;
+                        let rb = response_body_bytes(&result.body);
+                        (
+                            GatewayResponse::Response(result),
+                            s,
+                            rb,
+                            false,
+                            Some(backend_start),
+                        )
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to read request body");
+                        let err_resp = error_response(
+                            &ProxyError::Internal("failed to read request body".into()),
+                            "",
+                            &metadata.request_id,
+                            self.debug_errors,
+                        );
+                        let s = err_resp.status;
+                        (
+                            GatewayResponse::Response(err_resp),
+                            s,
+                            None,
+                            false,
+                            Some(backend_start),
+                        )
+                    }
                 }
-            },
-            HandlerAction::NeedsBody(pending) => match collect_body(body).await {
-                Ok(bytes) => {
-                    let result = self.handle_with_body(pending, bytes).await;
-                    let s = result.status;
-                    let rb = response_body_bytes(&result.body);
-                    (GatewayResponse::Response(result), s, rb, false)
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to read request body");
-                    let err_resp = error_response(
-                        &ProxyError::Internal("failed to read request body".into()),
-                        "",
-                        &metadata.request_id,
-                        self.debug_errors,
-                    );
-                    let s = err_resp.status;
-                    (GatewayResponse::Response(err_resp), s, None, false)
-                }
-            },
+            }
         };
 
         // Fire after_dispatch on all middleware
@@ -343,6 +466,26 @@ where
         };
         for m in &self.middleware {
             m.after_dispatch(&completed).await;
+        }
+
+        // Inject Server-Timing header
+        match &mut response {
+            GatewayResponse::Response(ref mut r) => {
+                self.maybe_inject_server_timing(
+                    &mut r.headers,
+                    total_start,
+                    Some(dispatch_start),
+                    backend_start,
+                );
+            }
+            GatewayResponse::Forward(ref mut fwd) => {
+                self.maybe_inject_server_timing(
+                    &mut fwd.headers,
+                    total_start,
+                    Some(dispatch_start),
+                    backend_start,
+                );
+            }
         }
 
         response
@@ -708,6 +851,7 @@ where
                 fwd_headers.insert(*name, v.clone());
             }
         }
+        fwd_headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
 
         Ok(ForwardRequest {
             method,
@@ -861,6 +1005,7 @@ where
                 headers.insert(*header_name, val.clone());
             }
         }
+        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
 
         let payload_hash = if body.is_empty() {
             UNSIGNED_PAYLOAD.to_string()
@@ -1123,6 +1268,128 @@ mod tests {
         });
     }
 
+    // -- User-Agent tests ----------------------------------------------------
+
+    #[test]
+    fn forward_includes_user_agent_header() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let ua = fwd
+                        .headers
+                        .get(http::header::USER_AGENT)
+                        .expect("forward should include User-Agent header");
+                    assert!(
+                        ua.to_str().unwrap().starts_with("multistore/"),
+                        "User-Agent should start with 'multistore/', got: {}",
+                        ua.to_str().unwrap()
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn put_forward_includes_user_agent_header() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("content-type", "application/octet-stream".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let ua = fwd
+                        .headers
+                        .get(http::header::USER_AGENT)
+                        .expect("PUT forward should include User-Agent header");
+                    assert!(
+                        ua.to_str().unwrap().starts_with("multistore/"),
+                        "User-Agent should start with 'multistore/', got: {}",
+                        ua.to_str().unwrap()
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn delete_forward_includes_user_agent_header() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::DELETE, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let ua = fwd
+                        .headers
+                        .get(http::header::USER_AGENT)
+                        .expect("DELETE forward should include User-Agent header");
+                    assert_eq!(ua.to_str().unwrap(), DEFAULT_USER_AGENT);
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn custom_user_agent_is_used_in_forward() {
+        run(async {
+            let gw = gateway().with_user_agent("myapp/1.0 multistore/0.2.0");
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let ua = fwd
+                        .headers
+                        .get(http::header::USER_AGENT)
+                        .expect("forward should include User-Agent header");
+                    assert_eq!(ua.to_str().unwrap(), "myapp/1.0 multistore/0.2.0");
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn multipart_needs_body_then_includes_user_agent() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(
+                    Method::POST,
+                    "/test-bucket/key.txt",
+                    Some("uploads"),
+                    &headers,
+                    None,
+                )
+                .await;
+
+            // CreateMultipartUpload should return NeedsBody
+            assert!(
+                matches!(action, HandlerAction::NeedsBody(_)),
+                "CreateMultipartUpload should return NeedsBody"
+            );
+        });
+    }
+
     // -- Middleware test types -----------------------------------------------
 
     struct BlockMiddleware;
@@ -1195,6 +1462,129 @@ mod tests {
                 }
                 other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
             }
+        });
+    }
+
+    // -- Server-Timing tests --------------------------------------------------
+
+    /// Mock backend that returns a canned ForwardResponse.
+    #[derive(Clone)]
+    struct ForwardMockBackend;
+
+    impl ProxyBackend for ForwardMockBackend {
+        type ResponseBody = ();
+
+        async fn forward<Body: MaybeSend + 'static>(
+            &self,
+            _request: ForwardRequest,
+            _body: Body,
+        ) -> Result<ForwardResponse<()>, ProxyError> {
+            Ok(ForwardResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                body: (),
+                content_length: Some(0),
+            })
+        }
+
+        fn create_paginated_store(
+            &self,
+            _config: &BucketConfig,
+        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
+            unimplemented!()
+        }
+
+        fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
+            crate::backend::build_signer(config)
+        }
+
+        async fn send_raw(
+            &self,
+            _method: http::Method,
+            _url: String,
+            _headers: HeaderMap,
+            _body: Bytes,
+        ) -> Result<RawResponse, ProxyError> {
+            unimplemented!()
+        }
+    }
+
+    fn forward_gateway() -> ProxyGateway<ForwardMockBackend, MockRegistry, MockCreds> {
+        ProxyGateway::new(ForwardMockBackend, MockRegistry, MockCreds, None)
+    }
+
+    fn extract_server_timing(response: &GatewayResponse<()>) -> Option<String> {
+        let headers = match response {
+            GatewayResponse::Response(r) => &r.headers,
+            GatewayResponse::Forward(f) => &f.headers,
+        };
+        headers
+            .get("server-timing")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    }
+
+    #[test]
+    fn server_timing_present_on_forward_response() {
+        run(async {
+            let gw = forward_gateway();
+            let headers = HeaderMap::new();
+            let req = RequestInfo::new(&Method::GET, "/test-bucket/key.txt", None, &headers, None);
+            let response = gw
+                .handle_request(&req, (), |_| async { Ok::<_, String>(Bytes::new()) })
+                .await;
+
+            let timing = extract_server_timing(&response)
+                .expect("forwarded response should have Server-Timing header");
+            assert!(
+                timing.contains("total;dur="),
+                "should contain total: {timing}"
+            );
+            assert!(
+                timing.contains("dispatch;dur="),
+                "should contain dispatch: {timing}"
+            );
+            assert!(
+                timing.contains("backend;dur="),
+                "should contain backend: {timing}"
+            );
+        });
+    }
+
+    #[test]
+    fn server_timing_present_on_error_response() {
+        run(async {
+            let gw = forward_gateway();
+            let headers = HeaderMap::new();
+            // Request for a non-existent path that triggers an error response
+            let req = RequestInfo::new(&Method::GET, "/", None, &headers, None);
+            let response = gw
+                .handle_request(&req, (), |_| async { Ok::<_, String>(Bytes::new()) })
+                .await;
+
+            let timing = extract_server_timing(&response)
+                .expect("error response should have Server-Timing header");
+            assert!(
+                timing.contains("total;dur="),
+                "should contain total: {timing}"
+            );
+        });
+    }
+
+    #[test]
+    fn server_timing_disabled_when_configured() {
+        run(async {
+            let gw = forward_gateway().with_server_timing(false);
+            let headers = HeaderMap::new();
+            let req = RequestInfo::new(&Method::GET, "/test-bucket/key.txt", None, &headers, None);
+            let response = gw
+                .handle_request(&req, (), |_| async { Ok::<_, String>(Bytes::new()) })
+                .await;
+
+            assert!(
+                extract_server_timing(&response).is_none(),
+                "Server-Timing should not be present when disabled"
+            );
         });
     }
 }
