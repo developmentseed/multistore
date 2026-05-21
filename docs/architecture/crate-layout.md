@@ -78,7 +78,10 @@ The native server runtime (in `examples/server/`):
 
 The Cloudflare Workers WASM runtime (in `examples/cf-workers/`):
 - `WorkerBackend` implementing `ProxyBackend` with `web_sys::fetch`
-- `WorkerForwarder` implementing `Forwarder` with the Fetch API (zero-copy `ReadableStream`)
+- `RequestParts` — extracts owned HTTP metadata from `web_sys::Request` and provides `as_request_info()` for gateway dispatch
+- `GatewayResponseExt` — extension trait for converting `GatewayResponse` to `web_sys::Response` via `.into_web_sys()`
+- `JsBody` — zero-copy body wrapper around `web_sys::ReadableStream`
+- `WsHeaders` — newtype around `web_sys::Headers` with `From<&HeaderMap>` (works around orphan rules)
 - `FetchConnector` bridging `object_store` HTTP to Workers Fetch API
 - `BandwidthMeter` Durable Object — per-(bucket, identity) sliding-window byte counter
 - `DoBandwidthMeter` implementing `QuotaChecker` + `UsageRecorder` via the `BandwidthMeter` DO
@@ -114,4 +117,4 @@ flowchart TD
     oidc --> core
 ```
 
-Libraries define trait abstractions. Runtimes implement `ProxyBackend` and `Forwarder` with platform-native primitives, build a `Router` with extension traits, and handle the two-variant `GatewayResponse`.
+Libraries define trait abstractions. Runtimes implement `ProxyBackend` with platform-native primitives, build a `Router` with extension traits, and convert the two-variant `GatewayResponse` into a platform response (e.g. via `GatewayResponseExt::into_web_sys()` on Workers).

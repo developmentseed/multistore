@@ -48,11 +48,12 @@ async fn body_to_bytes(body: Body) -> Result<Bytes, Box<dyn std::error::Error>> 
 
 impl ProxyBackend for LambdaBackend {
     type ResponseBody = Body;
+    type Body = Body;
 
-    async fn forward<B: Send + 'static>(
+    async fn forward(
         &self,
         request: ForwardRequest,
-        body: B,
+        body: Body,
     ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
         let mut req_builder = self
             .client
@@ -64,12 +65,7 @@ impl ProxyBackend for LambdaBackend {
 
         // Attach body for PUT requests
         if request.method == http::Method::PUT {
-            // Downcast to the concrete lambda_http::Body type used by the Lambda runtime.
-            let any_body: Box<dyn std::any::Any> = Box::new(body);
-            let lambda_body = any_body
-                .downcast::<Body>()
-                .map_err(|_| ProxyError::Internal("unexpected body type".into()))?;
-            let bytes = body_to_bytes(*lambda_body)
+            let bytes = body_to_bytes(body)
                 .await
                 .map_err(|e| ProxyError::Internal(format!("failed to read PUT body: {e}")))?;
             req_builder = req_builder.body(bytes);

@@ -28,7 +28,7 @@ pub use bandwidth::BandwidthMeter;
 use multistore::proxy::ProxyGateway;
 use multistore::router::Router;
 use multistore_cf_workers::{
-    collect_js_body, response_from_gateway, RequestParts, WorkerBackend, WorkerSubscriber,
+    collect_js_body, GatewayResponseExt, RequestParts, WorkerBackend, WorkerSubscriber,
 };
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
@@ -97,10 +97,10 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     let (parts, js_body) =
         RequestParts::from_web_sys(&req).map_err(|e| worker::Error::RustError(e))?;
 
-    let result = gateway
+    Ok(gateway
         .handle_request(&parts.as_request_info(), js_body, collect_js_body)
-        .await;
-    Ok(response_from_gateway(result))
+        .await
+        .into_web_sys())
 }
 
 // ── OIDC HTTP exchange ─────────────────────────────────────────────

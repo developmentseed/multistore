@@ -47,11 +47,12 @@ impl Default for ServerBackend {
 
 impl ProxyBackend for ServerBackend {
     type ResponseBody = reqwest::Response;
+    type Body = axum::body::Body;
 
-    async fn forward<Body: Send + 'static>(
+    async fn forward(
         &self,
         request: ForwardRequest,
-        body: Body,
+        body: axum::body::Body,
     ) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
         let mut req_builder = self
             .client
@@ -63,12 +64,7 @@ impl ProxyBackend for ServerBackend {
 
         // Attach streaming body for PUT
         if request.method == http::Method::PUT {
-            // Downcast to the concrete axum::body::Body type used by the server runtime.
-            let any_body: Box<dyn std::any::Any> = Box::new(body);
-            let axum_body = any_body
-                .downcast::<axum::body::Body>()
-                .map_err(|_| ProxyError::Internal("unexpected body type".into()))?;
-            let body_stream = BodyStream::new(*axum_body)
+            let body_stream = BodyStream::new(body)
                 .try_filter_map(|frame| async move { Ok(frame.into_data().ok()) });
             req_builder = req_builder.body(reqwest::Body::wrap_stream(body_stream));
         }

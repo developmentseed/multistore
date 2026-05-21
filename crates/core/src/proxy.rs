@@ -59,7 +59,6 @@ use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ForwardResponse;
 use crate::backend::ProxyBackend;
 use crate::error::ProxyError;
-use crate::maybe_send::MaybeSend;
 use crate::middleware::{
     CompletedRequest, Dispatch, DispatchContext, DispatchFuture, ErasedMiddleware, Middleware, Next,
 };
@@ -293,15 +292,14 @@ where
     ///     GatewayResponse::Forward(resp) => stream_response(resp),
     /// }
     /// ```
-    pub async fn handle_request<Body, CF, Fut, E>(
+    pub async fn handle_request<CF, Fut, E>(
         &self,
         req: &RequestInfo<'_>,
-        body: Body,
+        body: B::Body,
         collect_body: CF,
     ) -> GatewayResponse<B::ResponseBody>
     where
-        Body: MaybeSend + 'static,
-        CF: FnOnce(Body) -> Fut,
+        CF: FnOnce(B::Body) -> Fut,
         Fut: std::future::Future<Output = Result<Bytes, E>>,
         E: std::fmt::Display,
     {
@@ -1108,11 +1106,12 @@ mod tests {
 
     impl ProxyBackend for MockBackend {
         type ResponseBody = ();
+        type Body = ();
 
-        async fn forward<Body: MaybeSend + 'static>(
+        async fn forward(
             &self,
             _request: ForwardRequest,
-            _body: Body,
+            _body: (),
         ) -> Result<ForwardResponse<()>, ProxyError> {
             unimplemented!("not needed for resolve_request tests")
         }
@@ -1467,11 +1466,12 @@ mod tests {
 
     impl ProxyBackend for ForwardMockBackend {
         type ResponseBody = ();
+        type Body = ();
 
-        async fn forward<Body: MaybeSend + 'static>(
+        async fn forward(
             &self,
             _request: ForwardRequest,
-            _body: Body,
+            _body: (),
         ) -> Result<ForwardResponse<()>, ProxyError> {
             Ok(ForwardResponse {
                 status: 200,
