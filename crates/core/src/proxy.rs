@@ -521,11 +521,16 @@ where
         let host_style = determine_host_style(req.headers, self.virtual_host_domain.as_deref());
 
         // Parse the S3 operation
-        let operation =
-            match request::parse_s3_request(req.method, req.path, req.query, req.headers, host_style) {
-                Ok(op) => op,
-                Err(err) => return self.error_result(err, req.path, &request_id, req.source_ip),
-            };
+        let operation = match request::parse_s3_request(
+            req.method,
+            req.path,
+            req.query,
+            req.headers,
+            host_style,
+        ) {
+            Ok(op) => op,
+            Err(err) => return self.error_result(err, req.path, &request_id, req.source_ip),
+        };
         tracing::debug!(operation = ?operation, "parsed S3 operation");
 
         // Resolve identity — use the original client-facing path and query for
