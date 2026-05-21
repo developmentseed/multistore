@@ -17,3 +17,13 @@
 - When fixing bugs, first write a failing test and then fix the bug to ensure that the fix resolved the issue.
 - Review codebase for dead code after refactoring.
 - Use conventional commits.
+
+## Pull request descriptions
+
+Structure PR bodies with two required sections (plus an optional `## Test plan`):
+
+- **`## What I'm changing`** — lead with the motivation (the "why"). State the problem, the user-visible symptom, or the constraint that forced the change before describing the change itself. A reviewer should understand *why this PR exists* from this section alone, without reading the diff.
+- **`## How I did it`** — bulleted, per-module or per-file. For each notable change, name the symbol or file and explain what changed and why that approach. Mention refactors that exist only to enable the main change so they don't look like scope creep.
+- **`## Test plan`** (optional) — checklist of verification commands run (e.g. `cargo check`, `cargo clippy`, target-specific builds) and any manual checks.
+
+Keep prose tight. Prefer concrete identifiers (`RewriteResult`, `resolve_request_with_metadata`) over vague phrases ("the helper"). Don't restate the diff — explain what the diff doesn't.
