@@ -81,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "lts/*"
 
@@ -124,7 +124,10 @@ jobs:
       - name: Build worker
         working-directory: examples/cf-workers
         run: |
-          cargo install worker-build
+          # Pinned to ^0.7 to match worker = "=0.7.4" in Cargo.toml.
+          # worker-build 0.8+ requires worker 0.8+, but we cannot upgrade
+          # worker yet — see Cargo.toml for details.
+          cargo install worker-build --version "^0.7"
           worker-build --release
 
       - name: Write .dev.vars
@@ -149,7 +152,7 @@ jobs:
             sleep 2
           done
 
-      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
 
       - name: Run integration tests
         run: uvx --with pytest,boto3,requests pytest tests/integration/ -v
