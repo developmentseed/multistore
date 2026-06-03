@@ -44,6 +44,11 @@
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "$.workspace.dependencies.multistore-path-mapping.version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.toml",
+          "jsonpath": "$.workspace.dependencies.multistore-backend-federation.version"
         }
       ]
     }
