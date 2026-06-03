@@ -9,11 +9,11 @@ use multistore::registry::CredentialRegistry;
 use multistore::error::ProxyError;
 use multistore::types::*;
 
-pub trait CredentialRegistry: Clone + Send + Sync + 'static {
-    async fn get_credential(&self, access_key_id: &str)
-        -> Result<Option<StoredCredential>, ProxyError>;
-    async fn get_role(&self, role_id: &str)
-        -> Result<Option<RoleConfig>, ProxyError>;
+pub trait CredentialRegistry: Clone + MaybeSend + MaybeSync + 'static {
+    fn get_credential(&self, access_key_id: &str)
+        -> impl Future<Output = Result<Option<StoredCredential>, ProxyError>> + MaybeSend;
+    fn get_role(&self, role_id: &str)
+        -> impl Future<Output = Result<Option<RoleConfig>, ProxyError>> + MaybeSend;
 }
 ```
 

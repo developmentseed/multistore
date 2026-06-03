@@ -10,18 +10,18 @@ use multistore::api::response::BucketEntry;
 use multistore::error::ProxyError;
 use multistore::types::{BucketOwner, ResolvedIdentity, S3Operation};
 
-pub trait BucketRegistry: Clone + Send + Sync + 'static {
+pub trait BucketRegistry: Clone + MaybeSend + MaybeSync + 'static {
     fn get_bucket(
         &self,
         name: &str,
         identity: &ResolvedIdentity,
         operation: &S3Operation,
-    ) -> impl Future<Output = Result<ResolvedBucket, ProxyError>> + Send;
+    ) -> impl Future<Output = Result<ResolvedBucket, ProxyError>> + MaybeSend;
 
     fn list_buckets(
         &self,
         identity: &ResolvedIdentity,
-    ) -> impl Future<Output = Result<Vec<BucketEntry>, ProxyError>> + Send;
+    ) -> impl Future<Output = Result<Vec<BucketEntry>, ProxyError>> + MaybeSend;
 
     fn bucket_owner(&self) -> BucketOwner { /* default */ }
 }
@@ -103,17 +103,10 @@ let cred_registry = MyCredentialRegistry::new(/* ... */);
 let gateway = ProxyGateway::new(backend, registry, cred_registry, domain);
 
 // In your request handler:
-let req_info = RequestInfo {
-    method: &method,
-    path: &path,
-    query: query.as_deref(),
-    headers: &headers,
-    source_ip: None,
-    params: Default::default(),
-};
+let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => { /* return response */ }
-    GatewayResponse::Forward(fwd, body) => { /* execute presigned URL, stream body */ }
+    GatewayResponse::Forward(response) => { /* forwarding already done; stream response.body */ }
 }
 ```
 
