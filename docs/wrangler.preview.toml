@@ -1,0 +1,14 @@
+# Cloudflare Workers static-assets config for per-PR documentation previews.
+#
+# The built VitePress site (docs/.vitepress/dist) is served as static assets on
+# a workers.dev subdomain. This is an assets-only Worker (no `main` script). The
+# per-PR worker name is supplied at deploy time via `--name`, e.g.
+# `multistore-docs-pr-123`, so each PR gets its own isolated preview URL.
+#
+# Production docs continue to deploy to GitHub Pages via docs.yml; this config is
+# only used for ephemeral PR previews.
+name = "multistore-docs"
+compatibility_date = "2024-11-11"
+
+[assets]
+directory = ".vitepress/dist"

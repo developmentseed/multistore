@@ -19,7 +19,10 @@ access_key_id = "AKIAIOSFODNN7EXAMPLE"
 secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 ```
 
-This works for any backend type. For anonymous backend access (e.g., public buckets), omit the credential fields and add `skip_signature = "true"`.
+This works for any backend type. For anonymous backend access (e.g., public buckets), simply omit the `access_key_id` and `secret_access_key` fields — when both are absent, the proxy issues unsigned requests automatically.
+
+> [!NOTE]
+> A `skip_signature` option appears in some examples, but it is currently not honored by the proxy and has no effect. Anonymous access is determined solely by the absence of credentials.
 
 ## OIDC Backend Auth
 
@@ -209,12 +212,12 @@ On subsequent requests, cached credentials are reused until they expire.
 ### Azure Blob Storage
 
 > [!NOTE]
-> **Planned** — Azure OIDC backend auth is planned but not yet implemented. The proxy currently supports Azure with static credentials only.
+> **Partial** — The Azure token-exchange logic exists (behind the `azure` cargo feature), but the end-to-end backend-auth middleware is currently wired up for AWS/S3 buckets only; an `auth_type=oidc` Azure bucket will return a configuration error. For now, use Azure with static credentials.
 
 ### Google Cloud Storage
 
 > [!NOTE]
-> **Planned** — GCS OIDC backend auth is planned but not yet implemented. The proxy currently supports GCS with static credentials only.
+> **Partial** — The GCS token-exchange logic exists (behind the `gcp` cargo feature), but the end-to-end backend-auth middleware is currently wired up for AWS/S3 buckets only; an `auth_type=oidc` GCS bucket will return a configuration error. For now, use GCS with static credentials.
 
 ## Credential Caching
 
@@ -233,5 +236,5 @@ This means the first request to an OIDC-backed bucket incurs a small latency cos
 | **Setup complexity** | Low | Medium (IAM role + OIDC provider registration) |
 | **Credential rotation** | Manual | Automatic (temporary credentials) |
 | **Security** | Long-lived secrets in config | No long-lived secrets |
-| **Cloud providers** | All (S3, Azure, GCS) | AWS S3 (Azure and GCS planned) |
+| **Cloud providers** | All (S3, Azure, GCS) | AWS S3 (Azure/GCS token exchange exists behind cargo features, but middleware wiring is S3-only) |
 | **Latency** | None | Small cost on first request (then cached) |

@@ -3,6 +3,10 @@ name: Staging
 on:
   push:
     branches: [main]
+    # Docs-only pushes deploy to GitHub Pages via docs.yml; no need to
+    # redeploy the staging worker for them.
+    paths-ignore:
+      - "docs/**"
 
 concurrency:
   group: staging

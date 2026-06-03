@@ -9,32 +9,54 @@ The built-in `StaticProvider` implements both traits, loading config from a TOML
 
 ## Registry Traits
 
+The traits are bounded `Clone + MaybeSend + MaybeSync + 'static` (so the same impl works on native multi-threaded runtimes and single-threaded WASM) and use return-position `impl Future` rather than `async fn`:
+
 ```rust
-pub trait BucketRegistry: Clone + Send + Sync + 'static {
-    async fn get_bucket(&self, name: &str, identity: &ResolvedIdentity, operation: &S3Operation)
-        -> Result<ResolvedBucket, ProxyError>;
-    async fn list_buckets(&self, identity: &ResolvedIdentity)
-        -> Result<Vec<BucketEntry>, ProxyError>;
+use std::future::Future;
+
+pub trait BucketRegistry: Clone + MaybeSend + MaybeSync + 'static {
+    fn get_bucket(
+        &self,
+        name: &str,
+        identity: &ResolvedIdentity,
+        operation: &S3Operation,
+    ) -> impl Future<Output = Result<ResolvedBucket, ProxyError>> + MaybeSend;
+
+    fn list_buckets(
+        &self,
+        identity: &ResolvedIdentity,
+    ) -> impl Future<Output = Result<Vec<BucketEntry>, ProxyError>> + MaybeSend;
+
+    /// The owner identity returned in `ListAllMyBucketsResult` responses.
+    /// Provided default returns `("multistore-proxy", "multistore-proxy")`.
+    fn bucket_owner(&self) -> BucketOwner {
+        BucketOwner {
+            id: "multistore-proxy".to_string(),
+            display_name: "multistore-proxy".to_string(),
+        }
+    }
 }
 
-pub trait CredentialRegistry: Clone + Send + Sync + 'static {
-    async fn get_credential(&self, access_key_id: &str)
-        -> Result<Option<StoredCredential>, ProxyError>;
-    async fn get_role(&self, role_id: &str)
-        -> Result<Option<RoleConfig>, ProxyError>;
+pub trait CredentialRegistry: Clone + MaybeSend + MaybeSync + 'static {
+    fn get_credential(
+        &self,
+        access_key_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredCredential>, ProxyError>> + MaybeSend;
+
+    fn get_role(
+        &self,
+        role_id: &str,
+    ) -> impl Future<Output = Result<Option<RoleConfig>, ProxyError>> + MaybeSend;
 }
 ```
 
 ## Available Providers
 
-| Provider | Feature Flag | Best For |
-|----------|-------------|----------|
-| [Static File](./static-file) | (always available) | Simple deployments, single-file config |
-| [HTTP API](./http) | `config-http` | Centralized config service, control planes |
-| [DynamoDB](./dynamodb) | `config-dynamodb` | AWS-native infrastructure |
-| [PostgreSQL](./postgres) | `config-postgres` | Database-backed config |
+| Provider | Status | Best For |
+|----------|--------|----------|
+| [Static File](./static-file) | Built-in (always available) | Simple deployments, single-file config |
 
-All providers can be wrapped with [CachedProvider](./cached) for in-memory caching with TTL-based expiration.
+`StaticProvider` is the only built-in config provider. Any type implementing both registry traits can be wrapped with the example [CachedProvider](./cached) for in-memory caching with TTL-based expiration, or you can implement the traits yourself for a custom backend.
 
 ## Implementing Custom Registries
 

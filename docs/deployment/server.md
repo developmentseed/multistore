@@ -1,17 +1,17 @@
 # Server Runtime
 
-The server runtime uses Tokio and Hyper to run as a native HTTP server. It supports all backend providers (S3, Azure, GCS) and all config providers.
+The server runtime uses Tokio and Hyper to run as a native HTTP server. It supports the S3 backend by default, with optional Azure and GCS backends behind cargo features.
 
 ## Building
 
 ```bash
-# Default build (S3 + Azure + GCS backends)
+# Default build (S3 backend)
 cargo build --release -p multistore-server
 
-# With additional config providers
+# With Azure and/or GCS backends
 cargo build --release -p multistore-server \
-  --features multistore/config-dynamodb \
-  --features multistore/config-postgres
+  --features multistore/azure \
+  --features multistore/gcp
 ```
 
 The binary is located at `target/release/multistore-server`.
@@ -28,10 +28,9 @@ The binary is located at `target/release/multistore-server`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config` | (required) | Path to the TOML config file |
+| `--config` | `config.toml` | Path to the TOML config file |
 | `--listen` | `0.0.0.0:8080` | Address and port to listen on |
 | `--domain` | (none) | Domain for virtual-hosted-style requests (e.g., `s3.example.com`) |
-| `--sts-config` | (none) | Optional separate TOML file for STS roles/credentials |
 
 ### Environment Variables
 
@@ -50,23 +49,24 @@ export SESSION_TOKEN_KEY=$(openssl rand -base64 32)
 
 ## Docker
 
-```bash
-# Build
-docker build -t multistore-proxy .
+> [!NOTE]
+> The repository does not currently ship a `Dockerfile`. The snippet below is illustrative — you must supply your own image that builds and runs the `multistore-server` binary. Because the binary defaults `--config` to `./config.toml`, pass `--config` explicitly to point at the mounted config path.
 
-# Run
+```bash
+# Run (assuming an image named `multistore-proxy` that you have built)
 docker run \
   -v ./config.toml:/etc/multistore/config.toml \
   -p 8080:8080 \
   -e SESSION_TOKEN_KEY="$SESSION_TOKEN_KEY" \
-  multistore-proxy
+  multistore-proxy \
+  --config /etc/multistore/config.toml
 ```
 
 ## Config Caching
 
-The server binary wraps the config provider with `CachedProvider` (60-second TTL). Config changes from network-backed providers (HTTP, DynamoDB, Postgres) are picked up within 60 seconds without restarting the proxy.
+The server binary wraps the config provider with `CachedProvider` (60-second TTL). With a dynamic, network-backed config provider, changes would be picked up within 60 seconds without restarting the proxy.
 
-For static file configs, changes require a restart.
+The server currently ships only the static file provider, so config changes require a restart.
 
 ## Virtual-Hosted Style
 

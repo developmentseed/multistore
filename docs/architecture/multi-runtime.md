@@ -11,7 +11,7 @@ The proxy runs on two runtimes — a native Tokio/Hyper server for container dep
 | **HTTP client** | reqwest | `web_sys::fetch` |
 | **Streaming** | hyper `Incoming` / reqwest `bytes_stream()` | JS `ReadableStream` passthrough |
 | **Object store connector** | Default (reqwest-based) | `FetchConnector` |
-| **Backend support** | S3, Azure, GCS | S3 only |
+| **Backend support** | S3, Azure, GCS | S3, Azure, GCS via cargo features (example ships S3 only) |
 | **Config loading** | TOML file | Env var (JSON or JS object) |
 | **Threading** | Multi-threaded (`Send + Sync` required) | Single-threaded (`!Send` types allowed) |
 
@@ -26,7 +26,7 @@ The solution is conditional trait aliases defined in `multistore`:
 - On native targets: `MaybeSend` resolves to `Send`, `MaybeSync` resolves to `Sync`
 - On `wasm32`: `MaybeSend` and `MaybeSync` are blanket traits that every type implements
 
-Only traits whose wasm implementations use `!Send` types need `MaybeSend + MaybeSync`: `ProxyBackend`, `RouteHandler`, `Middleware`, `HttpExchange`, and `CredentialExchange`. Other traits like `BucketRegistry` and `CredentialRegistry` use plain `Send + Sync`.
+Traits whose wasm implementations use `!Send` types are bounded by `MaybeSend + MaybeSync`: `ProxyBackend`, `RouteHandler`, `Middleware`, `HttpExchange`, and `CredentialExchange`. The registry traits `BucketRegistry` and `CredentialRegistry` use the same conditional bounds (`Clone + MaybeSend + MaybeSync + 'static`), so they resolve to `Send + Sync` on native targets and relax to `!Send` on wasm.
 
 The `Signer` trait from `object_store` requires real `Send + Sync`, which works because `UnsignedUrlSigner` only holds `String` fields, and `object_store`'s built-in store types are `Send + Sync`.
 
@@ -70,7 +70,7 @@ This is only used for LIST operations — presigned URL operations bypass `objec
 
 ### WASM Limitations
 
-- **S3 only**: Azure and GCS builders are gated behind cargo features that are disabled for the Workers runtime
+- **Backend features**: The `multistore-cf-workers` crate supports S3, Azure, and GCS — the `StoreBuilder::Azure` and `StoreBuilder::Gcs` branches work on the Workers runtime, gated behind the `azure` and `gcp` cargo features. Those features are off by default, so the shipped example (`examples/cf-workers`) enables S3 only
 - **`Instant::now()` panics on WASM**: The `UnsignedUrlSigner` avoids the `InstanceCredentialProvider` → `TokenCache` → `Instant::now()` code path that panics on WASM
 - **No `default-members`**: The CF Workers crate is excluded from the workspace default members. Always build with:
   ```bash

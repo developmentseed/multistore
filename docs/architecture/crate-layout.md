@@ -4,15 +4,18 @@ The project is organized as a Cargo workspace with libraries (traits and logic) 
 
 ```
 crates/
-├── core/  (multistore)                 # Runtime-agnostic: traits, S3 parsing, SigV4, registries
-├── metering/ (multistore-metering)     # Usage metering and quota enforcement middleware
-├── sts/   (multistore-sts)             # OIDC/STS token exchange (AssumeRoleWithWebIdentity)
-└── oidc-provider/                      # Outbound OIDC provider (JWT signing, JWKS, exchange)
+├── core/          (multistore)                # Runtime-agnostic: traits, S3 parsing, SigV4, registries
+├── metering/      (multistore-metering)       # Usage metering and quota enforcement middleware
+├── sts/           (multistore-sts)            # OIDC/STS token exchange (AssumeRoleWithWebIdentity)
+├── oidc-provider/ (multistore-oidc-provider)  # Outbound OIDC provider (JWT signing, JWKS, exchange)
+├── static-config/ (multistore-static-config)  # Static config provider (buckets/roles/credentials)
+├── path-mapping/  (multistore-path-mapping)   # Hierarchical path-based backend resolution
+└── cf-workers/    (multistore-cf-workers)     # Cloudflare Workers runtime library (WASM)
 
 examples/
-├── server/ (multistore-server)         # Tokio/Hyper for container deployments
-├── lambda/ (multistore-lambda)         # AWS Lambda runtime
-└── cf-workers/ (multistore-cf-workers) # Cloudflare Workers for edge deployments
+├── server/     (multistore-server)             # Tokio/Hyper for container deployments
+├── lambda/     (multistore-lambda)             # AWS Lambda runtime
+└── cf-workers/ (multistore-cf-workers-example) # Cloudflare Workers example for edge deployments
 ```
 
 ## Crate Responsibilities
@@ -24,10 +27,9 @@ The runtime-agnostic core. Contains:
 - `Router` — Path-based route matching via `matchit` for efficient pre-dispatch
 - `RouteHandler` trait — Pluggable request interception
 - `Middleware` trait — Composable post-auth middleware for dispatch, with `after_dispatch` for post-response observation
-- `Forwarder` trait — Runtime-provided HTTP transport for backend forwarding; the core orchestrates the call so middleware can observe response metadata
 - `BucketRegistry` trait — Bucket lookup, authorization, and listing
 - `CredentialRegistry` trait — Credential and role storage
-- `ProxyBackend` trait — Runtime abstraction for store/signer/raw HTTP
+- `ProxyBackend` trait — Runtime abstraction for store/signer/raw HTTP; its `forward()` method provides backend HTTP transport, and the core orchestrates the call so middleware can observe response metadata
 - S3 request parsing, XML response building, list prefix rewriting
 - SigV4 signature verification
 - Sealed session token encryption/decryption
@@ -65,6 +67,19 @@ Outbound OIDC identity provider for backend authentication:
 - AWS credential exchange (`AwsBackendAuth` middleware)
 - Credential caching
 
+### `multistore-static-config`
+
+The built-in configuration provider (`StaticProvider`) — the only config provider shipped today:
+- Loads buckets, roles, and credentials from a single TOML or JSON file
+- Implements `BucketRegistry` and `CredentialRegistry` over the parsed config
+- Suitable for static deployments where the bucket/role/credential set is known ahead of time
+
+### `multistore-path-mapping`
+
+Hierarchical path-based backend resolution:
+- Maps request paths of the form `/{account}/{product}/{key}` to a per-(account, product) backend
+- Resolves the backend for each account/product pair from the configured mapping
+
 ### `multistore-server`
 
 The native server runtime (in `examples/server/`):
@@ -76,20 +91,26 @@ The native server runtime (in `examples/server/`):
 
 ### `multistore-cf-workers`
 
-The Cloudflare Workers WASM runtime (in `examples/cf-workers/`):
+The reusable Cloudflare Workers WASM runtime library (in `crates/cf-workers/`):
 - `WorkerBackend` implementing `ProxyBackend` with `web_sys::fetch`
 - `RequestParts` — extracts owned HTTP metadata from `web_sys::Request` and provides `as_request_info()` for gateway dispatch
 - `GatewayResponseExt` — extension trait for converting `GatewayResponse` to `web_sys::Response` via `.into_web_sys()`
 - `JsBody` — zero-copy body wrapper around `web_sys::ReadableStream`
 - `WsHeaders` — newtype around `web_sys::Headers` with `From<&HeaderMap>` (works around orphan rules)
 - `FetchConnector` bridging `object_store` HTTP to Workers Fetch API
+
+> [!WARNING]
+> This crate is excluded from the workspace `default-members` because WASM types are `!Send` and won't compile on native targets. Always build with `--target wasm32-unknown-unknown`.
+
+### `multistore-cf-workers-example`
+
+The Cloudflare Workers example deployment (in `examples/cf-workers/`). It wires the
+`multistore-cf-workers` library together with config, STS, OIDC, and metering, and adds
+example-only symbols:
 - `BandwidthMeter` Durable Object — per-(bucket, identity) sliding-window byte counter
 - `DoBandwidthMeter` implementing `QuotaChecker` + `UsageRecorder` via the `BandwidthMeter` DO
 - `CfRateLimiter` middleware for request-rate limiting via CF Rate Limiting API
 - Config loading from env vars (`PROXY_CONFIG`, `BANDWIDTH_QUOTAS`)
-
-> [!WARNING]
-> This crate is excluded from the workspace `default-members` because WASM types are `!Send` and won't compile on native targets. Always build with `--target wasm32-unknown-unknown`.
 
 ## Dependency Flow
 
@@ -99,9 +120,12 @@ flowchart TD
     metering["multistore-metering"]
     sts["multistore-sts"]
     oidc["multistore-oidc-provider"]
+    staticcfg["multistore-static-config"]
+    pathmap["multistore-path-mapping"]
+    cfworkers["multistore-cf-workers"]
     server["multistore-server"]
     lambda["multistore-lambda"]
-    workers["multistore-cf-workers"]
+    workers["multistore-cf-workers-example"]
 
     server --> core
     server --> sts
@@ -110,11 +134,15 @@ flowchart TD
     lambda --> sts
     lambda --> oidc
     workers --> core
+    workers --> cfworkers
     workers --> sts
     workers --> oidc
+    cfworkers --> core
     metering --> core
     sts --> core
     oidc --> core
+    staticcfg --> core
+    pathmap --> core
 ```
 
 Libraries define trait abstractions. Runtimes implement `ProxyBackend` with platform-native primitives, build a `Router` with extension traits, and convert the two-variant `GatewayResponse` into a platform response (e.g. via `GatewayResponseExt::into_web_sys()` on Workers).
