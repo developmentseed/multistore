@@ -6,14 +6,16 @@
 //! credentials actually work by reading the private S3 bucket with them (via
 //! `object_store`, exactly how multistore uses them).
 //!
-//! It is **gated on environment variables** and self-skips when they are
-//! absent, so ordinary `cargo test` (and the unit-test CI job) runs it as a
-//! no-op. It only does real work when pointed at a configured role + bucket.
+//! It is `#[ignore]`d so it stays out of the ordinary unit-test suite (and
+//! local `cargo test`), but the dedicated `live-federation` CI job runs it with
+//! `--ignored` on every push and it **panics (fails) when the required
+//! environment is absent** — so a configured role + bucket is enforced rather
+//! than silently skipped.
 //!
 //! ## Required environment
 //!
 //! - `MULTISTORE_TEST_ROLE_ARN` — IAM role to assume. **If unset, the test
-//!   skips.**
+//!   fails.**
 //! - `MULTISTORE_TEST_BUCKET` — private S3 bucket the role can read.
 //! - `MULTISTORE_TEST_REGION` — bucket/STS region (default `us-east-1`).
 //! - `MULTISTORE_TEST_KEY` — optional object key to `GET`; if unset the test
@@ -64,19 +66,18 @@ async fn web_identity_token() -> Option<String> {
     )
 }
 
-// `#[ignore]` so the ordinary unit-test suite reports this as *ignored*, never
-// as a misleading green "passed", when no AWS target is configured. The gated
-// `live-federation` CI job runs it with `-- --ignored` only when the repo
-// variables are present. Run locally with:
+// `#[ignore]` keeps this out of the ordinary unit-test suite (it needs real AWS
+// and would otherwise fail local `cargo test`). The `live-federation` CI job
+// runs it with `-- --ignored` on every push and **fails if the required env
+// vars are unset** — a configured role + bucket is enforced, never silently
+// skipped. Run locally with:
 //   MULTISTORE_TEST_ROLE_ARN=… MULTISTORE_TEST_BUCKET=… \
 //     cargo test -p multistore-backend-federation --test live_sts -- --ignored --nocapture
 #[tokio::test]
 #[ignore = "live AWS test; set MULTISTORE_TEST_ROLE_ARN/BUCKET and run with --ignored"]
 async fn assume_role_and_read_private_bucket() {
-    let Some(role_arn) = env("MULTISTORE_TEST_ROLE_ARN") else {
-        eprintln!("skipping live_sts: MULTISTORE_TEST_ROLE_ARN not set");
-        return;
-    };
+    let role_arn = env("MULTISTORE_TEST_ROLE_ARN")
+        .expect("MULTISTORE_TEST_ROLE_ARN must be set to run the live federation test");
     let bucket = env("MULTISTORE_TEST_BUCKET")
         .expect("MULTISTORE_TEST_BUCKET must be set when MULTISTORE_TEST_ROLE_ARN is");
     let region = env("MULTISTORE_TEST_REGION").unwrap_or_else(|| "us-east-1".to_string());

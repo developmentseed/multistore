@@ -160,13 +160,12 @@ jobs:
   live-federation:
     name: Live Backend Federation (real AWS STS)
     runs-on: ubuntu-latest
-    # Gated: this job only runs when MULTISTORE_TEST_ROLE_ARN is configured. When
-    # it isn't, the job shows as *skipped* (neutral) rather than a misleading
-    # green "pass", so a passing checks list never implies the live AWS path was
-    # actually exercised. To activate, set repository Actions variables
-    # MULTISTORE_TEST_ROLE_ARN / MULTISTORE_TEST_BUCKET / MULTISTORE_TEST_REGION
-    # and grant the role's trust policy this repo's GitHub OIDC subject.
-    if: ${{ vars.MULTISTORE_TEST_ROLE_ARN != '' }}
+    # Always runs and **fails** when the live AWS target is unconfigured (the
+    # test panics on missing env), so green CI genuinely means the real AWS STS
+    # path was exercised — it can't be silently skipped. To make it pass, set
+    # repository Actions variables MULTISTORE_TEST_ROLE_ARN / MULTISTORE_TEST_BUCKET
+    # / MULTISTORE_TEST_REGION and grant the role's trust policy this repo's
+    # GitHub OIDC subject (audience sts.amazonaws.com).
     permissions:
       id-token: write
       contents: read
@@ -182,6 +181,6 @@ jobs:
           MULTISTORE_TEST_BUCKET: ${{ vars.MULTISTORE_TEST_BUCKET }}
           MULTISTORE_TEST_REGION: ${{ vars.MULTISTORE_TEST_REGION }}
           MULTISTORE_TEST_KEY: ${{ vars.MULTISTORE_TEST_KEY }}
-        # `--ignored` runs the otherwise-ignored live test; `--include-ignored`
-        # is not used so nothing else changes.
+        # `--ignored` runs the otherwise-ignored live test. It fails the job if
+        # the required variables above are not set.
         run: cargo test -p multistore-backend-federation --test live_sts -- --ignored --nocapture
