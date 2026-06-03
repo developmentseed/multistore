@@ -16,21 +16,30 @@ A set of Rust crates for building multi-runtime S3 gateway proxies. Multistore p
 
 ## Crate Layout
 
-```
-crates/
-├── core/              (multistore)                # Runtime-agnostic: traits, S3 parsing, SigV4, registries
-├── metering/          (multistore-metering)       # Usage metering and quota enforcement middleware
-├── sts/               (multistore-sts)            # OIDC/STS token exchange
-├── oidc-provider/     (multistore-oidc-provider)  # Outbound OIDC provider
-├── static-config/     (multistore-static-config)  # Static config provider
-├── path-mapping/      (multistore-path-mapping)   # Path mapping utilities
-└── cf-workers/        (multistore-cf-workers)     # Cloudflare Workers runtime (WASM)
+The workspace is split into reusable **libraries** (traits and logic) and example **runtimes** (executable targets). Each crate name links to its API documentation on [docs.rs](https://docs.rs).
 
-examples/
-├── server/            (multistore-server)         # Tokio/Hyper native server
-├── lambda/            (multistore-lambda)         # AWS Lambda runtime
-└── cf-workers/        (multistore-cf-workers)     # Cloudflare Workers
-```
+### Libraries
+
+| Crate | Path | Description |
+| ----- | ---- | ----------- |
+| [`multistore`](https://docs.rs/multistore) | [`crates/core/`](crates/core) | Runtime-agnostic core: traits, S3 parsing, SigV4, registries |
+| [`multistore-metering`](https://docs.rs/multistore-metering) | [`crates/metering/`](crates/metering) | Usage metering and quota enforcement middleware |
+| [`multistore-sts`](https://docs.rs/multistore-sts) | [`crates/sts/`](crates/sts) | OIDC/STS token exchange (`AssumeRoleWithWebIdentity`) |
+| [`multistore-oidc-provider`](https://docs.rs/multistore-oidc-provider) | [`crates/oidc-provider/`](crates/oidc-provider) | Outbound OIDC provider (JWT signing, JWKS, exchange) |
+| `multistore-backend-federation` | [`crates/backend-federation/`](crates/backend-federation) | Outbound credential federation (OIDC identity → backend cloud STS) |
+| `multistore-static-config` | [`crates/static-config/`](crates/static-config) | Static config provider (buckets/roles/credentials) |
+| [`multistore-path-mapping`](https://docs.rs/multistore-path-mapping) | [`crates/path-mapping/`](crates/path-mapping) | Hierarchical path-based backend resolution |
+| [`multistore-cf-workers`](https://docs.rs/multistore-cf-workers) | [`crates/cf-workers/`](crates/cf-workers) | Cloudflare Workers runtime library (WASM) |
+
+### Examples
+
+| Crate | Path | Description |
+| ----- | ---- | ----------- |
+| `multistore-server` | [`examples/server/`](examples/server) | Tokio/Hyper native server for container deployments |
+| `multistore-lambda` | [`examples/lambda/`](examples/lambda) | AWS Lambda runtime |
+| `multistore-cf-workers-example` | [`examples/cf-workers/`](examples/cf-workers) | Cloudflare Workers example for edge deployments |
+
+`multistore-backend-federation` and `multistore-static-config` are not published to crates.io; follow their source links for documentation. For per-crate responsibilities and the dependency graph, see [Crate Layout](https://developmentseed.org/multistore/architecture/crate-layout/) in the docs.
 
 ## Getting Started
 
