@@ -70,16 +70,13 @@ name = "public-data"
 
 ## Config Providers
 
-The proxy can load configuration from multiple backends. See [Config Providers](./providers/) for details.
+The proxy resolves its configuration through any type implementing the `BucketRegistry`/`CredentialRegistry` traits. See [Config Providers](./providers/) for details.
 
 | Provider | Status | Use Case |
 |----------|--------|----------|
 | [Static File](./providers/static-file) | Built-in (always available) | Simple deployments, baked-in config |
-| [HTTP API](./providers/http) | Planned — not yet implemented | Centralized config service |
-| [DynamoDB](./providers/dynamodb) | Planned — not yet implemented | AWS-native infrastructure |
-| [PostgreSQL](./providers/postgres) | Planned — not yet implemented | Database-backed config |
 
-The static file provider is the only config provider in the current release. The HTTP, DynamoDB, and PostgreSQL providers are planned features; there are no `config-http`/`config-dynamodb`/`config-postgres` feature flags today.
+`StaticProvider` is the only built-in config provider. To source config from elsewhere, implement the registry traits yourself (optionally wrapped with the example [CachedProvider](./providers/cached) for in-memory caching).
 
 ## Full Example
 

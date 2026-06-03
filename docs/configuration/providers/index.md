@@ -55,11 +55,8 @@ pub trait CredentialRegistry: Clone + MaybeSend + MaybeSync + 'static {
 | Provider | Status | Best For |
 |----------|--------|----------|
 | [Static File](./static-file) | Built-in (always available) | Simple deployments, single-file config |
-| [HTTP API](./http) | Planned — not yet implemented | Centralized config service, control planes |
-| [DynamoDB](./dynamodb) | Planned — not yet implemented | AWS-native infrastructure |
-| [PostgreSQL](./postgres) | Planned — not yet implemented | Database-backed config |
 
-The static file provider is the only built-in config provider in the current release. The HTTP, DynamoDB, and PostgreSQL providers are planned and have no corresponding feature flags yet. Any provider implementing both registry traits can be wrapped with the example [CachedProvider](./cached) for in-memory caching with TTL-based expiration.
+`StaticProvider` is the only built-in config provider. Any type implementing both registry traits can be wrapped with the example [CachedProvider](./cached) for in-memory caching with TTL-based expiration, or you can implement the traits yourself for a custom backend.
 
 ## Implementing Custom Registries
 
