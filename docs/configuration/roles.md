@@ -33,10 +33,10 @@ actions = ["get_object", "head_object"]
 |-------|------|----------|-------------|
 | `role_id` | string | Yes | Identifier used as the `RoleArn` in STS requests |
 | `name` | string | Yes | Human-readable display name |
-| `trusted_oidc_issuers` | string[] | Yes | OIDC provider URLs whose tokens are accepted |
+| `trusted_oidc_issuers` | string[] | Validated as required | OIDC provider URLs whose tokens are accepted. Deserializes fine when absent, but config validation rejects a role with no issuers (it could never accept a token). |
 | `required_audience` | string | No | If set, the token's `aud` claim must match |
-| `subject_conditions` | string[] | Yes | Glob patterns matched against the `sub` claim |
-| `max_session_duration_secs` | integer | Yes | Maximum session lifetime (minimum 900s) |
+| `subject_conditions` | string[] | No | Glob patterns matched against the `sub` claim. When omitted or empty, the subject check is skipped entirely and all subjects match. |
+| `max_session_duration_secs` | integer | Yes | Maximum session lifetime granted by this role |
 | `allowed_scopes` | AccessScope[] | Yes | Buckets, prefixes, and actions granted |
 
 ## Trust Policy Evaluation
@@ -47,7 +47,7 @@ When a client calls `AssumeRoleWithWebIdentity`, the proxy evaluates the JWT aga
 2. **Algorithm** — Only RS256 is supported
 3. **Signature** — Verified against the issuer's JWKS (fetched and cached)
 4. **Audience** — If `required_audience` is set, the JWT's `aud` claim must match
-5. **Subject** — The JWT's `sub` claim must match at least one `subject_conditions` pattern
+5. **Subject** — If `subject_conditions` is non-empty, the JWT's `sub` claim must match at least one pattern. If it is empty (or omitted), the subject check is skipped and all subjects pass.
 
 If any check fails, the STS request returns an error.
 
@@ -64,7 +64,11 @@ subject_conditions = [
 ]
 ```
 
-The `sub` claim only needs to match one of the patterns.
+The `sub` claim only needs to match one of the patterns. If `subject_conditions` is omitted or left empty, the subject check is skipped entirely and every subject is accepted.
+
+## Session Duration
+
+`max_session_duration_secs` is the maximum session lifetime this role grants. At mint time, the caller's requested `DurationSeconds` is clamped into the range `[900, max_session_duration_secs]` — the 900-second floor is a clamp applied to the requested session length (matching AWS's STS minimum), not a validated minimum on the field itself. If no duration is requested, 3600s is used (subject to the same clamp).
 
 ## Access Scopes
 

@@ -22,35 +22,27 @@ This starts:
 
 ## Run the Proxy
 
-Choose either the native server runtime or Cloudflare Workers:
+The shipped Cloudflare Workers config (`examples/cf-workers/wrangler.toml`) wires the `public-data` and `private-uploads` buckets to the local MinIO instance started above, so it works out of the box:
 
-::: code-group
-
-```bash [Server Runtime]
-cargo run -p multistore-server -- \
-  --config config.local.toml \
-  --listen 0.0.0.0:8080
-```
-
-```bash [Cloudflare Workers]
+```bash
 cd examples/cf-workers && npx wrangler dev
 ```
 
-:::
+The Workers dev server listens on port `8787`.
 
-The server runtime listens on port `8080`. The Workers runtime listens on port `8787`.
+> The native server example (`examples/server/config.toml`) ships a different set of buckets pointed at real AWS S3, not the local MinIO buckets. See [Local Development](./local-development) for details on each runtime's config.
 
 ## Make Your First Request
 
 ```bash
 # Anonymous read from a public bucket
-curl http://localhost:8080/public-data/hello.txt
+curl http://localhost:8787/public-data/hello.txt
 
 # Signed upload with the local dev credential
 AWS_ACCESS_KEY_ID=AKLOCAL0000000000001 \
 AWS_SECRET_ACCESS_KEY="localdev/secret/key/00000000000000000000" \
 aws s3 cp ./myfile.txt s3://private-uploads/myfile.txt \
-    --endpoint-url http://localhost:8080
+    --endpoint-url http://localhost:8787
 ```
 
 ## Next Steps

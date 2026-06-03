@@ -12,6 +12,20 @@ use object_store::{ObjectStore, signer::Signer};
 use std::sync::Arc;
 
 pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
+    /// The streaming body type in forwarded backend responses.
+    type ResponseBody: MaybeSend + 'static;
+
+    /// The request body type accepted by `forward()`.
+    type Body: MaybeSend + 'static;
+
+    /// Execute a presigned ForwardRequest against the backend and return
+    /// the response with a streaming body (GET/HEAD/PUT/DELETE)
+    fn forward(
+        &self,
+        request: ForwardRequest,
+        body: Self::Body,
+    ) -> impl Future<Output = Result<ForwardResponse<Self::ResponseBody>, ProxyError>> + MaybeSend;
+
     /// Create a PaginatedListStore for LIST operations
     fn create_paginated_store(&self, config: &BucketConfig)
         -> Result<Box<dyn PaginatedListStore>, ProxyError>;
@@ -30,7 +44,40 @@ pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
 }
 ```
 
-## Three Responsibilities
+## Four Responsibilities
+
+### `forward()`
+
+Executes a presigned `ForwardRequest` against the backend and returns a `ForwardResponse` whose `body` is your runtime's native streaming type (`Self::ResponseBody`). The gateway calls this internally for GET/HEAD/PUT/DELETE; you supply the HTTP transport and the two associated types (`Body` for the inbound request body, `ResponseBody` for the streamed response body):
+
+```rust
+async fn forward(
+    &self,
+    request: ForwardRequest,
+    body: Self::Body,
+) -> Result<ForwardResponse<Self::ResponseBody>, ProxyError> {
+    let response = self.http_client
+        .request(request.method, request.url.as_str())
+        .headers(request.headers)
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| ProxyError::BackendError(e.to_string()))?;
+
+    let status = response.status().as_u16();
+    let headers = response.headers().clone();
+    let content_length = response.content_length();
+
+    Ok(ForwardResponse {
+        status,
+        headers,
+        content_length,
+        body: response.into_body(), // your runtime's streaming body type
+    })
+}
+```
+
+## Other Responsibilities
 
 ### `create_paginated_store()`
 
@@ -103,7 +150,7 @@ use multistore::router::Router;
 use multistore_sts::route_handler::StsRouterExt;
 
 let router = Router::new()
-    .with_sts(sts_creds, jwks_cache, token_key);
+    .with_sts("/.sts", sts_creds, jwks_cache, token_key);
 
 let backend = MyBackend::new(http_client);
 let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
@@ -115,9 +162,9 @@ match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => {
         // Return the complete response (LIST, errors, STS, etc.)
     }
-    GatewayResponse::Forward(fwd, body) => {
-        // Execute presigned URL with your HTTP client
-        // Stream request body (PUT) or response body (GET)
+    GatewayResponse::Forward(response) => {
+        // Forwarding already happened inside handle_request (via backend.forward);
+        // stream response.body to the client (response.status, response.headers)
     }
 }
 ```

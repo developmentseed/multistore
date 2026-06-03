@@ -27,7 +27,7 @@ secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 | `name` | string | Yes | Client-visible bucket name |
 | `backend_type` | string | Yes | Backend provider: `"s3"`, `"az"`, or `"gcs"` |
 | `backend_prefix` | string | No | Prefix prepended to keys when forwarding to the backend |
-| `anonymous_access` | bool | No | Allow GET/HEAD/LIST without authentication (default: `false`) |
+| `anonymous_access` | bool | Yes | Allow GET/HEAD/LIST without authentication (must be set explicitly; omitting it is a config error) |
 | `allowed_roles` | string[] | No | Role IDs that can be assumed for this bucket |
 | `backend_options` | map | Yes | Provider-specific configuration (see below) |
 
@@ -46,7 +46,7 @@ secret_access_key = "..."
 
 | Option | Required | Description |
 |--------|----------|-------------|
-| `endpoint` | Yes | S3 endpoint URL |
+| `endpoint` | No | S3 endpoint URL; derived from `region` if omitted |
 | `bucket_name` | Yes | Backend bucket name |
 | `region` | Yes | AWS region |
 | `access_key_id` | No | AWS access key (omit for anonymous or OIDC) |
