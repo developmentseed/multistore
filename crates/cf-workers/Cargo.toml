@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 description = "Cloudflare Workers runtime adapters for the multistore S3 proxy gateway"
 
+# This crate is WASM-only: it depends on web-sys/js-sys/worker and getrandom's
+# js features, which don't compile on docs.rs's default host target. Build the
+# docs for wasm32 instead so the docs.rs build succeeds.
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+targets = []
+
 [features]
 default = []
 azure = ["multistore/azure"]
