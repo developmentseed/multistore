@@ -86,6 +86,9 @@ When a client calls `AssumeRoleWithWebIdentity`:
 6. If `SESSION_TOKEN_KEY` is configured, the credentials are AES-256-GCM encrypted into the session token (see [Sealed Session Tokens](./sealed-tokens))
 7. The proxy returns the credentials in an XML response matching the AWS STS format
 
+> [!NOTE]
+> The JWKS endpoint is only fetched over `https://` — issuers with any other scheme are rejected to prevent MITM attacks. Time-based claims (`exp`/`nbf`) are validated with a 60-second clock-skew tolerance.
+
 ### STS Request Parameters
 
 | Parameter | Required | Description |
@@ -109,7 +112,7 @@ The response follows the standard AWS STS XML format:
       <Expiration>2024-01-15T01:00:00Z</Expiration>
     </Credentials>
     <AssumedRoleUser>
-      <Arn>github-actions-deployer/alice</Arn>
+      <Arn>github-actions-deployer</Arn>
       <AssumedRoleId>github-actions-deployer</AssumedRoleId>
     </AssumedRoleUser>
   </AssumeRoleWithWebIdentityResult>
