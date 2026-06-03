@@ -55,11 +55,11 @@ name = "federated-test"
 
 [vars.PROXY_CONFIG.buckets.backend_options]
 auth_type = "oidc"
-oidc_role_arn = "arn:aws:iam::123456789012:role/multistore-backend-federation-test"
+oidc_role_arn = "arn:aws:iam::470592060578:role/multistore-github-ci"
 oidc_subject = "multistore"
-bucket_name = "REPLACE_WITH_PRIVATE_TEST_BUCKET"
-endpoint = "https://s3.us-east-1.amazonaws.com"
-region = "us-east-1"
+bucket_name = "multistore-test-bucket"
+endpoint = "https://s3.us-west-2.amazonaws.com"
+region = "us-west-2"
 
 [[vars.PROXY_CONFIG.credentials]]
 access_key_id = "AKPROXY00000EXAMPLE"
