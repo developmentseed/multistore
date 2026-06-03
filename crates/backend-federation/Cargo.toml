@@ -1,0 +1,23 @@
+[package]
+name = "multistore-backend-federation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Outbound credential federation (OIDC identity -> backend cloud STS) for the multistore S3 proxy gateway"
+
+[dependencies]
+multistore.workspace = true
+chrono.workspace = true
+serde.workspace = true
+quick-xml.workspace = true
+url.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Live, network-touching functional test (`tests/live_sts.rs`) — gated on env
+# vars, so it self-skips during ordinary `cargo test`.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+reqwest.workspace = true
+object_store.workspace = true
+serde_json.workspace = true
+futures.workspace = true

@@ -29,7 +29,10 @@ use exchange::CredentialExchange;
 use jwt::JwtSigner;
 
 /// Temporary cloud credentials obtained via token exchange.
-#[derive(Debug, Clone)]
+///
+/// `Debug` redacts the secret access key and session token so credentials are
+/// never leaked into logs.
+#[derive(Clone)]
 pub struct CloudCredentials {
     /// AWS access key ID. Empty string for Azure/GCP (bearer-token-only providers).
     pub access_key_id: String,
@@ -39,6 +42,17 @@ pub struct CloudCredentials {
     pub session_token: String,
     /// When these credentials expire.
     pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl std::fmt::Debug for CloudCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudCredentials")
+            .field("access_key_id", &self.access_key_id)
+            .field("secret_access_key", &"[REDACTED]")
+            .field("session_token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 /// HTTP client abstraction for outbound requests (STS token exchange).
@@ -133,8 +147,30 @@ pub enum OidcProviderError {
     #[error("credential exchange failed: {0}")]
     ExchangeError(String),
 
+    /// The backend cloud's STS returned an error document (e.g. AWS
+    /// `InvalidIdentityToken`). The `code`/`message` come from the provider and
+    /// usually point at a trust-policy or issuer misconfiguration; they are not
+    /// sanitized, so do not echo them verbatim to untrusted callers.
+    #[error("STS returned an error: {code}: {message}")]
+    StsError {
+        /// Provider error code (e.g. `InvalidIdentityToken`).
+        code: String,
+        /// Human-readable provider message.
+        message: String,
+    },
+
     #[error("HTTP error: {0}")]
     HttpError(String),
+}
+
+impl From<multistore_backend_federation::FederationError> for OidcProviderError {
+    fn from(e: multistore_backend_federation::FederationError) -> Self {
+        use multistore_backend_federation::FederationError as F;
+        match e {
+            F::Sts { code, message } => OidcProviderError::StsError { code, message },
+            F::Parse(e) => OidcProviderError::ExchangeError(e.to_string()),
+        }
+    }
 }
 
 impl From<OidcProviderError> for multistore::error::ProxyError {

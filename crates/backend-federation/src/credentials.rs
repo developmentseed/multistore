@@ -31,8 +31,14 @@ impl FederatedCredentials {
     ///
     /// Sets the canonical S3 option keys (`access_key_id`, `secret_access_key`,
     /// and `token` — the alias object_store maps to the session token and that
-    /// multistore redacts in logs), clears `skip_signature`, and disables
-    /// `anonymous_access`.
+    /// multistore redacts in logs) and clears `skip_signature` so the backend
+    /// signs.
+    ///
+    /// This governs only *outbound* (backend) signing. It deliberately leaves
+    /// [`BucketConfig::anonymous_access`] untouched: that flag controls
+    /// *inbound* authorization (whether proxy callers may read the bucket
+    /// unauthenticated), which is orthogonal — a bucket can be public to
+    /// anonymous callers yet served from a private backend the proxy signs into.
     pub fn apply_to(&self, config: &mut BucketConfig) {
         let opts = &mut config.backend_options;
         opts.insert("access_key_id".to_string(), self.access_key_id.clone());
@@ -42,7 +48,6 @@ impl FederatedCredentials {
         );
         opts.insert("token".to_string(), self.session_token.clone());
         opts.remove("skip_signature");
-        config.anonymous_access = false;
     }
 }
 

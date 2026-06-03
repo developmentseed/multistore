@@ -1145,6 +1145,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "multistore-backend-federation"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "multistore",
+ "object_store",
+ "quick-xml 0.37.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "multistore-cf-workers"
 version = "0.4.0"
 dependencies = [
@@ -1192,18 +1209,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "multistore-federation"
-version = "0.4.0"
-dependencies = [
- "chrono",
- "multistore",
- "quick-xml 0.37.5",
- "serde",
- "thiserror",
- "url",
-]
-
-[[package]]
 name = "multistore-lambda"
 version = "0.4.0"
 dependencies = [
@@ -1243,6 +1248,7 @@ dependencies = [
  "base64",
  "chrono",
  "multistore",
+ "multistore-backend-federation",
  "rand 0.8.5",
  "rsa",
  "serde",

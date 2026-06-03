@@ -38,6 +38,33 @@ bucket_name = "private-uploads"
 endpoint = "http://localhost:9000"
 secret_access_key = "minioadmin"
 
+# Outbound backend federation (multistore-backend-federation via
+# multistore-oidc-provider): instead of long-lived backend keys, the proxy mints
+# its own OIDC assertion and assumes an AWS IAM role at request time
+# (AssumeRoleWithWebIdentity), then signs backend requests with the resulting
+# temporary credentials.
+#
+# Requires:
+#   - OIDC_PROVIDER_KEY (secret, RSA PEM) and OIDC_PROVIDER_ISSUER (var) set, so
+#     the worker serves JWKS/discovery and signs assertions.
+#   - An AWS IAM OIDC identity provider registered for OIDC_PROVIDER_ISSUER
+#     (AWS fetches its JWKS over HTTPS — the issuer must be publicly reachable).
+#   - An IAM role whose trust policy trusts that provider (optionally
+#     conditioning on the `sub` set below) and grants read on the bucket.
+[[vars.PROXY_CONFIG.buckets]]
+allowed_roles = []
+anonymous_access = true
+backend_type = "s3"
+name = "federated-private"
+
+[vars.PROXY_CONFIG.buckets.backend_options]
+auth_type = "oidc"
+oidc_role_arn = "arn:aws:iam::123456789012:role/multistore-backend-federation"
+oidc_subject = "multistore"
+bucket_name = "my-private-bucket"
+endpoint = "https://s3.us-east-1.amazonaws.com"
+region = "us-east-1"
+
 [[vars.PROXY_CONFIG.buckets]]
 allowed_roles = []
 anonymous_access = true

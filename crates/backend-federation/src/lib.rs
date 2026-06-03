@@ -1,20 +1,29 @@
 //! Outbound credential federation for the multistore S3 proxy gateway.
 //!
-//! Multistore already federates *inbound* identity — callers exchange an OIDC
-//! token for proxy credentials via [`multistore-sts`], and the proxy can act as
-//! an OIDC provider via [`multistore-oidc-provider`]. This crate is the
-//! symmetric *outbound* half: letting the proxy present its own identity to a
-//! **backend cloud** and assume a role there, so it can serve data from a
-//! private bucket the operator doesn't hold long-lived keys for.
+//! This crate is the runtime-agnostic *outbound* STS-exchange primitive: the
+//! proxy presents its own OIDC identity to a **backend cloud** and assumes a
+//! role there, so it can serve data from a private bucket the operator doesn't
+//! hold long-lived keys for. It is the client-side counterpart to
+//! [`multistore-sts`], which is the inbound `AssumeRoleWithWebIdentity`
+//! *server* (minting proxy credentials for callers presenting an OIDC token).
 //!
-//! The flow, per backend, at bucket-resolution time:
+//! This is *mechanism only* — it builds the STS request and parses the
+//! response, nothing more. The minting of the proxy's OIDC assertion, the HTTP
+//! transport, caching, and middleware wiring live in
+//! [`multistore-oidc-provider`], which delegates its AWS exchange to this crate.
+//!
+//! The full flow, per backend, at bucket-resolution time:
 //!
 //! 1. Mint a short-lived OIDC assertion with the proxy's signing key
-//!    (`multistore-oidc-provider`), scoped via its `aud`/`sub` claims.
+//!    ([`multistore-oidc-provider`]), scoped via its `aud`/`sub` claims.
 //! 2. Exchange it at the backend cloud's STS — for AWS, [`aws`]'s
-//!    `AssumeRoleWithWebIdentity` — for temporary [`FederatedCredentials`].
+//!    [`AssumeRoleWithWebIdentity`](aws::AssumeRoleWithWebIdentity) — for
+//!    temporary [`FederatedCredentials`].
 //! 3. [`FederatedCredentials::apply_to`] those onto the [`BucketConfig`] so the
 //!    multistore backend signs requests with them instead of going anonymous.
+//!
+//! Steps 1 and 2's transport are the caller's responsibility; this crate owns
+//! the request/response shapes of step 2 and the config injection of step 3.
 //!
 //! No long-lived backend secret is stored anywhere: the bucket config only
 //! needs a role ARN, and the assumed credentials are short-lived and refreshed
@@ -75,9 +84,11 @@ mod tests {
         // `token` is the alias object_store maps to the session token and that
         // multistore redacts in `BucketConfig`'s Debug impl.
         assert_eq!(config.option("token"), Some("session"));
-        // Anonymous/unsigned access must be turned off so the backend signs.
+        // Unsigned access must be turned off so the backend signs.
         assert_eq!(config.option("skip_signature"), None);
-        assert!(!config.anonymous_access);
+        // `apply_to` governs only outbound signing; inbound `anonymous_access`
+        // is left as-is (the test bucket was public to anonymous callers).
+        assert!(config.anonymous_access);
         // Untouched options remain.
         assert_eq!(config.option("bucket_name"), Some("my-bucket"));
     }

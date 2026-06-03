@@ -21,6 +21,6 @@ pub enum FederationError {
 
     /// The response could not be parsed as either a success or an error
     /// document.
-    #[error("failed to parse STS response: {0}")]
-    Parse(String),
+    #[error("failed to parse STS response")]
+    Parse(#[from] quick_xml::DeError),
 }

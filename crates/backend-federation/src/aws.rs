@@ -5,27 +5,40 @@
 //! Multistore deployments differ in their HTTP stack (reqwest on native,
 //! `web_sys::fetch` on Cloudflare Workers), so the caller owns the transport.
 //!
-//! ```no_run
-//! use multistore_federation::aws::AssumeRoleWithWebIdentity;
+//! ```
+//! use multistore_backend_federation::aws::{AssumeRoleWithWebIdentity, parse_response};
 //!
 //! let req = AssumeRoleWithWebIdentity {
 //!     role_arn: "arn:aws:iam::123456789012:role/my-role",
 //!     web_identity_token: "<oidc-jwt>",
 //!     role_session_name: "multistore",
-//!     duration_seconds: 3600,
+//!     duration_seconds: Some(3600),
 //!     session_policy: None,
 //! };
+//! assert!(req.body().contains("Action=AssumeRoleWithWebIdentity"));
+//!
 //! let url = AssumeRoleWithWebIdentity::endpoint("us-east-1");
-//! let body = req.body();
-//! // POST `body` to `url` with content-type application/x-www-form-urlencoded,
-//! // then: let creds = multistore_federation::aws::parse_response(&response_text)?;
-//! # Ok::<(), multistore_federation::FederationError>(())
+//! assert_eq!(url, "https://sts.us-east-1.amazonaws.com/");
+//!
+//! // POST `req.body()` (or `req.form_pairs()` if your HTTP client urlencodes
+//! // for you) to `url` as application/x-www-form-urlencoded, then parse the reply:
+//! let response_xml = r#"
+//!     <AssumeRoleWithWebIdentityResponse><AssumeRoleWithWebIdentityResult><Credentials>
+//!       <AccessKeyId>ASIAEXAMPLE</AccessKeyId>
+//!       <SecretAccessKey>secret</SecretAccessKey>
+//!       <SessionToken>token</SessionToken>
+//!       <Expiration>2030-01-01T00:00:00Z</Expiration>
+//!     </Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>"#;
+//! let creds = parse_response(response_xml)?;
+//! assert_eq!(creds.access_key_id, "ASIAEXAMPLE");
+//! # Ok::<(), multistore_backend_federation::FederationError>(())
 //! ```
 
 use crate::credentials::FederatedCredentials;
 use crate::error::FederationError;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::borrow::Cow;
 
 /// Parameters for an `AssumeRoleWithWebIdentity` request.
 ///
@@ -40,8 +53,10 @@ pub struct AssumeRoleWithWebIdentity<'a> {
     pub web_identity_token: &'a str,
     /// Session name recorded in CloudTrail for this assumption.
     pub role_session_name: &'a str,
-    /// Requested credential lifetime, in seconds (AWS clamps to the role's max).
-    pub duration_seconds: u32,
+    /// Requested credential lifetime, in seconds. `None` omits `DurationSeconds`
+    /// so AWS applies the role's default (3600s); when set, AWS clamps to the
+    /// role's maximum and rejects values below 900.
+    pub duration_seconds: Option<u32>,
     /// Optional inline session policy (further restricts the session, e.g. to a
     /// key prefix) — `None` to use the role's permissions as-is.
     pub session_policy: Option<&'a str>,
@@ -56,19 +71,39 @@ impl<'a> AssumeRoleWithWebIdentity<'a> {
         format!("https://sts.{region}.amazonaws.com/")
     }
 
-    /// The `application/x-www-form-urlencoded` request body.
-    pub fn body(&self) -> String {
-        let mut s = url::form_urlencoded::Serializer::new(String::new());
-        s.append_pair("Action", "AssumeRoleWithWebIdentity");
-        s.append_pair("Version", "2011-06-15");
-        s.append_pair("RoleArn", self.role_arn);
-        s.append_pair("RoleSessionName", self.role_session_name);
-        s.append_pair("WebIdentityToken", self.web_identity_token);
-        s.append_pair("DurationSeconds", &self.duration_seconds.to_string());
-        if let Some(policy) = self.session_policy {
-            s.append_pair("Policy", policy);
+    /// The request as form key/value pairs, with values **unencoded**.
+    ///
+    /// Use this when the HTTP layer performs its own form-urlencoding (e.g.
+    /// reqwest's `.form(...)`); feeding it a pre-encoded [`body`](Self::body)
+    /// instead would double-encode the values.
+    pub fn form_pairs(&self) -> Vec<(&'static str, Cow<'a, str>)> {
+        let mut pairs = vec![
+            ("Action", Cow::Borrowed("AssumeRoleWithWebIdentity")),
+            ("Version", Cow::Borrowed("2011-06-15")),
+            ("RoleArn", Cow::Borrowed(self.role_arn)),
+            ("RoleSessionName", Cow::Borrowed(self.role_session_name)),
+            ("WebIdentityToken", Cow::Borrowed(self.web_identity_token)),
+        ];
+        if let Some(duration) = self.duration_seconds {
+            pairs.push(("DurationSeconds", Cow::Owned(duration.to_string())));
         }
-        s.finish()
+        if let Some(policy) = self.session_policy {
+            pairs.push(("Policy", Cow::Borrowed(policy)));
+        }
+        pairs
+    }
+
+    /// The `application/x-www-form-urlencoded` request body.
+    ///
+    /// Use this when the HTTP layer sends a raw body; for a layer that encodes
+    /// form pairs itself, use [`form_pairs`](Self::form_pairs) to avoid
+    /// double-encoding.
+    pub fn body(&self) -> String {
+        let mut form = url::form_urlencoded::Serializer::new(String::new());
+        for (key, value) in self.form_pairs() {
+            form.append_pair(key, &value);
+        }
+        form.finish()
     }
 }
 
@@ -80,16 +115,14 @@ impl<'a> AssumeRoleWithWebIdentity<'a> {
 /// [`FederationError::Sts`] carrying the provider's code and message.
 pub fn parse_response(xml: &str) -> Result<FederatedCredentials, FederationError> {
     if xml.contains("<ErrorResponse") {
-        let err: ErrorResponse =
-            quick_xml::de::from_str(xml).map_err(|e| FederationError::Parse(e.to_string()))?;
+        let err: ErrorResponse = quick_xml::de::from_str(xml)?;
         return Err(FederationError::Sts {
             code: err.error.code,
             message: err.error.message,
         });
     }
 
-    let resp: AssumeRoleWithWebIdentityResponse =
-        quick_xml::de::from_str(xml).map_err(|e| FederationError::Parse(e.to_string()))?;
+    let resp: AssumeRoleWithWebIdentityResponse = quick_xml::de::from_str(xml)?;
     let creds = resp.result.credentials;
     Ok(FederatedCredentials {
         access_key_id: creds.access_key_id,
@@ -213,7 +246,7 @@ mod tests {
             role_arn: "arn:aws:iam::123456789012:role/my-role",
             web_identity_token: "tok.tok.tok",
             role_session_name: "multistore",
-            duration_seconds: 3600,
+            duration_seconds: Some(3600),
             session_policy: None,
         };
         let body = req.body();
@@ -227,15 +260,48 @@ mod tests {
     }
 
     #[test]
+    fn body_omits_duration_when_none() {
+        let req = AssumeRoleWithWebIdentity {
+            role_arn: "arn:aws:iam::1:role/r",
+            web_identity_token: "t",
+            role_session_name: "s",
+            duration_seconds: None,
+            session_policy: None,
+        };
+        assert!(!req.body().contains("DurationSeconds"));
+    }
+
+    #[test]
     fn body_includes_session_policy_when_present() {
         let req = AssumeRoleWithWebIdentity {
             role_arn: "arn:aws:iam::1:role/r",
             web_identity_token: "t",
             role_session_name: "s",
-            duration_seconds: 900,
+            duration_seconds: Some(900),
             session_policy: Some("{\"Version\":\"2012-10-17\"}"),
         };
         assert!(req.body().contains("Policy="));
+    }
+
+    #[test]
+    fn form_pairs_are_unencoded() {
+        let req = AssumeRoleWithWebIdentity {
+            role_arn: "arn:aws:iam::123456789012:role/my-role",
+            web_identity_token: "tok",
+            role_session_name: "multistore",
+            duration_seconds: Some(3600),
+            session_policy: None,
+        };
+        let pairs = req.form_pairs();
+        // Values are raw (the caller's HTTP layer encodes them) — note the `:`/`/`
+        // are NOT percent-encoded here, unlike in `body()`.
+        assert!(pairs.iter().any(
+            |(k, v)| *k == "RoleArn" && v.as_ref() == "arn:aws:iam::123456789012:role/my-role"
+        ));
+        assert!(pairs
+            .iter()
+            .any(|(k, v)| *k == "DurationSeconds" && v.as_ref() == "3600"));
+        assert!(pairs.iter().all(|(k, _)| *k != "Policy"));
     }
 
     #[test]
