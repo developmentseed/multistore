@@ -39,6 +39,28 @@ endpoint = "https://s3.us-west-2.amazonaws.com"
 region = "us-east-1"
 skip_signature = "true"
 
+# Backend-federation test bucket. The proxy mints its own OIDC assertion (iss =
+# OIDC_PROVIDER_ISSUER, the stable staging issuer) and assumes an AWS IAM role
+# via AssumeRoleWithWebIdentity to serve this private bucket — no long-lived
+# backend keys. Exercised by tests/smoke/test_federation.py on every preview and
+# staging deploy. Replace oidc_role_arn + bucket_name (+ region/endpoint) with
+# your test resources; these are not secrets. The role's trust policy must trust
+# the STAGING_OIDC_ISSUER IAM OIDC provider with `sub` = oidc_subject and
+# audience sts.amazonaws.com, and grant s3:GetObject/s3:ListBucket on the bucket.
+[[vars.PROXY_CONFIG.buckets]]
+allowed_roles = []
+anonymous_access = true
+backend_type = "s3"
+name = "federated-test"
+
+[vars.PROXY_CONFIG.buckets.backend_options]
+auth_type = "oidc"
+oidc_role_arn = "arn:aws:iam::123456789012:role/multistore-backend-federation-test"
+oidc_subject = "multistore"
+bucket_name = "REPLACE_WITH_PRIVATE_TEST_BUCKET"
+endpoint = "https://s3.us-east-1.amazonaws.com"
+region = "us-east-1"
+
 [[vars.PROXY_CONFIG.credentials]]
 access_key_id = "AKPROXY00000EXAMPLE"
 secret_access_key = "EXAMPLE000000000000"

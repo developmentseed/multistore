@@ -107,6 +107,11 @@ jobs:
       id-token: write
     env:
       DEPLOY_URL: ${{ needs.deploy.outputs.deploy_url }}
+      # Object key the backend-federation smoke test GETs from the private
+      # bucket (defaults to hello.txt). The full federation path is validated
+      # here on both preview (PR) and staging deploys, against the stable
+      # staging OIDC issuer — see preview.yml / staging.yml.
+      FEDERATION_TEST_KEY: ${{ vars.FEDERATION_TEST_KEY }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0

@@ -20,6 +20,10 @@ jobs:
       worker_name: multistore-staging
       wrangler_config: wrangler.deploy.toml
       environment: staging
+      # The canonical issuer the AWS IAM OIDC provider is registered against.
+      # Staging serves JWKS at this URL; PR previews reuse the same value (see
+      # preview.yml) so one provider + role covers both — no per-PR setup.
+      oidc_issuer_override: ${{ vars.STAGING_OIDC_ISSUER }}
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
