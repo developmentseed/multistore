@@ -6,35 +6,55 @@ The CF Workers runtime deploys the proxy to Cloudflare's edge network. It compil
 
 > [!WARNING]
 > - **S3 backends only** — Azure and GCS are not supported on WASM
-> - **Static or API config only** — DynamoDB and Postgres providers require Tokio, which is unavailable
+> - **Static config only** — config is supplied inline via the `PROXY_CONFIG` var
 > - **`SESSION_TOKEN_KEY` required** — Workers are stateless, so sealed tokens are the only way to persist temporary credentials
 
 ## Configuration
 
 ### `wrangler.toml`
 
+The repository ships two Wrangler configs in `examples/cf-workers/`:
+
+- **`wrangler.toml`** — for **local dev only**. Its buckets point at `http://localhost:9000` (the MinIO instance from Docker Compose).
+- **`wrangler.deploy.toml`** — the production config used by CI. Treat this file as the source of truth for the full set of required bindings (rate limiters, Durable Object + migration, bandwidth quotas).
+
+A minimal `PROXY_CONFIG` looks like this (note the TOML table-array form for buckets):
+
 ```toml
-name = "multistore-proxy"
+compatibility_date = "2024-11-11"
 main = "build/worker/shim.mjs"
-compatibility_date = "2024-01-01"
+name = "multistore"
 
 [build]
-command = "cargo install worker-build && worker-build --release"
+# worker-build is pinned to ^0.7 to match the pinned `worker` crate version.
+command = "cargo install worker-build --version '^0.7' && worker-build --release"
 
 [vars]
 VIRTUAL_HOST_DOMAIN = "s3.example.com"
 
 [vars.PROXY_CONFIG]
-buckets = [
-  { name = "public-data", backend_type = "s3", anonymous_access = true, backend_options = { endpoint = "https://s3.us-east-1.amazonaws.com", bucket_name = "my-bucket", region = "us-east-1" } }
-]
-roles = []
-credentials = []
+
+[[vars.PROXY_CONFIG.buckets]]
+name = "public-data"
+backend_type = "s3"
+anonymous_access = true
+allowed_roles = []
+
+[vars.PROXY_CONFIG.buckets.backend_options]
+bucket_name = "my-bucket"
+endpoint = "https://s3.us-east-1.amazonaws.com"
+region = "us-east-1"
 ```
+
+Production deployments also require the rate-limit, Durable Object (with its `[[migrations]]` sqlite class), and bandwidth-quota bindings. Rather than hand-writing these, copy and adapt `examples/cf-workers/wrangler.deploy.toml`, which already includes:
+
+- `[[ratelimits]]` for the `ANON_RATE_LIMITER` and `AUTH_RATE_LIMITER` limiters
+- `[[durable_objects.bindings]]` binding `BANDWIDTH_METER` to the `BandwidthMeter` class, plus the `[[migrations]]` `new_sqlite_classes` entry
+- `[vars.BANDWIDTH_QUOTAS]` per-bucket bandwidth limits
 
 `PROXY_CONFIG` can be either:
 - A JSON string (via `wrangler secret put PROXY_CONFIG`)
-- A JS object (via `[vars.PROXY_CONFIG]` table in `wrangler.toml`, as shown above)
+- A TOML table (via `[vars.PROXY_CONFIG]` in `wrangler.toml`, as shown above)
 
 ### Secrets
 
@@ -80,7 +100,17 @@ This starts a local dev server on port `8787`.
 
 ## Deploying
 
+The default `wrangler.toml` is a **local dev** config — its buckets point at `http://localhost:9000` (MinIO), so it is not suitable for production. Deploy with the production config (`wrangler.deploy.toml`) instead, mirroring how CI deploys (`.github/workflows/deploy.yml`):
+
 ```bash
-cd examples/cf-workers
-npx wrangler deploy
+npx wrangler deploy \
+  --cwd examples/cf-workers \
+  --config wrangler.deploy.toml
+```
+
+Deployment requires the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables. After deploying, set the worker secrets:
+
+```bash
+npx wrangler secret put SESSION_TOKEN_KEY --cwd examples/cf-workers --config wrangler.deploy.toml
+npx wrangler secret put OIDC_PROVIDER_KEY --cwd examples/cf-workers --config wrangler.deploy.toml
 ```
