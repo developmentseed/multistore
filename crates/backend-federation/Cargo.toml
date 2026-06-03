@@ -12,12 +12,3 @@ serde.workspace = true
 quick-xml.workspace = true
 url.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-# Live, network-touching functional test (`tests/live_sts.rs`) — gated on env
-# vars, so it self-skips during ordinary `cargo test`.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-reqwest.workspace = true
-object_store.workspace = true
-serde_json.workspace = true
-futures.workspace = true

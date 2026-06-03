@@ -1149,15 +1149,10 @@ name = "multistore-backend-federation"
 version = "0.4.0"
 dependencies = [
  "chrono",
- "futures",
  "multistore",
- "object_store",
  "quick-xml 0.37.5",
- "reqwest",
  "serde",
- "serde_json",
  "thiserror",
- "tokio",
  "url",
 ]
 
