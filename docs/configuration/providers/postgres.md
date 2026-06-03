@@ -1,14 +1,14 @@
 # PostgreSQL Provider
 
-The PostgreSQL provider stores configuration in a PostgreSQL database using sqlx.
+::: warning Planned — not yet implemented
+This config provider is a planned feature and does not exist in the current release. The API shown here is a design sketch and is subject to change. The only built-in config provider today is the [static file provider](./static-file.md).
+:::
 
-## Feature Flag
+The PostgreSQL provider would store configuration in a PostgreSQL database (e.g. via sqlx). The sketch below illustrates the intended usage.
 
-```bash
-cargo build -p multistore-server --features multistore/config-postgres
-```
+## Usage (design sketch)
 
-## Usage
+The intended constructor would look like:
 
 ```rust
 use multistore::config::postgres::PostgresProvider;

@@ -1,14 +1,14 @@
 # DynamoDB Provider
 
-The DynamoDB provider stores configuration in a single DynamoDB table using a PK/SK (partition key / sort key) design pattern.
+::: warning Planned — not yet implemented
+This config provider is a planned feature and does not exist in the current release. The API shown here is a design sketch and is subject to change. The only built-in config provider today is the [static file provider](./static-file.md).
+:::
 
-## Feature Flag
+The DynamoDB provider would store configuration in a single DynamoDB table using a PK/SK (partition key / sort key) design pattern. The sketch below illustrates the intended usage.
 
-```bash
-cargo build -p multistore-server --features multistore/config-dynamodb
-```
+## Usage (design sketch)
 
-## Usage
+The intended constructor would look like:
 
 ```rust
 use multistore::config::dynamodb::DynamoDbProvider;

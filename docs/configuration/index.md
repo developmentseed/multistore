@@ -50,18 +50,36 @@ The CF Workers runtime uses JSON (as an environment variable or `wrangler.toml` 
 }
 ```
 
+## Top-Level Keys
+
+Alongside the `buckets`, `roles`, and `credentials` arrays, the static file config accepts two optional top-level keys that control the owner identity reported in `ListBuckets` (`ListAllMyBucketsResult`) responses:
+
+| Key | Type | Required | Description |
+|-----|------|----------|-------------|
+| `owner_id` | string | No | Owner ID returned in `ListBuckets` responses. Defaults to `multistore-proxy` when omitted. |
+| `owner_display_name` | string | No | Owner display name returned in `ListBuckets` responses. Defaults to `multistore-proxy` when omitted. |
+
+```toml
+owner_id = "my-org"
+owner_display_name = "My Organization"
+
+[[buckets]]
+name = "public-data"
+# ...
+```
+
 ## Config Providers
 
 The proxy can load configuration from multiple backends. See [Config Providers](./providers/) for details.
 
-| Provider | Feature Flag | Use Case |
-|----------|-------------|----------|
-| [Static File](./providers/static-file) | (always available) | Simple deployments, baked-in config |
-| [HTTP API](./providers/http) | `config-http` | Centralized config service |
-| [DynamoDB](./providers/dynamodb) | `config-dynamodb` | AWS-native infrastructure |
-| [PostgreSQL](./providers/postgres) | `config-postgres` | Database-backed config |
+| Provider | Status | Use Case |
+|----------|--------|----------|
+| [Static File](./providers/static-file) | Built-in (always available) | Simple deployments, baked-in config |
+| [HTTP API](./providers/http) | Planned — not yet implemented | Centralized config service |
+| [DynamoDB](./providers/dynamodb) | Planned — not yet implemented | AWS-native infrastructure |
+| [PostgreSQL](./providers/postgres) | Planned — not yet implemented | Database-backed config |
 
-All providers can be wrapped with a [cache](./providers/cached) for performance.
+The static file provider is the only config provider in the current release. The HTTP, DynamoDB, and PostgreSQL providers are planned features; there are no `config-http`/`config-dynamodb`/`config-postgres` feature flags today.
 
 ## Full Example
 

@@ -1,14 +1,14 @@
 # HTTP API Provider
 
-The HTTP provider fetches configuration from a centralized REST API. Useful when you have a control plane service that manages proxy configuration.
+::: warning Planned — not yet implemented
+This config provider is a planned feature and does not exist in the current release. The API shown here is a design sketch and is subject to change. The only built-in config provider today is the [static file provider](./static-file.md).
+:::
 
-## Feature Flag
+The HTTP provider would fetch configuration from a centralized REST API — useful when you have a control plane service that manages proxy configuration. The sketch below illustrates the intended shape of the API.
 
-```bash
-cargo build -p multistore-server --features multistore/config-http
-```
+## Usage (design sketch)
 
-## Usage
+The intended constructor would look like:
 
 ```rust
 use multistore::config::http::HttpProvider;
@@ -21,7 +21,7 @@ let provider = HttpProvider::new(
 
 ## Expected API Endpoints
 
-The HTTP provider expects a REST API with these endpoints:
+As designed, the HTTP provider would expect a REST API with these endpoints:
 
 | Endpoint | Method | Returns |
 |----------|--------|---------|
