@@ -156,3 +156,31 @@ jobs:
 
       - name: Run integration tests
         run: uvx --with pytest,boto3,requests pytest tests/integration/ -v
+
+  live-federation:
+    name: Live Backend Federation (real AWS STS)
+    runs-on: ubuntu-latest
+    # Always runs and **fails** when the live AWS target is unconfigured (the
+    # test panics on missing env), so green CI genuinely means the real AWS STS
+    # path was exercised — it can't be silently skipped. To make it pass, set
+    # repository Actions variables MULTISTORE_TEST_ROLE_ARN / MULTISTORE_TEST_BUCKET
+    # / MULTISTORE_TEST_REGION and grant the role's trust policy this repo's
+    # GitHub OIDC subject (audience sts.amazonaws.com).
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Run live federation test
+        env:
+          MULTISTORE_TEST_ROLE_ARN: ${{ vars.MULTISTORE_TEST_ROLE_ARN }}
+          MULTISTORE_TEST_BUCKET: ${{ vars.MULTISTORE_TEST_BUCKET }}
+          MULTISTORE_TEST_REGION: ${{ vars.MULTISTORE_TEST_REGION }}
+          MULTISTORE_TEST_KEY: ${{ vars.MULTISTORE_TEST_KEY }}
+        # `--ignored` runs the otherwise-ignored live test. It fails the job if
+        # the required variables above are not set.
+        run: cargo test -p multistore-backend-federation --test live_sts -- --ignored --nocapture
