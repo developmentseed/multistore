@@ -11,7 +11,6 @@ sequenceDiagram
     participant Gateway as ProxyGateway
     participant Router as Router<br/>(STS, OIDC)
     participant Middleware as Middleware Chain
-    participant Forwarder as Forwarder<br/>(Runtime HTTP Client)
     participant BucketReg as BucketRegistry
     participant CredReg as CredentialRegistry
     participant Backend as Backend Store
@@ -20,7 +19,7 @@ sequenceDiagram
     Runtime->>Gateway: handle_request(req_info, body, collect_body)
     Gateway->>Router: dispatch(req_info)
     alt Router matches (STS, OIDC discovery)
-        Router-->>Gateway: Some(Response)
+        Router-->>Gateway: Some(HandlerAction::Response)
         Gateway-->>Runtime: GatewayResponse::Response
         Runtime-->>Client: Return response
     else No route matches
@@ -40,10 +39,9 @@ sequenceDiagram
         end
 
         alt Forward (GET/HEAD/PUT/DELETE)
-            Gateway->>Forwarder: forward(presigned_url, body)
-            Forwarder->>Backend: Execute presigned URL
-            Backend-->>Forwarder: ForwardResponse (status, headers, body)
-            Forwarder-->>Gateway: ForwardResponse<S>
+            Gateway->>Backend: ProxyBackend::forward(presigned_url, body)
+            Backend->>Backend: Execute presigned URL
+            Backend-->>Gateway: ForwardResponse<ResponseBody> (status, headers, body)
             Note over Middleware: after_dispatch(CompletedRequest)
             Gateway-->>Runtime: GatewayResponse::Forward(ForwardResponse)
             Runtime-->>Client: Stream response body (opaque, zero-copy)
@@ -102,8 +100,8 @@ use multistore_oidc_provider::route_handler::OidcRouterExt;
 use multistore_sts::route_handler::StsRouterExt;
 
 let router = Router::new()
-    .with_oidc_discovery(issuer, signer)
-    .with_sts(sts_creds, jwks_cache, token_key);
+    .with_oidc_discovery(issuer, signers)
+    .with_sts("/.sts", sts_creds, jwks_cache, token_key);
 
 let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
     .with_credential_resolver(token_key)
@@ -132,7 +130,7 @@ The gateway takes the resolved bucket config and dispatches it based on the S3 o
 
 Used for: **GET, HEAD, PUT, DELETE**
 
-The handler generates a presigned URL using the backend's `Signer`, then the core calls the runtime-provided `Forwarder` to execute the HTTP request. The `Forwarder` returns a `ForwardResponse<S>` with the backend's status, headers, content length, and an opaque streaming body. The core observes the response metadata (status, content length) and fires `after_dispatch` callbacks on all middleware before returning the response to the runtime. The response body type `S` is an associated type on the `Forwarder` — on CF Workers it's a `web_sys::Response` (zero-copy), on native runtimes it's a `reqwest::Response` or similar.
+The handler generates a presigned URL using the backend's `Signer`, then the core calls the runtime-provided `ProxyBackend::forward` to execute the HTTP request. `forward` returns a `ForwardResponse<ResponseBody>` with the backend's status, headers, content length, and an opaque streaming body. The core observes the response metadata (status, content length) and fires `after_dispatch` callbacks on all middleware before returning the response to the runtime. The response body type is the `ProxyBackend::ResponseBody` associated type (and the request body the `ProxyBackend::Body` associated type) — on CF Workers `ResponseBody` is a `web_sys::Response` (zero-copy), on native runtimes it's a `reqwest::Response` or similar.
 
 - Presigned URL TTL: 300 seconds
 - Headers forwarded: `range`, `if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`, `content-type`, `content-length`, `content-md5`, `content-encoding`, `content-disposition`, `cache-control`, `x-amz-content-sha256`
@@ -160,11 +158,11 @@ For lower-level control, `ProxyGateway::handle` returns the raw three-variant `H
 
 All outbound requests to backend object stores include a `User-Agent` header identifying multistore as the caller. This applies to both presigned URL forwards (GET, HEAD, PUT, DELETE) and raw signed requests (multipart operations).
 
-The default value is `multistore/{version}` (e.g. `multistore/0.2.0`). Override it via the gateway builder to include your application name:
+The default value is `multistore/{version}`, where `{version}` is derived from the crate version (`CARGO_PKG_VERSION`) — e.g. `multistore/0.4.0`. Override it via the gateway builder to include your application name:
 
 ```rust
 let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
-    .with_user_agent("myapp/1.0 multistore/0.2.0");
+    .with_user_agent("myapp/1.0 multistore/0.4.0");
 ```
 
 This is useful for backend access log analysis and debugging.
