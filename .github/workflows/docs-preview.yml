@@ -1,0 +1,110 @@
+name: Docs Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs-preview.yml"
+
+concurrency:
+  group: docs-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    environment: preview
+    defaults:
+      run:
+        working-directory: docs
+    outputs:
+      deploy_url: ${{ steps.url.outputs.deploy_url }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 10
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      # No VITEPRESS_BASE: previews are served at the root of a workers.dev
+      # subdomain, unlike production which lives under /multistore/ on Pages.
+      - run: pnpm docs:build
+
+      - name: Deploy preview to Cloudflare Workers
+        run: |
+          npx wrangler deploy \
+            --config wrangler.preview.toml \
+            --name "multistore-docs-pr-${{ github.event.pull_request.number }}"
+
+      - name: Get deploy URL
+        id: url
+        run: |
+          URL="https://multistore-docs-pr-${{ github.event.pull_request.number }}.${{ vars.CLOUDFLARE_WORKERS_SUBDOMAIN }}.workers.dev"
+          echo "deploy_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deployment to be live
+        run: |
+          URL="${{ steps.url.outputs.deploy_url }}"
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null "$URL" 2>/dev/null; then
+              echo "Docs preview is live"
+              exit 0
+            fi
+            echo "Attempt $i: waiting for docs preview..."
+            sleep 2
+          done
+          echo "Docs preview did not become live in time"
+          exit 1
+
+  comment:
+    name: PR Comment
+    needs: deploy
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Find Comment
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4
+        id: find-comment
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: "github-actions[bot]"
+          body-includes: Docs preview deployed to
+
+      - name: Create or update comment
+        uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5
+        with:
+          comment-id: ${{ steps.find-comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            📖 Docs preview deployed to ${{ needs.deploy.outputs.deploy_url }}
+
+            * Date: `${{ github.event.pull_request.updated_at }}`
+            * Commit: ${{ github.sha }}
+          edit-mode: replace
+
+  cleanup:
+    name: Cleanup Preview
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Delete docs preview worker
+        run: npx wrangler delete --name "multistore-docs-pr-${{ github.event.pull_request.number }}" --force
