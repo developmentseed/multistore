@@ -1192,6 +1192,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "multistore-federation"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "multistore",
+ "quick-xml 0.37.5",
+ "serde",
+ "thiserror",
+ "url",
+]
+
+[[package]]
 name = "multistore-lambda"
 version = "0.4.0"
 dependencies = [
