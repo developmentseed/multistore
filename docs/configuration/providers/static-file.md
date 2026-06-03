@@ -83,4 +83,4 @@ actions = ["get_object"]
 - Cloudflare Workers (JSON via `PROXY_CONFIG` env var)
 - Development and testing
 
-For dynamic configuration that changes without redeployment, consider [HTTP](./http), [DynamoDB](./dynamodb), or [PostgreSQL](./postgres) providers.
+For dynamic configuration that changes without redeployment, implement the `BucketRegistry`/`CredentialRegistry` traits over your own backend — see [Custom Bucket Registry](/extending/custom-resolver) and [Custom Credential Registry](/extending/custom-provider) — optionally wrapped with the example [CachedProvider](./cached) for in-memory caching.

@@ -46,7 +46,7 @@ flowchart LR
     subgraph Proxy["multistore-proxy"]
         Auth["Auth<br>(STS, OIDC, SigV4)"]
         Core["Core<br>(Proxy Handler)"]
-        Config["Config<br>(Static; HTTP/DynamoDB/Postgres planned)"]
+        Config["Config<br>(Static)"]
     end
 
     Backend["Backend Stores<br>(AWS S3, MinIO, R2, Azure, GCS)"]

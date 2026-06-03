@@ -28,15 +28,6 @@ const adminSidebar = [
             text: "Static File",
             link: "/configuration/providers/static-file",
           },
-          { text: "HTTP API", link: "/configuration/providers/http" },
-          {
-            text: "DynamoDB",
-            link: "/configuration/providers/dynamodb",
-          },
-          {
-            text: "PostgreSQL",
-            link: "/configuration/providers/postgres",
-          },
           {
             text: "Caching",
             link: "/configuration/providers/cached",
