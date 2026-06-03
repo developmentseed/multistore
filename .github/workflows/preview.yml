@@ -3,6 +3,10 @@ name: Preview
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
+    # Skip the worker preview when a PR only touches docs (see docs-preview.yml).
+    # The worker still deploys whenever any non-docs file changes.
+    paths-ignore:
+      - "docs/**"
 
 concurrency:
   group: preview-${{ github.event.pull_request.number }}
