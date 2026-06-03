@@ -160,10 +160,13 @@ jobs:
   live-federation:
     name: Live Backend Federation (real AWS STS)
     runs-on: ubuntu-latest
-    # Self-skips when MULTISTORE_TEST_ROLE_ARN is unset, so it is safe to run on
-    # every push. To activate, set repository Actions variables
+    # Gated: this job only runs when MULTISTORE_TEST_ROLE_ARN is configured. When
+    # it isn't, the job shows as *skipped* (neutral) rather than a misleading
+    # green "pass", so a passing checks list never implies the live AWS path was
+    # actually exercised. To activate, set repository Actions variables
     # MULTISTORE_TEST_ROLE_ARN / MULTISTORE_TEST_BUCKET / MULTISTORE_TEST_REGION
     # and grant the role's trust policy this repo's GitHub OIDC subject.
+    if: ${{ vars.MULTISTORE_TEST_ROLE_ARN != '' }}
     permissions:
       id-token: write
       contents: read
@@ -179,4 +182,6 @@ jobs:
           MULTISTORE_TEST_BUCKET: ${{ vars.MULTISTORE_TEST_BUCKET }}
           MULTISTORE_TEST_REGION: ${{ vars.MULTISTORE_TEST_REGION }}
           MULTISTORE_TEST_KEY: ${{ vars.MULTISTORE_TEST_KEY }}
-        run: cargo test -p multistore-backend-federation --test live_sts -- --nocapture
+        # `--ignored` runs the otherwise-ignored live test; `--include-ignored`
+        # is not used so nothing else changes.
+        run: cargo test -p multistore-backend-federation --test live_sts -- --ignored --nocapture

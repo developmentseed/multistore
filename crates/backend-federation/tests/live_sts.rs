@@ -64,7 +64,14 @@ async fn web_identity_token() -> Option<String> {
     )
 }
 
+// `#[ignore]` so the ordinary unit-test suite reports this as *ignored*, never
+// as a misleading green "passed", when no AWS target is configured. The gated
+// `live-federation` CI job runs it with `-- --ignored` only when the repo
+// variables are present. Run locally with:
+//   MULTISTORE_TEST_ROLE_ARN=… MULTISTORE_TEST_BUCKET=… \
+//     cargo test -p multistore-backend-federation --test live_sts -- --ignored --nocapture
 #[tokio::test]
+#[ignore = "live AWS test; set MULTISTORE_TEST_ROLE_ARN/BUCKET and run with --ignored"]
 async fn assume_role_and_read_private_bucket() {
     let Some(role_arn) = env("MULTISTORE_TEST_ROLE_ARN") else {
         eprintln!("skipping live_sts: MULTISTORE_TEST_ROLE_ARN not set");
