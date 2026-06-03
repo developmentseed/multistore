@@ -31,7 +31,10 @@ import requests
 
 DEPLOY_URL = os.environ.get("DEPLOY_URL", "http://localhost:8787").rstrip("/")
 FEDERATION_BUCKET = "federated-test"
-FEDERATION_TEST_KEY = os.environ.get("FEDERATION_TEST_KEY", "hello.txt")
+# Use `or` (not a get() default): the workflow passes `${{ vars.FEDERATION_TEST_KEY }}`,
+# which expands to "" — not unset — when the repo var is missing, and an empty key
+# would GET the bucket root instead of the object.
+FEDERATION_TEST_KEY = os.environ.get("FEDERATION_TEST_KEY") or "hello.txt"
 
 
 def test_federation_serves_private_object():
