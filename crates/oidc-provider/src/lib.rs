@@ -175,7 +175,51 @@ impl From<multistore_backend_federation::FederationError> for OidcProviderError 
 
 impl From<OidcProviderError> for multistore::error::ProxyError {
     fn from(e: OidcProviderError) -> Self {
-        multistore::error::ProxyError::Internal(e.to_string())
+        use multistore::error::ProxyError;
+
+        // Federation failures must not collapse into an opaque 500. Map each
+        // cause to a status that reflects whose problem it is, and log the full
+        // (possibly ARN-bearing) detail here — it is the only place the raw
+        // provider message is still available, and it must not reach the caller.
+        match e {
+            OidcProviderError::StsError { code, message } => {
+                tracing::error!(
+                    sts_code = %code,
+                    sts_message = %message,
+                    "backend STS rejected the federation exchange"
+                );
+                match code.as_str() {
+                    // The role's trust policy / permissions deny the proxy
+                    // identity: the object genuinely cannot be served → 403.
+                    "AccessDenied" => ProxyError::AccessDenied,
+                    // Our minted assertion was rejected (bad key, issuer, or no
+                    // registered provider), or any other STS error → 502: the
+                    // gateway failed to authenticate to its upstream broker.
+                    _ => ProxyError::BackendAuthError(code),
+                }
+            }
+            // Local signing-key problems: the deploy's OIDC_PROVIDER_KEY is
+            // missing/malformed. The gateway can't mint an assertion, so it
+            // can't federate → 502 (not a generic 500), with the cause logged.
+            OidcProviderError::KeyError(detail) => {
+                tracing::error!(error = %detail, "OIDC provider RSA key error");
+                ProxyError::BackendAuthError("ProviderKeyError".into())
+            }
+            OidcProviderError::SigningError(detail) => {
+                tracing::error!(error = %detail, "OIDC provider JWT signing error");
+                ProxyError::BackendAuthError("SigningError".into())
+            }
+            // Couldn't reach the broker or parse its reply: transient/upstream
+            // → 503 (retryable), distinct from a permanent auth rejection.
+            OidcProviderError::HttpError(detail) => {
+                tracing::error!(error = %detail, "backend STS transport error");
+                ProxyError::BackendError(detail)
+            }
+            OidcProviderError::ExchangeError(detail) => {
+                tracing::error!(error = %detail, "backend credential exchange failed");
+                ProxyError::BackendError(detail)
+            }
+        }
     }
 }
 
@@ -342,10 +386,59 @@ mod tests {
     }
 
     #[test]
-    fn error_converts_to_proxy_error() {
-        let err = OidcProviderError::ExchangeError("test".into());
-        let proxy_err: multistore::error::ProxyError = err.into();
-        assert!(proxy_err.to_string().contains("test"));
-        assert_eq!(proxy_err.status_code(), 500);
+    fn exchange_error_maps_to_retryable_503() {
+        // Transport / unparseable-response failures are upstream and retryable.
+        let proxy_err: multistore::error::ProxyError =
+            OidcProviderError::ExchangeError("boom".into()).into();
+        assert_eq!(proxy_err.status_code(), 503);
+        assert!(proxy_err.to_string().contains("boom"));
+    }
+
+    #[test]
+    fn http_error_maps_to_retryable_503() {
+        let proxy_err: multistore::error::ProxyError =
+            OidcProviderError::HttpError("connreset".into()).into();
+        assert_eq!(proxy_err.status_code(), 503);
+    }
+
+    #[test]
+    fn sts_rejection_maps_to_502_not_500() {
+        // The headline regression: a rejected federation assertion must surface
+        // as a diagnosable 502, never an opaque 500 InternalError.
+        let proxy_err: multistore::error::ProxyError = OidcProviderError::StsError {
+            code: "InvalidIdentityToken".into(),
+            message: "No OpenIDConnect provider found in your account".into(),
+        }
+        .into();
+        assert_eq!(proxy_err.status_code(), 502);
+        assert_eq!(proxy_err.s3_error_code(), "BackendAuthenticationFailed");
+        // The provider *code* is surfaced; the raw message is not.
+        let safe = proxy_err.safe_message();
+        assert!(safe.contains("InvalidIdentityToken"), "got: {safe}");
+        assert!(!safe.contains("your account"), "raw STS message leaked: {safe}");
+    }
+
+    #[test]
+    fn sts_access_denied_maps_to_403() {
+        // A trust-policy/permissions denial is a real authorization result.
+        let proxy_err: multistore::error::ProxyError = OidcProviderError::StsError {
+            code: "AccessDenied".into(),
+            message: "not authorized to perform sts:AssumeRoleWithWebIdentity".into(),
+        }
+        .into();
+        assert_eq!(proxy_err.status_code(), 403);
+        assert_eq!(proxy_err.s3_error_code(), "AccessDenied");
+    }
+
+    #[test]
+    fn key_and_signing_errors_map_to_502_not_500() {
+        // A bad OIDC_PROVIDER_KEY means we can't mint an assertion → 502, logged.
+        let key_err: multistore::error::ProxyError =
+            OidcProviderError::KeyError("bad pem".into()).into();
+        assert_eq!(key_err.status_code(), 502);
+
+        let sign_err: multistore::error::ProxyError =
+            OidcProviderError::SigningError("rsa failure".into()).into();
+        assert_eq!(sign_err.status_code(), 502);
     }
 }
