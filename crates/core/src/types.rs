@@ -231,6 +231,64 @@ impl fmt::Debug for TemporaryCredentials {
     }
 }
 
+/// Short-lived credentials obtained by federating the proxy's OIDC identity
+/// into a backend cloud's STS (e.g. AWS `AssumeRoleWithWebIdentity`), used to
+/// sign requests to the *backend* object store.
+///
+/// Distinct from [`TemporaryCredentials`], which the proxy's own STS mints for
+/// *callers*: those carry the proxy's authorization model (`allowed_scopes`,
+/// `assumed_role_id`, `source_identity`), whereas these carry only what an
+/// object-store client needs to sign, plus the expiry so the caller can cache
+/// and refresh them.
+#[derive(Clone)]
+pub struct FederatedCredentials {
+    /// Temporary access key id (AWS `ASIA…`).
+    pub access_key_id: String,
+    /// Temporary secret access key.
+    pub secret_access_key: String,
+    /// Session token that must accompany requests using these credentials.
+    pub session_token: String,
+    /// When these credentials expire.
+    pub expiration: DateTime<Utc>,
+}
+
+impl FederatedCredentials {
+    /// Inject these credentials into a [`BucketConfig`] so the multistore
+    /// backend signs requests with them instead of going anonymous.
+    ///
+    /// Sets the canonical S3 option keys (`access_key_id`, `secret_access_key`,
+    /// and `token` — the alias object_store maps to the session token and that
+    /// `BucketConfig`'s `Debug` redacts) and clears `skip_signature` so the
+    /// backend signs.
+    ///
+    /// This governs only *outbound* (backend) signing. It deliberately leaves
+    /// [`BucketConfig::anonymous_access`] untouched: that flag controls
+    /// *inbound* authorization (whether proxy callers may read the bucket
+    /// unauthenticated), which is orthogonal — a bucket can be public to
+    /// anonymous callers yet served from a private backend the proxy signs into.
+    pub fn apply_to(&self, config: &mut BucketConfig) {
+        let opts = &mut config.backend_options;
+        opts.insert("access_key_id".to_string(), self.access_key_id.clone());
+        opts.insert(
+            "secret_access_key".to_string(),
+            self.secret_access_key.clone(),
+        );
+        opts.insert("token".to_string(), self.session_token.clone());
+        opts.remove("skip_signature");
+    }
+}
+
+impl fmt::Debug for FederatedCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FederatedCredentials")
+            .field("access_key_id", &self.access_key_id)
+            .field("secret_access_key", &"[REDACTED]")
+            .field("session_token", &"[REDACTED]")
+            .field("expiration", &self.expiration)
+            .finish()
+    }
+}
+
 /// The authenticated identity after credential verification.
 ///
 /// This is the output of the authentication pipeline. It contains only
@@ -423,5 +481,65 @@ mod tests {
         assert_eq!(op.key(), "");
 
         assert_eq!(S3Operation::ListBuckets.key(), "");
+    }
+
+    fn anon_s3_bucket() -> BucketConfig {
+        use std::collections::HashMap;
+        let mut backend_options = HashMap::new();
+        backend_options.insert("bucket_name".to_string(), "my-bucket".to_string());
+        backend_options.insert("region".to_string(), "us-west-2".to_string());
+        backend_options.insert("skip_signature".to_string(), "true".to_string());
+        BucketConfig {
+            name: "acct:product".to_string(),
+            backend_type: "s3".to_string(),
+            backend_prefix: None,
+            anonymous_access: true,
+            allowed_roles: vec![],
+            backend_options,
+        }
+    }
+
+    #[test]
+    fn federated_credentials_apply_to_signs_the_bucket() {
+        use chrono::{TimeZone, Utc};
+        let creds = FederatedCredentials {
+            access_key_id: "ASIA123".to_string(),
+            secret_access_key: "secret".to_string(),
+            session_token: "session".to_string(),
+            expiration: Utc.with_ymd_and_hms(2026, 6, 3, 4, 13, 40).unwrap(),
+        };
+
+        let mut config = anon_s3_bucket();
+        creds.apply_to(&mut config);
+
+        assert_eq!(config.option("access_key_id"), Some("ASIA123"));
+        assert_eq!(config.option("secret_access_key"), Some("secret"));
+        // `token` is the alias object_store maps to the session token and that
+        // multistore redacts in `BucketConfig`'s Debug impl.
+        assert_eq!(config.option("token"), Some("session"));
+        // Unsigned access must be turned off so the backend signs.
+        assert_eq!(config.option("skip_signature"), None);
+        // `apply_to` governs only outbound signing; inbound `anonymous_access`
+        // is left as-is (the test bucket was public to anonymous callers).
+        assert!(config.anonymous_access);
+        // Untouched options remain.
+        assert_eq!(config.option("bucket_name"), Some("my-bucket"));
+    }
+
+    #[test]
+    fn federated_credentials_bucket_debug_redacts_applied_secrets() {
+        use chrono::{TimeZone, Utc};
+        let creds = FederatedCredentials {
+            access_key_id: "ASIA123".to_string(),
+            secret_access_key: "super-secret".to_string(),
+            session_token: "super-session".to_string(),
+            expiration: Utc.with_ymd_and_hms(2026, 6, 3, 4, 13, 40).unwrap(),
+        };
+        let mut config = anon_s3_bucket();
+        creds.apply_to(&mut config);
+
+        let dbg = format!("{config:?}");
+        assert!(!dbg.contains("super-secret"));
+        assert!(!dbg.contains("super-session"));
     }
 }

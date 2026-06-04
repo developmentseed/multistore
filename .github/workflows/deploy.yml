@@ -107,7 +107,7 @@ jobs:
       id-token: write
     env:
       DEPLOY_URL: ${{ needs.deploy.outputs.deploy_url }}
-      # Object key the backend-federation smoke test GETs from the private
+      # Object key the federation smoke test GETs from the private
       # bucket (defaults to hello.txt). The full federation path is validated
       # here on both preview (PR) and staging deploys, against the stable
       # staging OIDC issuer — see preview.yml / staging.yml.

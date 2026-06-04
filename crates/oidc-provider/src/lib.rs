@@ -30,13 +30,14 @@ use jwt::JwtSigner;
 
 /// The backend credential value type — its fields, secret-redacting `Debug`, and
 /// `BucketConfig` injection ([`FederatedCredentials::apply_to`]) — is owned by
-/// `multistore-backend-federation`, the outbound-exchange mechanism. It is
-/// re-exported here so this crate's exchange and caching APIs speak that one
-/// type; there is deliberately no parallel `CloudCredentials`.
+/// `multistore` core (next to the `BucketConfig` it injects into, and its
+/// sibling `TemporaryCredentials`). It is re-exported here so this crate is the
+/// single front door: callers import the type from `multistore-oidc-provider`
+/// and need not name core's `types` module.
 ///
 /// Bearer-only backends (Azure/GCP) leave `access_key_id`/`secret_access_key`
 /// empty and carry the token in `session_token`.
-pub use multistore_backend_federation::FederatedCredentials;
+pub use multistore::types::FederatedCredentials;
 
 /// HTTP client abstraction for outbound requests (STS token exchange).
 ///
@@ -146,9 +147,9 @@ pub enum OidcProviderError {
     HttpError(String),
 }
 
-impl From<multistore_backend_federation::FederationError> for OidcProviderError {
-    fn from(e: multistore_backend_federation::FederationError) -> Self {
-        use multistore_backend_federation::FederationError as F;
+impl From<crate::exchange::aws::FederationError> for OidcProviderError {
+    fn from(e: crate::exchange::aws::FederationError) -> Self {
+        use crate::exchange::aws::FederationError as F;
         match e {
             F::Sts { code, message } => OidcProviderError::StsError { code, message },
             F::Parse(e) => OidcProviderError::ExchangeError(e.to_string()),

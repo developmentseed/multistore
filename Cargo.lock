@@ -1145,18 +1145,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "multistore-backend-federation"
-version = "0.4.0"
-dependencies = [
- "chrono",
- "multistore",
- "quick-xml 0.37.5",
- "serde",
- "thiserror",
- "url",
-]
-
-[[package]]
 name = "multistore-cf-workers"
 version = "0.4.0"
 dependencies = [
@@ -1243,7 +1231,7 @@ dependencies = [
  "base64",
  "chrono",
  "multistore",
- "multistore-backend-federation",
+ "quick-xml 0.37.5",
  "rand 0.8.5",
  "rsa",
  "serde",

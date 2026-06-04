@@ -47,11 +47,11 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
             .get_credentials(role_arn, &exchange, subject, &[])
             .await?;
 
-        // Inject the temporary credentials through the canonical primitive in
-        // `multistore-backend-federation`, so the option-key set and the
-        // `skip_signature` clearing stay single-sourced there rather than being
-        // re-hand-rolled here (the previous inline version forgot to clear
-        // `skip_signature`).
+        // Inject the temporary credentials via `FederatedCredentials::apply_to`
+        // (defined in `multistore` core), so the option-key set and the
+        // `skip_signature` clearing stay single-sourced on the credential type
+        // rather than being re-hand-rolled here (the previous inline version
+        // forgot to clear `skip_signature`).
         let mut resolved = config.clone();
         creds.apply_to(&mut resolved);
         let options = &mut resolved.backend_options;

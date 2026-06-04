@@ -12,11 +12,11 @@ gcp = []
 
 [dependencies]
 multistore.workspace = true
-multistore-backend-federation.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+quick-xml.workspace = true
 chrono.workspace = true
 base64.workspace = true
 rsa.workspace = true
