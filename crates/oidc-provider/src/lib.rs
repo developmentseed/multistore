@@ -28,32 +28,16 @@ use cache::CredentialCache;
 use exchange::CredentialExchange;
 use jwt::JwtSigner;
 
-/// Temporary cloud credentials obtained via token exchange.
+/// The backend credential value type — its fields, secret-redacting `Debug`, and
+/// `BucketConfig` injection ([`BackendCredentials::apply_to`]) — is owned by
+/// `multistore` core (next to the `BucketConfig` it injects into, and its
+/// sibling `TemporaryCredentials`). It is re-exported here so this crate is the
+/// single front door: callers import the type from `multistore-oidc-provider`
+/// and need not name core's `types` module.
 ///
-/// `Debug` redacts the secret access key and session token so credentials are
-/// never leaked into logs.
-#[derive(Clone)]
-pub struct CloudCredentials {
-    /// AWS access key ID. Empty string for Azure/GCP (bearer-token-only providers).
-    pub access_key_id: String,
-    /// AWS secret access key. Empty string for Azure/GCP (bearer-token-only providers).
-    pub secret_access_key: String,
-    /// Session or bearer token. For Azure/GCP this is the sole credential.
-    pub session_token: String,
-    /// When these credentials expire.
-    pub expires_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl std::fmt::Debug for CloudCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CloudCredentials")
-            .field("access_key_id", &self.access_key_id)
-            .field("secret_access_key", &"[REDACTED]")
-            .field("session_token", &"[REDACTED]")
-            .field("expires_at", &self.expires_at)
-            .finish()
-    }
-}
+/// Bearer-only backends (Azure/GCP) leave `access_key_id`/`secret_access_key`
+/// empty and carry the token in `session_token`.
+pub use multistore::types::BackendCredentials;
 
 /// HTTP client abstraction for outbound requests (STS token exchange).
 ///
@@ -108,7 +92,7 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
         exchange: &E,
         subject: &str,
         extra_claims: &[(&str, &str)],
-    ) -> Result<Arc<CloudCredentials>, OidcProviderError> {
+    ) -> Result<Arc<BackendCredentials>, OidcProviderError> {
         // Check cache first
         if let Some(creds) = self.cache.get(cache_key) {
             return Ok(creds);
@@ -120,7 +104,7 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
             .sign(subject, &self.issuer, &self.audience, extra_claims)?;
 
         // Exchange it for cloud credentials
-        let creds: CloudCredentials = exchange.exchange(&self.http, &token).await?;
+        let creds: BackendCredentials = exchange.exchange(&self.http, &token).await?;
         let creds = Arc::new(creds);
 
         // Cache
@@ -163,9 +147,9 @@ pub enum OidcProviderError {
     HttpError(String),
 }
 
-impl From<multistore_backend_federation::FederationError> for OidcProviderError {
-    fn from(e: multistore_backend_federation::FederationError) -> Self {
-        use multistore_backend_federation::FederationError as F;
+impl From<crate::exchange::aws::FederationError> for OidcProviderError {
+    fn from(e: crate::exchange::aws::FederationError) -> Self {
+        use crate::exchange::aws::FederationError as F;
         match e {
             F::Sts { code, message } => OidcProviderError::StsError { code, message },
             F::Parse(e) => OidcProviderError::ExchangeError(e.to_string()),

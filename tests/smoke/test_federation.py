@@ -1,4 +1,4 @@
-"""Full backend-federation smoke test against the deployed proxy.
+"""Full federation smoke test against the deployed proxy.
 
 The `federated-test` bucket (see examples/cf-workers/wrangler.deploy.toml) is
 configured with `auth_type=oidc`: at request time the proxy mints its own OIDC

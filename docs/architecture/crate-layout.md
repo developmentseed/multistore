@@ -33,7 +33,7 @@ The runtime-agnostic core. Contains:
 - S3 request parsing, XML response building, list prefix rewriting
 - SigV4 signature verification
 - Sealed session token encryption/decryption
-- Type definitions (`BucketConfig`, `RoleConfig`, `AccessScope`, etc.)
+- Type definitions (`BucketConfig`, `RoleConfig`, `AccessScope`, `TemporaryCredentials`, `BackendCredentials`, etc.) — including `BackendCredentials`, the backend credential value type the outbound exchange produces and injects into a `BucketConfig`
 
 **Feature flags:**
 - `azure` — Azure Blob Storage support
@@ -64,7 +64,7 @@ Outbound OIDC identity provider for backend authentication:
 - RSA JWT signing (`JwtSigner`)
 - JWKS endpoint serving
 - OpenID Connect discovery document
-- AWS credential exchange (`AwsBackendAuth` middleware)
+- AWS STS credential exchange — the `AssumeRoleWithWebIdentity` request build + XML parse, plus the `AwsBackendAuth` middleware that drives it
 - Credential caching
 
 ### `multistore-static-config`

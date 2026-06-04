@@ -3,13 +3,13 @@
 //! Exchanges a self-signed JWT for an Azure access token via the
 //! OAuth 2.0 client credentials grant with federated identity.
 
-use crate::{CloudCredentials, HttpExchange, OidcProviderError};
+use crate::{BackendCredentials, HttpExchange, OidcProviderError};
 
 use super::CredentialExchange;
 
 /// Configuration for exchanging a JWT for Azure credentials.
 ///
-/// Azure returns a bearer token only; the resulting [`CloudCredentials`](crate::CloudCredentials)
+/// Azure returns a bearer token only; the resulting [`BackendCredentials`](crate::BackendCredentials)
 /// will have `access_key_id` and `secret_access_key` set to empty strings while
 /// `session_token` carries the bearer token.
 #[derive(Debug, Clone)]
@@ -49,7 +49,11 @@ impl AzureExchange {
 }
 
 impl<H: HttpExchange> CredentialExchange<H> for AzureExchange {
-    async fn exchange(&self, http: &H, jwt: &str) -> Result<CloudCredentials, OidcProviderError> {
+    async fn exchange(
+        &self,
+        http: &H,
+        jwt: &str,
+    ) -> Result<BackendCredentials, OidcProviderError> {
         let form = [
             ("grant_type", "client_credentials"),
             (
@@ -68,7 +72,7 @@ impl<H: HttpExchange> CredentialExchange<H> for AzureExchange {
 }
 
 /// Parse an Azure AD token response.
-fn parse_azure_token_response(json: &str) -> Result<CloudCredentials, OidcProviderError> {
+fn parse_azure_token_response(json: &str) -> Result<BackendCredentials, OidcProviderError> {
     let parsed: serde_json::Value = serde_json::from_str(json).map_err(|e| {
         OidcProviderError::ExchangeError(format!("invalid Azure token response: {e}"))
     })?;
@@ -96,11 +100,11 @@ fn parse_azure_token_response(json: &str) -> Result<CloudCredentials, OidcProvid
     // Azure returns a bearer token, not key/secret pair. We store it as the
     // session_token and use placeholder values for key_id/secret — the backend
     // will use the bearer token directly.
-    Ok(CloudCredentials {
+    Ok(BackendCredentials {
         access_key_id: String::new(),
         secret_access_key: String::new(),
         session_token: access_token.to_string(),
-        expires_at,
+        expiration: expires_at,
     })
 }
 
@@ -118,7 +122,7 @@ mod tests {
 
         let creds = parse_azure_token_response(json).unwrap();
         assert_eq!(creds.session_token, "eyJ0eXAiOiJKV1Q...");
-        assert!(creds.expires_at > chrono::Utc::now());
+        assert!(creds.expiration > chrono::Utc::now());
     }
 
     #[test]
