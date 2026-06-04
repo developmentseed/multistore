@@ -25,6 +25,14 @@ pub struct FederatedCredentials {
     pub expiration: DateTime<Utc>,
 }
 
+/// Lets these credentials be held in a [`multistore_credential_cache::CredentialCache`]
+/// so a proxy can reuse them across requests instead of re-minting per request.
+impl multistore_credential_cache::Expiring for FederatedCredentials {
+    fn expiration(&self) -> DateTime<Utc> {
+        self.expiration
+    }
+}
+
 impl FederatedCredentials {
     /// Inject these credentials into a [`BucketConfig`] so the multistore
     /// backend signs requests with them instead of going anonymous.

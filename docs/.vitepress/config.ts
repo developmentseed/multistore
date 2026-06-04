@@ -75,6 +75,10 @@ const adminSidebar = [
         text: "Multi-Runtime Design",
         link: "/architecture/multi-runtime",
       },
+      {
+        text: "Caching",
+        link: "/architecture/caching",
+      },
     ],
   },
   {

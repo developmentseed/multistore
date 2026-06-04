@@ -8,6 +8,7 @@ members = [
     "crates/sts",
     "crates/oidc-provider",
     "crates/backend-federation",
+    "crates/credential-cache",
     "examples/server",
     "examples/lambda",
     "examples/cf-workers",
@@ -20,6 +21,7 @@ default-members = [
     "crates/sts",
     "crates/oidc-provider",
     "crates/backend-federation",
+    "crates/credential-cache",
     "examples/server",
     "examples/lambda",
 ]
@@ -111,3 +113,4 @@ multistore-cf-workers = { path = "crates/cf-workers", version = "0.4.0" }
 multistore-oidc-provider = { path = "crates/oidc-provider", version = "0.4.0" }
 multistore-path-mapping = { path = "crates/path-mapping", version = "0.4.0" }
 multistore-backend-federation = { path = "crates/backend-federation", version = "0.4.0" }
+multistore-credential-cache = { path = "crates/credential-cache", version = "0.4.0" }

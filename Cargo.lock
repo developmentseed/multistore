@@ -1150,6 +1150,7 @@ version = "0.4.0"
 dependencies = [
  "chrono",
  "multistore",
+ "multistore-credential-cache",
  "quick-xml 0.37.5",
  "serde",
  "thiserror",
@@ -1204,6 +1205,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "multistore-credential-cache"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "multistore-lambda"
 version = "0.4.0"
 dependencies = [
@@ -1244,6 +1254,7 @@ dependencies = [
  "chrono",
  "multistore",
  "multistore-backend-federation",
+ "multistore-credential-cache",
  "rand 0.8.5",
  "rsa",
  "serde",

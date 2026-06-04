@@ -15,7 +15,6 @@
 //! can provide its own implementation.
 
 pub mod backend_auth;
-pub mod cache;
 pub mod discovery;
 pub mod exchange;
 pub mod jwks;
@@ -24,7 +23,9 @@ pub mod route_handler;
 
 use std::sync::Arc;
 
-use cache::CredentialCache;
+use chrono::{DateTime, Utc};
+use multistore_credential_cache::{CredentialCache, Expiring};
+
 use exchange::CredentialExchange;
 use jwt::JwtSigner;
 
@@ -55,6 +56,18 @@ impl std::fmt::Debug for CloudCredentials {
     }
 }
 
+impl Expiring for CloudCredentials {
+    fn expiration(&self) -> DateTime<Utc> {
+        self.expires_at
+    }
+}
+
+/// Refresh cached credentials once they're within this long of expiry, so a
+/// credential never expires mid-request.
+fn refresh_lead() -> chrono::Duration {
+    chrono::Duration::seconds(60)
+}
+
 /// HTTP client abstraction for outbound requests (STS token exchange).
 ///
 /// Each runtime provides its own implementation — `reqwest` on native,
@@ -74,7 +87,7 @@ pub trait HttpExchange:
 /// Top-level provider that combines signing, exchange, and caching.
 pub struct OidcCredentialProvider<H: HttpExchange> {
     signer: JwtSigner,
-    cache: CredentialCache,
+    cache: CredentialCache<Arc<CloudCredentials>>,
     http: H,
     issuer: String,
     audience: String,
@@ -90,7 +103,7 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
     pub fn new(signer: JwtSigner, http: H, issuer: String, audience: String) -> Self {
         Self {
             signer,
-            cache: CredentialCache::new(),
+            cache: CredentialCache::new(refresh_lead()),
             http,
             issuer,
             audience,
@@ -101,32 +114,29 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
     ///
     /// `exchange` describes how to trade the self-signed JWT for cloud
     /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend
-    /// for caching purposes (e.g. the role ARN).
+    /// for caching purposes (e.g. the role ARN). `now` is the current time,
+    /// supplied by the caller so the cache stays runtime-agnostic.
+    ///
+    /// Concurrent calls for the same `cache_key` are single-flighted: only one
+    /// JWT mint + exchange runs, and the rest await its result.
     pub async fn get_credentials<E: CredentialExchange<H>>(
         &self,
         cache_key: &str,
         exchange: &E,
         subject: &str,
         extra_claims: &[(&str, &str)],
+        now: DateTime<Utc>,
     ) -> Result<Arc<CloudCredentials>, OidcProviderError> {
-        // Check cache first
-        if let Some(creds) = self.cache.get(cache_key) {
-            return Ok(creds);
-        }
-
-        // Mint a JWT
-        let token = self
-            .signer
-            .sign(subject, &self.issuer, &self.audience, extra_claims)?;
-
-        // Exchange it for cloud credentials
-        let creds: CloudCredentials = exchange.exchange(&self.http, &token).await?;
-        let creds = Arc::new(creds);
-
-        // Cache
-        self.cache.put(cache_key.to_string(), creds.clone());
-
-        Ok(creds)
+        self.cache
+            .get_or_fetch(cache_key, now, || async {
+                // Cache miss (or due for refresh): mint a JWT and exchange it.
+                let token =
+                    self.signer
+                        .sign(subject, &self.issuer, &self.audience, extra_claims)?;
+                let creds = exchange.exchange(&self.http, &token).await?;
+                Ok(Arc::new(creds))
+            })
+            .await
     }
 
     /// Access the underlying signer (e.g. for JWKS generation).
@@ -290,7 +300,7 @@ mod tests {
 
         let exchange = exchange::aws::AwsExchange::new("arn:aws:iam::123:role/Test".into());
         let creds = provider
-            .get_credentials("role-a", &exchange, "my-sub", &[])
+            .get_credentials("role-a", &exchange, "my-sub", &[], Utc::now())
             .await
             .unwrap();
 
@@ -312,14 +322,14 @@ mod tests {
 
         // First call — hits mock HTTP
         let creds1 = provider
-            .get_credentials("role-a", &exchange, "sub", &[])
+            .get_credentials("role-a", &exchange, "sub", &[], Utc::now())
             .await
             .unwrap();
         assert_eq!(http.calls(), 1);
 
         // Second call — should use cache, no additional HTTP call
         let creds2 = provider
-            .get_credentials("role-a", &exchange, "sub", &[])
+            .get_credentials("role-a", &exchange, "sub", &[], Utc::now())
             .await
             .unwrap();
         assert_eq!(http.calls(), 1);
@@ -339,11 +349,11 @@ mod tests {
         let exchange = exchange::aws::AwsExchange::new("arn:aws:iam::123:role/Test".into());
 
         provider
-            .get_credentials("role-a", &exchange, "sub", &[])
+            .get_credentials("role-a", &exchange, "sub", &[], Utc::now())
             .await
             .unwrap();
         provider
-            .get_credentials("role-b", &exchange, "sub", &[])
+            .get_credentials("role-b", &exchange, "sub", &[], Utc::now())
             .await
             .unwrap();
 

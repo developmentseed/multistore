@@ -13,6 +13,7 @@ gcp = []
 [dependencies]
 multistore.workspace = true
 multistore-backend-federation.workspace = true
+multistore-credential-cache.workspace = true
 async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
