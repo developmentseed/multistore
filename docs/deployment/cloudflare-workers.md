@@ -58,11 +58,32 @@ Production deployments also require the rate-limit, Durable Object (with its `[[
 
 ### Secrets
 
-Set sensitive values as secrets:
+The two secrets have **different formats** — generate each with the right tool:
 
 ```bash
-wrangler secret put SESSION_TOKEN_KEY
-wrangler secret put OIDC_PROVIDER_KEY
+# SESSION_TOKEN_KEY — base64 of 32 random bytes (AES-256-GCM sealing key)
+openssl rand -base64 32 | wrangler secret put SESSION_TOKEN_KEY
+
+# OIDC_PROVIDER_KEY — PKCS#8 PEM RSA private key (used to sign JWTs and derive the published JWKS)
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | wrangler secret put OIDC_PROVIDER_KEY
+```
+
+> [!IMPORTANT]
+> `OIDC_PROVIDER_KEY` must be a **PKCS#8** PEM RSA private key (`-----BEGIN PRIVATE KEY-----`).
+> Use `openssl genpkey`, **not** `openssl genrsa` (which emits PKCS#1, `-----BEGIN RSA PRIVATE KEY-----`,
+> and is rejected by `RsaPrivateKey::from_pkcs8_pem`). A random/symmetric value such as
+> `openssl rand -base64 32` will fail to parse, and the OIDC provider will fail to initialize —
+> the worker then returns HTTP 500 on **every** request (deploys never become live).
+> Convert an existing PKCS#1 key with `openssl pkcs8 -topk8 -nocrypt -in pkcs1.pem`.
+
+When deploying via GitHub Actions, these are environment-scoped secrets. Previews reuse the staging
+OIDC issuer (so AWS validates against staging's published JWKS), so `OIDC_PROVIDER_KEY` **must be the
+same value in the `preview` and `staging` environments** — generate it once and set it in both:
+
+```bash
+OIDC_KEY="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048)"
+printf '%s' "$OIDC_KEY" | gh secret set OIDC_PROVIDER_KEY --env staging --repo <owner>/<repo>
+printf '%s' "$OIDC_KEY" | gh secret set OIDC_PROVIDER_KEY --env preview --repo <owner>/<repo>
 ```
 
 ### Environment Variables
