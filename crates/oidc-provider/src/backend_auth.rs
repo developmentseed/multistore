@@ -42,9 +42,14 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         let subject = config.option("oidc_subject").unwrap_or("s3-proxy");
 
         let exchange = AwsExchange::new(role_arn.to_string());
+        // The cache is runtime-agnostic, so the clock is supplied here. Every
+        // wasm-targeting crate in this workspace already uses `Utc::now()`
+        // (e.g. JWT minting, JWKS, sealed tokens), so this adds no new runtime
+        // assumption; a fully clock-injected path could thread `now` from the
+        // request instead.
         let creds = self
             .provider
-            .get_credentials(role_arn, &exchange, subject, &[])
+            .get_credentials(role_arn, &exchange, subject, &[], chrono::Utc::now())
             .await?;
 
         let mut options = config.backend_options.clone();
