@@ -47,17 +47,21 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
             .get_credentials(role_arn, &exchange, subject, &[])
             .await?;
 
-        let mut options = config.backend_options.clone();
-        options.insert("access_key_id".into(), creds.access_key_id.clone());
-        options.insert("secret_access_key".into(), creds.secret_access_key.clone());
-        options.insert("token".into(), creds.session_token.clone());
+        // Inject the temporary credentials through the canonical primitive in
+        // `multistore-backend-federation`, so the option-key set and the
+        // `skip_signature` clearing stay single-sourced there rather than being
+        // re-hand-rolled here (the previous inline version forgot to clear
+        // `skip_signature`).
+        let mut resolved = config.clone();
+        creds.apply_to(&mut resolved);
+        let options = &mut resolved.backend_options;
 
         // Remove OIDC-specific keys so they don't confuse the builder.
         options.remove("auth_type");
         options.remove("oidc_role_arn");
         options.remove("oidc_subject");
 
-        Ok(options)
+        Ok(resolved.backend_options)
     }
 
     /// Internal helper: resolve credentials if bucket needs OIDC.

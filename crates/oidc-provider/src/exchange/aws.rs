@@ -1,10 +1,9 @@
 //! AWS STS `AssumeRoleWithWebIdentity` credential exchange.
 
-use crate::{CloudCredentials, HttpExchange, OidcProviderError};
+use crate::{FederatedCredentials, HttpExchange, OidcProviderError};
 
 use super::CredentialExchange;
 use multistore_backend_federation::aws::{parse_response, AssumeRoleWithWebIdentity};
-use multistore_backend_federation::FederatedCredentials;
 
 /// Configuration for exchanging a JWT for AWS credentials.
 #[derive(Debug, Clone)]
@@ -73,10 +72,16 @@ impl AwsExchange {
 }
 
 impl<H: HttpExchange> CredentialExchange<H> for AwsExchange {
-    async fn exchange(&self, http: &H, jwt: &str) -> Result<CloudCredentials, OidcProviderError> {
+    async fn exchange(
+        &self,
+        http: &H,
+        jwt: &str,
+    ) -> Result<FederatedCredentials, OidcProviderError> {
         // Build the request with the canonical `multistore-backend-federation`
         // primitive, hand its (unencoded) pairs to the runtime's HTTP client —
         // which form-urlencodes them — then parse the reply with the same crate.
+        // The parsed `FederatedCredentials` flow through unchanged: this crate no
+        // longer keeps a second credential type to convert into.
         let request = AssumeRoleWithWebIdentity {
             role_arn: &self.role_arn,
             web_identity_token: jwt,
@@ -90,17 +95,6 @@ impl<H: HttpExchange> CredentialExchange<H> for AwsExchange {
 
         let body = http.post_form(&self.sts_endpoint, &form).await?;
 
-        Ok(parse_response(&body)?.into())
-    }
-}
-
-impl From<FederatedCredentials> for CloudCredentials {
-    fn from(c: FederatedCredentials) -> Self {
-        Self {
-            access_key_id: c.access_key_id,
-            secret_access_key: c.secret_access_key,
-            session_token: c.session_token,
-            expires_at: c.expiration,
-        }
+        Ok(parse_response(&body)?)
     }
 }

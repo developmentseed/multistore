@@ -6,7 +6,7 @@ pub mod azure;
 #[cfg(feature = "gcp")]
 pub mod gcp;
 
-use crate::{CloudCredentials, HttpExchange, OidcProviderError};
+use crate::{FederatedCredentials, HttpExchange, OidcProviderError};
 
 /// Trait for exchanging a self-signed JWT for cloud provider credentials.
 ///
@@ -22,6 +22,6 @@ pub trait CredentialExchange<H: HttpExchange>:
         &self,
         http: &H,
         jwt: &str,
-    ) -> impl std::future::Future<Output = Result<CloudCredentials, OidcProviderError>>
+    ) -> impl std::future::Future<Output = Result<FederatedCredentials, OidcProviderError>>
            + multistore::maybe_send::MaybeSend;
 }
