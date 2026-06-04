@@ -19,10 +19,18 @@ access_key_id = "AKIAIOSFODNN7EXAMPLE"
 secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 ```
 
-This works for any backend type. For anonymous backend access (e.g., public buckets), simply omit the `access_key_id` and `secret_access_key` fields — when both are absent, the proxy issues unsigned requests automatically.
+This works for any backend type. For **anonymous** backend access (e.g., public buckets), omit `access_key_id`/`secret_access_key` and set `skip_signature = "true"`:
+
+```toml
+[buckets.backend_options]
+endpoint = "https://s3.us-east-1.amazonaws.com"
+bucket_name = "my-public-bucket"
+region = "us-east-1"
+skip_signature = "true"
+```
 
 > [!NOTE]
-> A `skip_signature` option appears in some examples, but it is currently not honored by the proxy and has no effect. Anonymous access is determined solely by the absence of credentials.
+> `skip_signature` **is** honored: the proxy passes every `backend_options` entry through to `object_store` (`create_builder` in `multistore`'s `backend` module), and `object_store` then skips SigV4 and issues unsigned requests. It is **required** for public-bucket access — omitting credentials *without* it does not yield anonymous access: `object_store` falls back to its default credential chain (instance metadata, environment, etc.) and still attempts to sign. For `auth_type = oidc` backends, the federated-credential injection clears `skip_signature` so the proxy signs with the temporary credentials it obtains.
 
 ## OIDC Backend Auth
 
