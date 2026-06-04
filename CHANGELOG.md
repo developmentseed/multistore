@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/developmentseed/multistore/compare/v0.4.0...v0.5.0) (2026-06-04)
+
+
+### Features
+
+* **backend-federation:** outbound OIDC→backend STS exchange (oidc-provider delegates to it) ([#57](https://github.com/developmentseed/multistore/issues/57)) ([40fb24c](https://github.com/developmentseed/multistore/commit/40fb24c75c5fd0949cf2d84eecb3896b31293a2c))
+
+
+### Bug Fixes
+
+* **oidc-provider:** surface federation failures as actionable errors, not opaque 500s ([#66](https://github.com/developmentseed/multistore/issues/66)) ([0422288](https://github.com/developmentseed/multistore/commit/04222889124514e9275bfae6bb86bb91329dca9b))
+* **smoke:** default FEDERATION_TEST_KEY when repo var is empty ([#63](https://github.com/developmentseed/multistore/issues/63)) ([2c00a04](https://github.com/developmentseed/multistore/commit/2c00a041edcdb8df7cee368a294fcef32852eb3a))
+
 ## [0.4.0](https://github.com/developmentseed/multistore/compare/v0.3.1...v0.4.0) (2026-05-21)
 
 
