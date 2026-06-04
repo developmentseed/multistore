@@ -29,7 +29,7 @@ use exchange::CredentialExchange;
 use jwt::JwtSigner;
 
 /// The backend credential value type — its fields, secret-redacting `Debug`, and
-/// `BucketConfig` injection ([`FederatedCredentials::apply_to`]) — is owned by
+/// `BucketConfig` injection ([`BackendCredentials::apply_to`]) — is owned by
 /// `multistore` core (next to the `BucketConfig` it injects into, and its
 /// sibling `TemporaryCredentials`). It is re-exported here so this crate is the
 /// single front door: callers import the type from `multistore-oidc-provider`
@@ -37,7 +37,7 @@ use jwt::JwtSigner;
 ///
 /// Bearer-only backends (Azure/GCP) leave `access_key_id`/`secret_access_key`
 /// empty and carry the token in `session_token`.
-pub use multistore::types::FederatedCredentials;
+pub use multistore::types::BackendCredentials;
 
 /// HTTP client abstraction for outbound requests (STS token exchange).
 ///
@@ -92,7 +92,7 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
         exchange: &E,
         subject: &str,
         extra_claims: &[(&str, &str)],
-    ) -> Result<Arc<FederatedCredentials>, OidcProviderError> {
+    ) -> Result<Arc<BackendCredentials>, OidcProviderError> {
         // Check cache first
         if let Some(creds) = self.cache.get(cache_key) {
             return Ok(creds);
@@ -104,7 +104,7 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
             .sign(subject, &self.issuer, &self.audience, extra_claims)?;
 
         // Exchange it for cloud credentials
-        let creds: FederatedCredentials = exchange.exchange(&self.http, &token).await?;
+        let creds: BackendCredentials = exchange.exchange(&self.http, &token).await?;
         let creds = Arc::new(creds);
 
         // Cache

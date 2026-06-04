@@ -241,7 +241,7 @@ impl fmt::Debug for TemporaryCredentials {
 /// object-store client needs to sign, plus the expiry so the caller can cache
 /// and refresh them.
 #[derive(Clone)]
-pub struct FederatedCredentials {
+pub struct BackendCredentials {
     /// Temporary access key id (AWS `ASIA…`).
     pub access_key_id: String,
     /// Temporary secret access key.
@@ -252,7 +252,7 @@ pub struct FederatedCredentials {
     pub expiration: DateTime<Utc>,
 }
 
-impl FederatedCredentials {
+impl BackendCredentials {
     /// Inject these credentials into a [`BucketConfig`] so the multistore
     /// backend signs requests with them instead of going anonymous.
     ///
@@ -278,9 +278,9 @@ impl FederatedCredentials {
     }
 }
 
-impl fmt::Debug for FederatedCredentials {
+impl fmt::Debug for BackendCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FederatedCredentials")
+        f.debug_struct("BackendCredentials")
             .field("access_key_id", &self.access_key_id)
             .field("secret_access_key", &"[REDACTED]")
             .field("session_token", &"[REDACTED]")
@@ -500,9 +500,9 @@ mod tests {
     }
 
     #[test]
-    fn federated_credentials_apply_to_signs_the_bucket() {
+    fn backend_credentials_apply_to_signs_the_bucket() {
         use chrono::{TimeZone, Utc};
-        let creds = FederatedCredentials {
+        let creds = BackendCredentials {
             access_key_id: "ASIA123".to_string(),
             secret_access_key: "secret".to_string(),
             session_token: "session".to_string(),
@@ -527,9 +527,9 @@ mod tests {
     }
 
     #[test]
-    fn federated_credentials_bucket_debug_redacts_applied_secrets() {
+    fn backend_credentials_bucket_debug_redacts_applied_secrets() {
         use chrono::{TimeZone, Utc};
-        let creds = FederatedCredentials {
+        let creds = BackendCredentials {
             access_key_id: "ASIA123".to_string(),
             secret_access_key: "super-secret".to_string(),
             session_token: "super-session".to_string(),

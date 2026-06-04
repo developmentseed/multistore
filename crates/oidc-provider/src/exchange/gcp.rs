@@ -5,13 +5,13 @@
 //! 2. Use the federated token to call IAM `generateAccessToken` for a
 //!    service account, obtaining a GCP access token
 
-use crate::{FederatedCredentials, HttpExchange, OidcProviderError};
+use crate::{BackendCredentials, HttpExchange, OidcProviderError};
 
 use super::CredentialExchange;
 
 /// Configuration for exchanging a JWT for GCP credentials.
 ///
-/// GCP returns a bearer token only; the resulting [`FederatedCredentials`](crate::FederatedCredentials)
+/// GCP returns a bearer token only; the resulting [`BackendCredentials`](crate::BackendCredentials)
 /// will have `access_key_id` and `secret_access_key` set to empty strings while
 /// `session_token` carries the bearer token.
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ impl<H: HttpExchange> CredentialExchange<H> for GcpExchange {
         &self,
         http: &H,
         jwt: &str,
-    ) -> Result<FederatedCredentials, OidcProviderError> {
+    ) -> Result<BackendCredentials, OidcProviderError> {
         // Step 1: Exchange JWT for federated access token via GCP STS
         let sts_form = [
             (
@@ -128,7 +128,7 @@ fn parse_sts_token_response(json: &str) -> Result<String, OidcProviderError> {
 /// Parse the IAM `generateAccessToken` response.
 fn parse_generate_access_token_response(
     json: &str,
-) -> Result<FederatedCredentials, OidcProviderError> {
+) -> Result<BackendCredentials, OidcProviderError> {
     let parsed: serde_json::Value = serde_json::from_str(json).map_err(|e| {
         OidcProviderError::ExchangeError(format!("invalid generateAccessToken response: {e}"))
     })?;
@@ -146,7 +146,7 @@ fn parse_generate_access_token_response(
         .with_timezone(&chrono::Utc);
 
     // GCP returns a bearer token; same pattern as Azure.
-    Ok(FederatedCredentials {
+    Ok(BackendCredentials {
         access_key_id: String::new(),
         secret_access_key: String::new(),
         session_token: access_token.to_string(),

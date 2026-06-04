@@ -14,7 +14,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use super::CredentialExchange;
-use crate::{FederatedCredentials, HttpExchange, OidcProviderError};
+use crate::{BackendCredentials, HttpExchange, OidcProviderError};
 
 /// Configuration for exchanging a JWT for AWS credentials.
 #[derive(Debug, Clone)]
@@ -87,7 +87,7 @@ impl<H: HttpExchange> CredentialExchange<H> for AwsExchange {
         &self,
         http: &H,
         jwt: &str,
-    ) -> Result<FederatedCredentials, OidcProviderError> {
+    ) -> Result<BackendCredentials, OidcProviderError> {
         // Build the request with this module's `AssumeRoleWithWebIdentity`, hand
         // its (unencoded) pairs to the runtime's HTTP client — which
         // form-urlencodes them — then parse the reply.
@@ -189,7 +189,7 @@ impl<'a> AssumeRoleWithWebIdentity<'a> {
 /// (an `<ErrorResponse>` document), so this inspects the body rather than
 /// relying on the status code: an error document becomes
 /// [`FederationError::Sts`] carrying the provider's code and message.
-pub(crate) fn parse_response(xml: &str) -> Result<FederatedCredentials, FederationError> {
+pub(crate) fn parse_response(xml: &str) -> Result<BackendCredentials, FederationError> {
     if xml.contains("<ErrorResponse") {
         let err: ErrorResponse = quick_xml::de::from_str(xml)?;
         return Err(FederationError::Sts {
@@ -200,7 +200,7 @@ pub(crate) fn parse_response(xml: &str) -> Result<FederatedCredentials, Federati
 
     let resp: AssumeRoleWithWebIdentityResponse = quick_xml::de::from_str(xml)?;
     let creds = resp.result.credentials;
-    Ok(FederatedCredentials {
+    Ok(BackendCredentials {
         access_key_id: creds.access_key_id,
         secret_access_key: creds.secret_access_key,
         session_token: creds.session_token,

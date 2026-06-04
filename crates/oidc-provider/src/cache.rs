@@ -1,6 +1,6 @@
 //! TTL credential cache.
 //!
-//! Caches [`FederatedCredentials`] by key, evicting entries that are within a
+//! Caches [`BackendCredentials`] by key, evicting entries that are within a
 //! safety margin of expiration. This avoids redundant STS calls when the
 //! same backend is accessed repeatedly within a short window.
 
@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Utc};
 
-use crate::FederatedCredentials;
+use crate::BackendCredentials;
 
 /// Safety margin before expiration — credentials are considered expired
 /// this many seconds before their actual `expires_at`.
@@ -17,7 +17,7 @@ const EXPIRY_MARGIN_SECS: i64 = 60;
 
 /// Thread-safe TTL cache for cloud credentials.
 pub struct CredentialCache {
-    entries: Mutex<HashMap<String, Arc<FederatedCredentials>>>,
+    entries: Mutex<HashMap<String, Arc<BackendCredentials>>>,
 }
 
 impl Default for CredentialCache {
@@ -35,7 +35,7 @@ impl CredentialCache {
     }
 
     /// Retrieve cached credentials if they are still valid.
-    pub fn get(&self, key: &str) -> Option<Arc<FederatedCredentials>> {
+    pub fn get(&self, key: &str) -> Option<Arc<BackendCredentials>> {
         let entries = self.entries.lock().unwrap();
         if let Some(creds) = entries.get(key) {
             let margin = Duration::seconds(EXPIRY_MARGIN_SECS);
@@ -47,7 +47,7 @@ impl CredentialCache {
     }
 
     /// Store credentials in the cache.
-    pub fn put(&self, key: String, creds: Arc<FederatedCredentials>) {
+    pub fn put(&self, key: String, creds: Arc<BackendCredentials>) {
         let mut entries = self.entries.lock().unwrap();
         entries.insert(key, creds);
     }
@@ -57,8 +57,8 @@ impl CredentialCache {
 mod tests {
     use super::*;
 
-    fn make_creds(expires_in_secs: i64) -> FederatedCredentials {
-        FederatedCredentials {
+    fn make_creds(expires_in_secs: i64) -> BackendCredentials {
+        BackendCredentials {
             access_key_id: "AKID".into(),
             secret_access_key: "secret".into(),
             session_token: "token".into(),

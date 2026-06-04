@@ -33,7 +33,7 @@ The runtime-agnostic core. Contains:
 - S3 request parsing, XML response building, list prefix rewriting
 - SigV4 signature verification
 - Sealed session token encryption/decryption
-- Type definitions (`BucketConfig`, `RoleConfig`, `AccessScope`, `TemporaryCredentials`, `FederatedCredentials`, etc.) — including `FederatedCredentials`, the backend credential value type the outbound exchange produces and injects into a `BucketConfig`
+- Type definitions (`BucketConfig`, `RoleConfig`, `AccessScope`, `TemporaryCredentials`, `BackendCredentials`, etc.) — including `BackendCredentials`, the backend credential value type the outbound exchange produces and injects into a `BucketConfig`
 
 **Feature flags:**
 - `azure` — Azure Blob Storage support

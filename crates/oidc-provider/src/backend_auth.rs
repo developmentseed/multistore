@@ -47,7 +47,7 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
             .get_credentials(role_arn, &exchange, subject, &[])
             .await?;
 
-        // Inject the temporary credentials via `FederatedCredentials::apply_to`
+        // Inject the temporary credentials via `BackendCredentials::apply_to`
         // (defined in `multistore` core), so the option-key set and the
         // `skip_signature` clearing stay single-sourced on the credential type
         // rather than being re-hand-rolled here (the previous inline version
