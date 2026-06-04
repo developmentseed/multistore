@@ -8,7 +8,11 @@ description = "Outbound credential federation (OIDC identity -> backend cloud ST
 [dependencies]
 multistore.workspace = true
 chrono.workspace = true
+futures.workspace = true
 serde.workspace = true
 quick-xml.workspace = true
 url.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

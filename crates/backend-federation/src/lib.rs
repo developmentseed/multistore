@@ -39,9 +39,11 @@
 //! [`BucketConfig`]: multistore::types::BucketConfig
 
 pub mod aws;
+mod cache;
 mod credentials;
 mod error;
 
+pub use cache::CredentialCache;
 pub use credentials::FederatedCredentials;
 pub use error::FederationError;
 
