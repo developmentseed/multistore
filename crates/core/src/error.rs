@@ -45,6 +45,17 @@ pub enum ProxyError {
     #[error("backend error: {0}")]
     BackendError(String),
 
+    /// The proxy could not obtain credentials from the backend cloud's identity
+    /// broker — e.g. AWS STS rejected the proxy's federated identity
+    /// (`InvalidIdentityToken`), or the broker was unreachable. Kept distinct
+    /// from [`Internal`](Self::Internal) so a federation/trust misconfiguration
+    /// surfaces as a diagnosable `502` rather than an opaque `500`. Carries the
+    /// provider error *code* only (safe to expose); the full provider message —
+    /// which may contain role ARNs / account IDs — is logged at the conversion
+    /// site, not returned to the caller.
+    #[error("backend authentication failed: {0}")]
+    BackendAuthError(String),
+
     /// A conditional request header (e.g. `If-Match`) was not satisfied.
     #[error("precondition failed")]
     PreconditionFailed,
@@ -76,6 +87,7 @@ impl ProxyError {
             Self::InvalidOidcToken(_) => "InvalidIdentityToken",
             Self::RoleNotFound(_) => "AccessDenied",
             Self::BackendError(_) => "ServiceUnavailable",
+            Self::BackendAuthError(_) => "BackendAuthenticationFailed",
             Self::PreconditionFailed => "PreconditionFailed",
             Self::NotModified => "NotModified",
             Self::ConfigError(_) => "InternalError",
@@ -95,6 +107,7 @@ impl ProxyError {
             Self::PreconditionFailed => 412,
             Self::NotModified => 304,
             Self::BackendError(_) => 503,
+            Self::BackendAuthError(_) => 502,
             Self::ConfigError(_) | Self::Internal(_) => 500,
         }
     }
@@ -109,6 +122,11 @@ impl ProxyError {
         match self {
             Self::BackendError(_) => "Service unavailable".to_string(),
             Self::ConfigError(_) | Self::Internal(_) => "Internal server error".to_string(),
+            // Safe to surface: holds only the provider error code (e.g.
+            // `InvalidIdentityToken`), never the raw provider message.
+            Self::BackendAuthError(code) => {
+                format!("Failed to obtain backend credentials: {code}")
+            }
             other => other.to_string(),
         }
     }
@@ -121,5 +139,30 @@ impl ProxyError {
             object_store::Error::NotModified { .. } => Self::NotModified,
             _ => Self::BackendError(e.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_auth_error_is_502_and_not_opaque() {
+        let err = ProxyError::BackendAuthError("InvalidIdentityToken".into());
+        assert_eq!(err.status_code(), 502);
+        assert_eq!(err.s3_error_code(), "BackendAuthenticationFailed");
+        // Distinct from the generic internal-error message, and surfaces the
+        // provider code so the failure is diagnosable from the response alone.
+        let msg = err.safe_message();
+        assert_ne!(msg, "Internal server error");
+        assert!(msg.contains("InvalidIdentityToken"), "got: {msg}");
+    }
+
+    #[test]
+    fn internal_error_stays_opaque_5xx() {
+        // Genuine internal errors keep the generic message (no detail leak).
+        let err = ProxyError::Internal("secret backend detail".into());
+        assert_eq!(err.status_code(), 500);
+        assert_eq!(err.safe_message(), "Internal server error");
     }
 }
