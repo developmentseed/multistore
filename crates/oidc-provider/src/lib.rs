@@ -415,7 +415,10 @@ mod tests {
         // The provider *code* is surfaced; the raw message is not.
         let safe = proxy_err.safe_message();
         assert!(safe.contains("InvalidIdentityToken"), "got: {safe}");
-        assert!(!safe.contains("your account"), "raw STS message leaked: {safe}");
+        assert!(
+            !safe.contains("your account"),
+            "raw STS message leaked: {safe}"
+        );
     }
 
     #[test]
