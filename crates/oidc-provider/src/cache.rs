@@ -16,21 +16,22 @@ use crate::BackendCredentials;
 const EXPIRY_MARGIN_SECS: i64 = 60;
 
 /// Thread-safe TTL cache for cloud credentials.
+///
+/// `Clone` shares the same underlying store (the entries map is behind an
+/// `Arc`), so a cloned [`OidcCredentialProvider`](crate::OidcCredentialProvider)
+/// keeps hitting the same cache — letting a runtime hold the provider in a
+/// shared/`static` slot and reuse it across requests instead of re-minting and
+/// re-exchanging every time.
+#[derive(Clone, Default)]
 pub struct CredentialCache {
-    entries: Mutex<HashMap<String, Arc<BackendCredentials>>>,
-}
-
-impl Default for CredentialCache {
-    fn default() -> Self {
-        Self::new()
-    }
+    entries: Arc<Mutex<HashMap<String, Arc<BackendCredentials>>>>,
 }
 
 impl CredentialCache {
     /// Create an empty credential cache.
     pub fn new() -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
