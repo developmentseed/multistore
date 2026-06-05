@@ -56,6 +56,11 @@ pub trait HttpExchange:
 }
 
 /// Top-level provider that combines signing, exchange, and caching.
+///
+/// `Clone` is cheap and shares the credential cache (and the `Clone` HTTP
+/// client), so a runtime can construct one provider and reuse it across requests
+/// — keeping the cache warm instead of re-minting + re-exchanging every call.
+#[derive(Clone)]
 pub struct OidcCredentialProvider<H: HttpExchange> {
     signer: JwtSigner,
     cache: CredentialCache,
