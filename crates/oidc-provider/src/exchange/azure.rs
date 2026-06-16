@@ -49,11 +49,7 @@ impl AzureExchange {
 }
 
 impl<H: HttpExchange> CredentialExchange<H> for AzureExchange {
-    async fn exchange(
-        &self,
-        http: &H,
-        jwt: &str,
-    ) -> Result<BackendCredentials, OidcProviderError> {
+    async fn exchange(&self, http: &H, jwt: &str) -> Result<BackendCredentials, OidcProviderError> {
         let form = [
             ("grant_type", "client_credentials"),
             (

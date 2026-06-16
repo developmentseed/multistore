@@ -51,11 +51,7 @@ impl GcpExchange {
 }
 
 impl<H: HttpExchange> CredentialExchange<H> for GcpExchange {
-    async fn exchange(
-        &self,
-        http: &H,
-        jwt: &str,
-    ) -> Result<BackendCredentials, OidcProviderError> {
+    async fn exchange(&self, http: &H, jwt: &str) -> Result<BackendCredentials, OidcProviderError> {
         // Step 1: Exchange JWT for federated access token via GCP STS
         let sts_form = [
             (

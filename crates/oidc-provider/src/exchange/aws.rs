@@ -83,11 +83,7 @@ impl AwsExchange {
 }
 
 impl<H: HttpExchange> CredentialExchange<H> for AwsExchange {
-    async fn exchange(
-        &self,
-        http: &H,
-        jwt: &str,
-    ) -> Result<BackendCredentials, OidcProviderError> {
+    async fn exchange(&self, http: &H, jwt: &str) -> Result<BackendCredentials, OidcProviderError> {
         // Build the request with this module's `AssumeRoleWithWebIdentity`, hand
         // its (unencoded) pairs to the runtime's HTTP client — which
         // form-urlencodes them — then parse the reply.
