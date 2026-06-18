@@ -106,16 +106,42 @@ pub(crate) fn build_list_prefix(config: &BucketConfig, client_prefix: &str) -> S
     }
 }
 
-/// Build S3 ListObjectsV2 XML from an object_store ListResult.
-///
-/// Pagination is handled by the backend — `is_truncated` and
-/// `next_continuation_token` are passed through from the backend's response.
-pub(crate) fn build_list_xml(
-    params: &ListXmlParams<'_>,
+/// Version-agnostic parts of an S3 list response, shared by the V1 and V2
+/// builders (which differ only in their pagination fields). Keys and prefixes
+/// are already rewritten and URL-encoded; `prefix_value` is the raw echoed
+/// request prefix, left for the caller to encode alongside its own fields.
+struct ListEntries {
+    contents: Vec<ListContents>,
+    common_prefixes: Vec<ListCommonPrefix>,
+    prefix_value: String,
+    url_encode: bool,
+}
+
+/// URL-encode `s` per S3's RFC 3986 rules (unreserved chars + `/` left raw)
+/// when `url_encode` is set; otherwise return it unchanged.
+fn s3_encode(s: String, url_encode: bool) -> String {
+    if !url_encode {
+        return s;
+    }
+    // Unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
+    const S3_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~')
+        .remove(b'/');
+    percent_encoding::utf8_percent_encode(&s, S3_ENCODE_SET).to_string()
+}
+
+/// Filter directory markers, rewrite keys/prefixes, and URL-encode the parts of
+/// a list response that don't depend on the list-type version.
+fn collect_list_entries(
+    client_prefix: &str,
+    encoding_type: &Option<String>,
     list_result: &object_store::ListResult,
     config: &BucketConfig,
     list_rewrite: Option<&ListRewrite>,
-) -> Result<String, ProxyError> {
+) -> ListEntries {
     let backend_prefix = config
         .backend_prefix
         .as_deref()
@@ -144,7 +170,7 @@ pub(crate) fn build_list_xml(
     let common_prefix_set: HashSet<&object_store::path::Path> =
         list_result.common_prefixes.iter().collect();
 
-    let full_list_prefix = format!("{}{}", strip_prefix, params.client_prefix);
+    let full_list_prefix = format!("{}{}", strip_prefix, client_prefix);
     let list_prefix_trimmed = full_list_prefix.trim_end_matches('/');
 
     let is_directory_marker = |obj: &object_store::ObjectMeta| -> bool {
@@ -154,14 +180,19 @@ pub(crate) fn build_list_xml(
                 || obj.location.as_ref() == list_prefix_trimmed)
     };
 
-    let mut contents: Vec<ListContents> = list_result
+    let url_encode = matches!(encoding_type, Some(t) if t == "url");
+
+    let contents: Vec<ListContents> = list_result
         .objects
         .iter()
         .filter(|obj| !is_directory_marker(obj))
         .map(|obj| {
             let raw_key = obj.location.to_string();
             ListContents {
-                key: rewrite_key(&raw_key, &strip_prefix, list_rewrite),
+                key: s3_encode(
+                    rewrite_key(&raw_key, &strip_prefix, list_rewrite),
+                    url_encode,
+                ),
                 last_modified: obj
                     .last_modified
                     .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -173,61 +204,71 @@ pub(crate) fn build_list_xml(
         })
         .collect();
 
-    let mut common_prefixes: Vec<ListCommonPrefix> = list_result
+    let common_prefixes: Vec<ListCommonPrefix> = list_result
         .common_prefixes
         .iter()
         .map(|p| {
             let raw_prefix = format!("{}/", p);
             ListCommonPrefix {
-                prefix: rewrite_key(&raw_prefix, &strip_prefix, list_rewrite),
+                prefix: s3_encode(
+                    rewrite_key(&raw_prefix, &strip_prefix, list_rewrite),
+                    url_encode,
+                ),
             }
         })
         .collect();
 
-    let url_encode = matches!(params.encoding_type, Some(ref t) if t == "url");
-    let encode = |s: String| -> String {
-        if url_encode {
-            // S3 URL-encodes per RFC 3986: leave unreserved chars + '/' unencoded.
-            // Unreserved = ALPHA / DIGIT / "-" / "." / "_" / "~"
-            const S3_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
-                .remove(b'-')
-                .remove(b'.')
-                .remove(b'_')
-                .remove(b'~')
-                .remove(b'/');
-            percent_encoding::utf8_percent_encode(&s, S3_ENCODE_SET).to_string()
-        } else {
-            s
-        }
-    };
-
     let prefix_value = match list_rewrite {
         Some(rewrite) if !rewrite.add_prefix.is_empty() => {
-            format!("{}{}", rewrite.add_prefix, params.client_prefix)
+            format!("{}{}", rewrite.add_prefix, client_prefix)
         }
-        _ => params.client_prefix.to_string(),
+        _ => client_prefix.to_string(),
     };
 
-    // URL-encode keys, prefixes, and delimiter when encoding-type=url
-    if url_encode {
-        for item in &mut contents {
-            item.key = encode(std::mem::take(&mut item.key));
-        }
-        for cp in &mut common_prefixes {
-            cp.prefix = encode(std::mem::take(&mut cp.prefix));
-        }
+    ListEntries {
+        contents,
+        common_prefixes,
+        prefix_value,
+        url_encode,
     }
+}
+
+/// Build S3 ListObjectsV2 XML from an object_store ListResult.
+///
+/// Pagination is handled by the backend — `is_truncated` and
+/// `next_continuation_token` are passed through from the backend's response.
+pub(crate) fn build_list_xml(
+    params: &ListXmlParams<'_>,
+    list_result: &object_store::ListResult,
+    config: &BucketConfig,
+    list_rewrite: Option<&ListRewrite>,
+) -> Result<String, ProxyError> {
+    let ListEntries {
+        contents,
+        common_prefixes,
+        prefix_value,
+        url_encode,
+    } = collect_list_entries(
+        params.client_prefix,
+        params.encoding_type,
+        list_result,
+        config,
+        list_rewrite,
+    );
 
     Ok(ListBucketResult {
         xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
         name: params.bucket_name.to_string(),
-        prefix: encode(prefix_value),
-        delimiter: encode(params.delimiter.to_string()),
+        prefix: s3_encode(prefix_value, url_encode),
+        delimiter: s3_encode(params.delimiter.to_string(), url_encode),
         encoding_type: params.encoding_type.clone(),
         max_keys: params.max_keys,
         is_truncated: params.is_truncated,
         key_count: params.key_count,
-        start_after: params.start_after.as_ref().map(|s| encode(s.clone())),
+        start_after: params
+            .start_after
+            .as_ref()
+            .map(|s| s3_encode(s.clone(), url_encode)),
         continuation_token: params.continuation_token.clone(),
         next_continuation_token: params.next_continuation_token.clone(),
         contents,
@@ -255,97 +296,24 @@ pub(crate) fn build_list_xml_v1(
     config: &BucketConfig,
     list_rewrite: Option<&ListRewrite>,
 ) -> Result<String, ProxyError> {
-    let backend_prefix = config
-        .backend_prefix
-        .as_deref()
-        .unwrap_or("")
-        .trim_end_matches('/');
-    let strip_prefix = if backend_prefix.is_empty() {
-        String::new()
-    } else {
-        format!("{}/", backend_prefix)
-    };
-
-    // Filter out S3 directory marker objects (see build_list_xml for details).
-    let common_prefix_set: HashSet<&object_store::path::Path> =
-        list_result.common_prefixes.iter().collect();
-
-    let full_list_prefix = format!("{}{}", strip_prefix, params.client_prefix);
-    let list_prefix_trimmed = full_list_prefix.trim_end_matches('/');
-
-    let is_directory_marker = |obj: &object_store::ObjectMeta| -> bool {
-        obj.size == 0
-            && (common_prefix_set.contains(&obj.location)
-                || obj.location.as_ref() == backend_prefix
-                || obj.location.as_ref() == list_prefix_trimmed)
-    };
-
-    let mut contents: Vec<ListContents> = list_result
-        .objects
-        .iter()
-        .filter(|obj| !is_directory_marker(obj))
-        .map(|obj| {
-            let raw_key = obj.location.to_string();
-            ListContents {
-                key: rewrite_key(&raw_key, &strip_prefix, list_rewrite),
-                last_modified: obj
-                    .last_modified
-                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                    .to_string(),
-                etag: obj.e_tag.as_deref().unwrap_or("\"\"").to_string(),
-                size: obj.size,
-                storage_class: "STANDARD",
-            }
-        })
-        .collect();
-
-    let mut common_prefixes: Vec<ListCommonPrefix> = list_result
-        .common_prefixes
-        .iter()
-        .map(|p| {
-            let raw_prefix = format!("{}/", p);
-            ListCommonPrefix {
-                prefix: rewrite_key(&raw_prefix, &strip_prefix, list_rewrite),
-            }
-        })
-        .collect();
-
-    let url_encode = matches!(params.encoding_type, Some(ref t) if t == "url");
-    let encode = |s: String| -> String {
-        if url_encode {
-            const S3_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
-                .remove(b'-')
-                .remove(b'.')
-                .remove(b'_')
-                .remove(b'~')
-                .remove(b'/');
-            percent_encoding::utf8_percent_encode(&s, S3_ENCODE_SET).to_string()
-        } else {
-            s
-        }
-    };
-
-    let prefix_value = match list_rewrite {
-        Some(rewrite) if !rewrite.add_prefix.is_empty() => {
-            format!("{}{}", rewrite.add_prefix, params.client_prefix)
-        }
-        _ => params.client_prefix.to_string(),
-    };
-
-    if url_encode {
-        for item in &mut contents {
-            item.key = encode(std::mem::take(&mut item.key));
-        }
-        for cp in &mut common_prefixes {
-            cp.prefix = encode(std::mem::take(&mut cp.prefix));
-        }
-    }
+    let ListEntries {
+        contents,
+        common_prefixes,
+        prefix_value,
+        url_encode,
+    } = collect_list_entries(
+        params.client_prefix,
+        params.encoding_type,
+        list_result,
+        config,
+        list_rewrite,
+    );
 
     Ok(ListBucketResultV1 {
         xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
         name: params.bucket_name.to_string(),
-        prefix: encode(prefix_value),
-        delimiter: encode(params.delimiter.to_string()),
+        prefix: s3_encode(prefix_value, url_encode),
+        delimiter: s3_encode(params.delimiter.to_string(), url_encode),
         encoding_type: params.encoding_type.clone(),
         max_keys: params.max_keys,
         is_truncated: params.is_truncated,
