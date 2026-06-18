@@ -56,30 +56,6 @@ impl AwsExchange {
             ..Default::default()
         }
     }
-
-    /// Override the STS endpoint (e.g. for regional or FIPS endpoints).
-    pub fn with_endpoint(mut self, endpoint: String) -> Self {
-        self.sts_endpoint = endpoint;
-        self
-    }
-
-    /// Override the session name embedded in the assumed-role credentials.
-    pub fn with_session_name(mut self, name: String) -> Self {
-        self.session_name = name;
-        self
-    }
-
-    /// Request a specific credential lifetime (seconds); AWS clamps to the role's max.
-    pub fn with_duration(mut self, seconds: u32) -> Self {
-        self.duration_seconds = Some(seconds);
-        self
-    }
-
-    /// Attach an inline session policy (JSON) that further restricts the session.
-    pub fn with_session_policy(mut self, policy: String) -> Self {
-        self.session_policy = Some(policy);
-        self
-    }
 }
 
 impl<H: HttpExchange> CredentialExchange<H> for AwsExchange {
