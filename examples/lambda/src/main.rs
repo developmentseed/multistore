@@ -19,7 +19,7 @@
 
 mod client;
 
-use client::{LambdaBackend, ReqwestHttpExchange};
+use client::{body_to_bytes, LambdaBackend, ReqwestHttpExchange};
 use lambda_http::{service_fn, Body, Error, Request, Response};
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::route_handler::{ProxyResponseBody, ProxyResult, RequestInfo};
@@ -156,13 +156,4 @@ fn build_lambda_response(result: ProxyResult) -> Response<Body> {
     }
 
     builder.body(body).unwrap()
-}
-
-/// Collect a Lambda body into bytes.
-async fn body_to_bytes(body: Body) -> Result<bytes::Bytes, Box<dyn std::error::Error>> {
-    match body {
-        Body::Empty => Ok(bytes::Bytes::new()),
-        Body::Text(s) => Ok(bytes::Bytes::from(s)),
-        Body::Binary(b) => Ok(bytes::Bytes::from(b)),
-    }
 }
