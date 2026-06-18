@@ -36,24 +36,15 @@ pub struct AwsExchange {
     pub session_policy: Option<String>,
 }
 
-impl Default for AwsExchange {
-    fn default() -> Self {
-        Self {
-            role_arn: String::new(),
-            sts_endpoint: "https://sts.amazonaws.com".into(),
-            session_name: "s3-proxy".into(),
-            duration_seconds: None,
-            session_policy: None,
-        }
-    }
-}
-
 impl AwsExchange {
     /// Create an exchange targeting the given IAM role ARN, using default STS endpoint and session name.
     pub fn new(role_arn: String) -> Self {
         Self {
             role_arn,
-            ..Default::default()
+            sts_endpoint: "https://sts.amazonaws.com".into(),
+            session_name: "s3-proxy".into(),
+            duration_seconds: None,
+            session_policy: None,
         }
     }
 
