@@ -38,7 +38,7 @@ impl LambdaBackend {
 }
 
 /// Collect a Lambda body into bytes.
-async fn body_to_bytes(body: Body) -> Result<Bytes, Box<dyn std::error::Error>> {
+pub async fn body_to_bytes(body: Body) -> Result<Bytes, Box<dyn std::error::Error>> {
     match body {
         Body::Empty => Ok(Bytes::new()),
         Body::Text(s) => Ok(Bytes::from(s)),
