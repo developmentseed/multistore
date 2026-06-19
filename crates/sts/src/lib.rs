@@ -33,7 +33,6 @@ pub mod route_handler;
 pub mod sealed_token;
 pub mod sts;
 
-use base64::Engine;
 pub use jwks::JwksCache;
 use multistore::error::ProxyError;
 use multistore::registry::CredentialRegistry;
@@ -91,15 +90,10 @@ fn jwt_decode_unverified(
         .next()
         .ok_or_else(|| ProxyError::InvalidOidcToken("malformed JWT".into()))?;
 
-    let decode = |s: &str| -> Result<serde_json::Value, ProxyError> {
-        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(s)
-            .map_err(|e| ProxyError::InvalidOidcToken(format!("base64url decode error: {}", e)))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| ProxyError::InvalidOidcToken(format!("invalid JWT JSON: {}", e)))
-    };
-
-    Ok((decode(header_b64)?, decode(payload_b64)?))
+    Ok((
+        jwks::decode_jwt_segment(header_b64)?,
+        jwks::decode_jwt_segment(payload_b64)?,
+    ))
 }
 
 /// Validate an OIDC token and mint temporary credentials.
