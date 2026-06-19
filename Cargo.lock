@@ -1227,7 +1227,6 @@ dependencies = [
 name = "multistore-oidc-provider"
 version = "0.4.0"
 dependencies = [
- "async-trait",
  "base64",
  "chrono",
  "multistore",
@@ -1268,10 +1267,8 @@ dependencies = [
  "object_store",
  "reqwest",
  "serde",
- "thiserror",
  "tokio",
  "toml",
- "tower-service",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1293,7 +1290,6 @@ name = "multistore-sts"
 version = "0.4.0"
 dependencies = [
  "aes-gcm",
- "async-trait",
  "base64",
  "chrono",
  "http",
@@ -1305,7 +1301,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror",
  "tokio",
  "tracing",
  "url",
