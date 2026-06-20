@@ -37,11 +37,6 @@ impl ProxyResponseBody {
             Self::Bytes(bytes)
         }
     }
-
-    /// Create an empty response body.
-    pub fn empty() -> Self {
-        Self::Empty
-    }
 }
 
 /// The action the handler wants the runtime to take.
