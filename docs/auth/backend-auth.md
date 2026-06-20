@@ -232,10 +232,13 @@ On subsequent requests, cached credentials are reused until they expire.
 When using OIDC backend auth, the proxy caches temporary credentials to avoid calling the cloud provider's STS on every request. Credentials are:
 
 - Keyed by the IAM role ARN
-- Automatically refreshed when they expire
-- Shared across concurrent requests to the same bucket
+- **Proactively refreshed** shortly before they expire, so a credential is never handed out about to expire mid-request
+- **Single-flighted** across concurrent requests to the same bucket — only one token exchange runs while the rest await its result
 
 This means the first request to an OIDC-backed bucket incurs a small latency cost for the credential exchange, but subsequent requests use cached credentials until they expire.
+
+> [!NOTE]
+> How effective this cache is depends on the runtime — an in-memory cache is per-process on the server but per-isolate on Cloudflare Workers. See [Caching](/architecture/caching) for the cross-runtime details and best practices (including layering the Cloudflare Cache API).
 
 ## Choosing Between Static and OIDC
 

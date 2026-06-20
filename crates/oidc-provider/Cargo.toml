@@ -22,6 +22,8 @@ rsa.workspace = true
 sha2.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+# Per-key async lock for single-flight credential refresh (see `cache.rs`).
+futures.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

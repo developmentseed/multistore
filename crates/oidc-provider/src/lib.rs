@@ -89,8 +89,12 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
     /// Get credentials for a backend, using cached values when available.
     ///
     /// `exchange` describes how to trade the self-signed JWT for cloud
-    /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend
-    /// for caching purposes (e.g. the role ARN).
+    /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend for
+    /// caching purposes (e.g. the role ARN).
+    ///
+    /// Concurrent calls for the same `cache_key` are single-flighted: only one
+    /// JWT mint + exchange runs, and the rest await its result. A cached value
+    /// is reused until it nears expiry, then proactively re-minted.
     pub async fn get_credentials<E: CredentialExchange<H>>(
         &self,
         cache_key: &str,
@@ -98,24 +102,16 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
         subject: &str,
         extra_claims: &[(&str, &str)],
     ) -> Result<Arc<BackendCredentials>, OidcProviderError> {
-        // Check cache first
-        if let Some(creds) = self.cache.get(cache_key) {
-            return Ok(creds);
-        }
-
-        // Mint a JWT
-        let token = self
-            .signer
-            .sign(subject, &self.issuer, &self.audience, extra_claims)?;
-
-        // Exchange it for cloud credentials
-        let creds: BackendCredentials = exchange.exchange(&self.http, &token).await?;
-        let creds = Arc::new(creds);
-
-        // Cache
-        self.cache.put(cache_key.to_string(), creds.clone());
-
-        Ok(creds)
+        self.cache
+            .get_or_fetch(cache_key, || async {
+                // Cache miss (or due for refresh): mint a JWT and exchange it.
+                let token =
+                    self.signer
+                        .sign(subject, &self.issuer, &self.audience, extra_claims)?;
+                let creds: BackendCredentials = exchange.exchange(&self.http, &token).await?;
+                Ok(Arc::new(creds))
+            })
+            .await
     }
 
     /// Access the underlying signer (e.g. for JWKS generation).

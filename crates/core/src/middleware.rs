@@ -290,7 +290,7 @@ mod tests {
             identity: &IDENTITY,
             operation: &OPERATION,
             bucket_config: Some(Cow::Borrowed(&*BUCKET_CONFIG)),
-            headers: &*HEADERS,
+            headers: &HEADERS,
             source_ip: None,
             request_id: "test-request-id",
             list_rewrite: None,
