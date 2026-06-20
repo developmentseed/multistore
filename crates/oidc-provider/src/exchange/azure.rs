@@ -34,12 +34,6 @@ impl AzureExchange {
         }
     }
 
-    /// Override the OAuth 2.0 scope requested during token exchange.
-    pub fn with_scope(mut self, scope: String) -> Self {
-        self.scope = scope;
-        self
-    }
-
     fn token_endpoint(&self) -> String {
         format!(
             "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
