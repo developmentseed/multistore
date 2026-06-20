@@ -64,7 +64,7 @@ For sharing beyond a single isolate, layer an external tier.
 
 ## Layering an external tier
 
-The Cloudflare Cache API is **colo-local**: shared across all isolates in one data center and surviving isolate cold-starts there. It is the cheapest way to stop every fresh isolate in a busy colo from re-minting. Because `get_or_fetch` calls your closure on a miss, the external tier lives *inside* the closure — keeping `multistore-credential-cache` free of any runtime dependency:
+The Cloudflare Cache API is **colo-local**: shared across all isolates in one data center and surviving isolate cold-starts there. It is the cheapest way to stop every fresh isolate in a busy colo from re-minting. Because `get_or_fetch` calls your closure on a miss, the external tier lives *inside* the closure — keeping the cache itself free of any runtime dependency:
 
 ```text
 request
