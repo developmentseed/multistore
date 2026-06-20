@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/developmentseed/multistore/compare/v0.4.0...v0.5.0) (2026-06-20)
+
+
+### Features
+
+* **backend-federation:** outbound OIDC→backend STS exchange (oidc-provider delegates to it) ([#57](https://github.com/developmentseed/multistore/issues/57)) ([40fb24c](https://github.com/developmentseed/multistore/commit/40fb24c75c5fd0949cf2d84eecb3896b31293a2c))
+* **cache:** shared single-flight credential cache, wired into OIDC backend auth ([#61](https://github.com/developmentseed/multistore/issues/61)) ([ddbc09c](https://github.com/developmentseed/multistore/commit/ddbc09c8ea8c08f4ba0ea5cdf3ca46d602e2a67c))
+* **oidc-provider:** make OidcCredentialProvider cheaply cloneable (shareable warm cache) ([#69](https://github.com/developmentseed/multistore/issues/69)) ([d6f13f1](https://github.com/developmentseed/multistore/commit/d6f13f1448877e1b5e07630df29395254b0de5e6))
+
+
+### Bug Fixes
+
+* **oidc-provider:** surface federation failures as actionable errors, not opaque 500s ([#66](https://github.com/developmentseed/multistore/issues/66)) ([0422288](https://github.com/developmentseed/multistore/commit/04222889124514e9275bfae6bb86bb91329dca9b))
+* **smoke:** default FEDERATION_TEST_KEY when repo var is empty ([#63](https://github.com/developmentseed/multistore/issues/63)) ([2c00a04](https://github.com/developmentseed/multistore/commit/2c00a041edcdb8df7cee368a294fcef32852eb3a))
+
 ## [0.4.0](https://github.com/developmentseed/multistore/compare/v0.3.1...v0.4.0) (2026-05-21)
 
 
