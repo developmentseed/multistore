@@ -1,12 +1,12 @@
 # Caching
 
-Multistore mints and fetches several kinds of short-lived data on the hot path — backend credentials, signing keys, config lookups. Re-doing that work on every request would add latency and hammer upstream services (STS, identity providers, config stores). This page covers what is cached, the shared credential-cache primitive, and — most importantly — how caching behaves differently on each runtime, with best practices for deploying it safely on Cloudflare Workers.
+Multistore mints and fetches several kinds of short-lived data on the hot path — backend credentials, signing keys, config lookups. Re-doing that work on every request would add latency and hammer upstream services (STS, identity providers, config stores). This page covers what is cached, the credential cache, and — most importantly — how caching behaves differently on each runtime, with best practices for deploying it safely on Cloudflare Workers.
 
 ## What gets cached
 
 | Cache | Crate | What it holds | Layer |
 |-------|-------|---------------|-------|
-| Credential cache | `multistore-credential-cache` | Short-lived backend/cloud credentials, keyed by credential identity | Outbound auth |
+| Credential cache | `multistore-oidc-provider` | Short-lived backend/cloud credentials, keyed by credential identity | Outbound auth |
 | JWKS cache | `multistore-sts` | Identity providers' public verification keys | Inbound auth |
 | Config provider cache | example code (`CachedProvider`) | Bucket/role/credential config lookups | Configuration |
 
@@ -14,28 +14,23 @@ These are independent layers — they protect different upstreams. This page foc
 
 ## The credential cache
 
-`multistore-credential-cache` provides one shared `CredentialCache<T>` used by every crate that mints short-lived credentials (e.g. [`multistore-oidc-provider`](/auth/backend-auth#oidc-backend-auth) caches the cloud credentials it exchanges for). Any credential type that implements the `Expiring` trait can be cached:
+[`multistore-oidc-provider`](/auth/backend-auth#oidc-backend-auth) caches the cloud credentials it exchanges for in an in-memory `CredentialCache` (its `cache` module), keyed by the backend's credential identity (e.g. the IAM role ARN). It is an internal detail of the provider — callers get its benefit transparently through `OidcCredentialProvider::get_credentials`.
+
+On a miss the cache runs a caller-supplied `fetch` closure (the JWT mint + STS exchange) and stores the result:
 
 ```rust
-use multistore_credential_cache::{CredentialCache, Expiring};
-
-let cache = CredentialCache::new(chrono::Duration::minutes(5));
-
 let creds = cache
-    .get_or_fetch(role_arn, now, || async { mint_via_sts().await })
+    .get_or_fetch(role_arn, || async { mint_via_sts().await })
     .await?;
 ```
 
 It gives you three behaviours:
 
 - **Serve-while-fresh** — a cached value is returned directly while it is comfortably valid.
-- **Proactive refresh** — once a value is within its *refresh lead* of expiry, the next access re-mints it, so a credential is never handed out about to expire mid-request.
+- **Proactive refresh** — once a value is within its *refresh lead* (60s) of expiry, the next access re-mints it, so a credential is never handed out about to expire mid-request.
 - **Single-flight** — while one caller is minting for a key, concurrent callers for that *same* key await the in-flight result instead of each launching their own mint. This collapses a cold-cache burst into a single upstream call.
 
-Two design choices make it portable:
-
-- **Runtime-agnostic clock.** The caller passes `now` rather than the cache reading a clock, because `Utc::now()` is not available on `wasm32-unknown-unknown` without extra features. See [Multi-Runtime Design](/architecture/multi-runtime).
-- **Closure-based `get_or_fetch`.** Because the cache calls *your* fetch closure on a miss, you can layer additional cache tiers (e.g. the Cloudflare Cache API) *inside* the closure without the cache crate ever depending on a runtime — see [Layering an external tier](#layering-an-external-tier).
+Because the cache calls *your* fetch closure on a miss, you can layer additional cache tiers (e.g. the Cloudflare Cache API) *inside* the closure without the cache ever depending on a runtime — see [Layering an external tier](#layering-an-external-tier).
 
 ## Runtime caveats
 

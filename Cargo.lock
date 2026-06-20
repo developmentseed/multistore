@@ -1145,19 +1145,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "multistore-backend-federation"
-version = "0.4.0"
-dependencies = [
- "chrono",
- "multistore",
- "multistore-credential-cache",
- "quick-xml 0.37.5",
- "serde",
- "thiserror",
- "url",
-]
-
-[[package]]
 name = "multistore-cf-workers"
 version = "0.4.0"
 dependencies = [
@@ -1205,15 +1192,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "multistore-credential-cache"
-version = "0.4.0"
-dependencies = [
- "chrono",
- "futures",
- "tokio",
-]
-
-[[package]]
 name = "multistore-lambda"
 version = "0.4.0"
 dependencies = [
@@ -1249,12 +1227,11 @@ dependencies = [
 name = "multistore-oidc-provider"
 version = "0.4.0"
 dependencies = [
- "async-trait",
  "base64",
  "chrono",
+ "futures",
  "multistore",
- "multistore-backend-federation",
- "multistore-credential-cache",
+ "quick-xml 0.37.5",
  "rand 0.8.5",
  "rsa",
  "serde",
@@ -1291,10 +1268,8 @@ dependencies = [
  "object_store",
  "reqwest",
  "serde",
- "thiserror",
  "tokio",
  "toml",
- "tower-service",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1316,7 +1291,6 @@ name = "multistore-sts"
 version = "0.4.0"
 dependencies = [
  "aes-gcm",
- "async-trait",
  "base64",
  "chrono",
  "http",
@@ -1328,7 +1302,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "thiserror",
  "tokio",
  "tracing",
  "url",

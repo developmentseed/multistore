@@ -103,6 +103,13 @@ fn base64url_decode(input: &str) -> Result<Vec<u8>, ProxyError> {
         .map_err(|e| ProxyError::InvalidOidcToken(format!("base64url decode error: {}", e)))
 }
 
+/// Decode a base64url-encoded JWT segment (header or payload) into JSON.
+pub(crate) fn decode_jwt_segment(segment: &str) -> Result<serde_json::Value, ProxyError> {
+    let bytes = base64url_decode(segment)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| ProxyError::InvalidOidcToken(format!("invalid JWT JSON: {}", e)))
+}
+
 /// Build an RSA public key from JWK `n` and `e` components.
 fn rsa_public_key_from_components(n: &str, e: &str) -> Result<RsaPublicKey, ProxyError> {
     let n_bytes = base64url_decode(n)?;
@@ -137,9 +144,7 @@ pub fn verify_token(
     let [header_b64, payload_b64, signature_b64] = [parts[0], parts[1], parts[2]];
 
     // Verify the header specifies RS256
-    let header_bytes = base64url_decode(header_b64)?;
-    let header: serde_json::Value = serde_json::from_slice(&header_bytes)
-        .map_err(|e| ProxyError::InvalidOidcToken(format!("invalid JWT header JSON: {}", e)))?;
+    let header = decode_jwt_segment(header_b64)?;
     let alg = header.get("alg").and_then(|v| v.as_str()).unwrap_or("");
     if alg != "RS256" {
         return Err(ProxyError::InvalidOidcToken(format!(
@@ -162,9 +167,7 @@ pub fn verify_token(
         })?;
 
     // Decode and validate claims
-    let payload_bytes = base64url_decode(payload_b64)?;
-    let claims: serde_json::Value = serde_json::from_slice(&payload_bytes)
-        .map_err(|e| ProxyError::InvalidOidcToken(format!("invalid JWT payload JSON: {}", e)))?;
+    let claims = decode_jwt_segment(payload_b64)?;
 
     // Validate issuer
     let token_issuer = claims.get("iss").and_then(|v| v.as_str()).unwrap_or("");

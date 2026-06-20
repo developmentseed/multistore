@@ -25,7 +25,7 @@ jobs:
       # All deployments share OIDC_PROVIDER_KEY, so a preview can sign assertions
       # whose `iss` is the staging URL; AWS then validates them against the
       # single, already-registered staging IAM OIDC provider. This lets the full
-      # backend-federation path (tests/smoke/test_federation.py) run on every PR
+      # federation path (tests/smoke/test_federation.py) run on every PR
       # WITHOUT creating/tearing down a per-PR identity provider + role.
       oidc_issuer_override: ${{ vars.STAGING_OIDC_ISSUER }}
     secrets:

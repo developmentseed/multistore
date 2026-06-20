@@ -12,18 +12,18 @@ gcp = []
 
 [dependencies]
 multistore.workspace = true
-multistore-backend-federation.workspace = true
-multistore-credential-cache.workspace = true
-async-trait.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+quick-xml.workspace = true
 chrono.workspace = true
 base64.workspace = true
 rsa.workspace = true
 sha2.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+# Per-key async lock for single-flight credential refresh (see `cache.rs`).
+futures.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

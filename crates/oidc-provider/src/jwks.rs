@@ -54,7 +54,7 @@ mod tests {
         assert_eq!(key["use"], "sig");
         assert_eq!(key["kid"], "my-kid");
         assert!(key["n"].as_str().unwrap().len() > 10);
-        assert!(key["e"].as_str().unwrap().len() > 0);
+        assert!(!key["e"].as_str().unwrap().is_empty());
     }
 
     #[test]

@@ -42,27 +42,26 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         let subject = config.option("oidc_subject").unwrap_or("s3-proxy");
 
         let exchange = AwsExchange::new(role_arn.to_string());
-        // The cache is runtime-agnostic, so the clock is supplied here. Every
-        // wasm-targeting crate in this workspace already uses `Utc::now()`
-        // (e.g. JWT minting, JWKS, sealed tokens), so this adds no new runtime
-        // assumption; a fully clock-injected path could thread `now` from the
-        // request instead.
         let creds = self
             .provider
-            .get_credentials(role_arn, &exchange, subject, &[], chrono::Utc::now())
+            .get_credentials(role_arn, &exchange, subject, &[])
             .await?;
 
-        let mut options = config.backend_options.clone();
-        options.insert("access_key_id".into(), creds.access_key_id.clone());
-        options.insert("secret_access_key".into(), creds.secret_access_key.clone());
-        options.insert("token".into(), creds.session_token.clone());
+        // Inject the temporary credentials via `BackendCredentials::apply_to`
+        // (defined in `multistore` core), so the option-key set and the
+        // `skip_signature` clearing stay single-sourced on the credential type
+        // rather than being re-hand-rolled here (the previous inline version
+        // forgot to clear `skip_signature`).
+        let mut resolved = config.clone();
+        creds.apply_to(&mut resolved);
+        let options = &mut resolved.backend_options;
 
         // Remove OIDC-specific keys so they don't confuse the builder.
         options.remove("auth_type");
         options.remove("oidc_role_arn");
         options.remove("oidc_subject");
 
-        Ok(options)
+        Ok(resolved.backend_options)
     }
 
     /// Internal helper: resolve credentials if bucket needs OIDC.

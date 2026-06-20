@@ -5,13 +5,13 @@
 //! 2. Use the federated token to call IAM `generateAccessToken` for a
 //!    service account, obtaining a GCP access token
 
-use crate::{CloudCredentials, HttpExchange, OidcProviderError};
+use crate::{BackendCredentials, HttpExchange, OidcProviderError};
 
 use super::CredentialExchange;
 
 /// Configuration for exchanging a JWT for GCP credentials.
 ///
-/// GCP returns a bearer token only; the resulting [`CloudCredentials`](crate::CloudCredentials)
+/// GCP returns a bearer token only; the resulting [`BackendCredentials`](crate::BackendCredentials)
 /// will have `access_key_id` and `secret_access_key` set to empty strings while
 /// `session_token` carries the bearer token.
 #[derive(Debug, Clone)]
@@ -51,7 +51,7 @@ impl GcpExchange {
 }
 
 impl<H: HttpExchange> CredentialExchange<H> for GcpExchange {
-    async fn exchange(&self, http: &H, jwt: &str) -> Result<CloudCredentials, OidcProviderError> {
+    async fn exchange(&self, http: &H, jwt: &str) -> Result<BackendCredentials, OidcProviderError> {
         // Step 1: Exchange JWT for federated access token via GCP STS
         let sts_form = [
             (
@@ -122,7 +122,9 @@ fn parse_sts_token_response(json: &str) -> Result<String, OidcProviderError> {
 }
 
 /// Parse the IAM `generateAccessToken` response.
-fn parse_generate_access_token_response(json: &str) -> Result<CloudCredentials, OidcProviderError> {
+fn parse_generate_access_token_response(
+    json: &str,
+) -> Result<BackendCredentials, OidcProviderError> {
     let parsed: serde_json::Value = serde_json::from_str(json).map_err(|e| {
         OidcProviderError::ExchangeError(format!("invalid generateAccessToken response: {e}"))
     })?;
@@ -140,11 +142,11 @@ fn parse_generate_access_token_response(json: &str) -> Result<CloudCredentials, 
         .with_timezone(&chrono::Utc);
 
     // GCP returns a bearer token; same pattern as Azure.
-    Ok(CloudCredentials {
+    Ok(BackendCredentials {
         access_key_id: String::new(),
         secret_access_key: String::new(),
         session_token: access_token.to_string(),
-        expires_at,
+        expiration: expires_at,
     })
 }
 
@@ -174,7 +176,7 @@ mod tests {
         }"#;
         let creds = parse_generate_access_token_response(json).unwrap();
         assert_eq!(creds.session_token, "ya29.sa-access-token");
-        assert_eq!(creds.expires_at.to_rfc3339(), "2025-06-15T12:00:00+00:00");
+        assert_eq!(creds.expiration.to_rfc3339(), "2025-06-15T12:00:00+00:00");
     }
 
     #[test]

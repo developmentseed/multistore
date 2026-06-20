@@ -15,6 +15,7 @@
 //! can provide its own implementation.
 
 pub mod backend_auth;
+pub mod cache;
 pub mod discovery;
 pub mod exchange;
 pub mod jwks;
@@ -23,50 +24,20 @@ pub mod route_handler;
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
-use multistore_credential_cache::{CredentialCache, Expiring};
-
+use cache::CredentialCache;
 use exchange::CredentialExchange;
 use jwt::JwtSigner;
 
-/// Temporary cloud credentials obtained via token exchange.
+/// The backend credential value type — its fields, secret-redacting `Debug`, and
+/// `BucketConfig` injection ([`BackendCredentials::apply_to`]) — is owned by
+/// `multistore` core (next to the `BucketConfig` it injects into, and its
+/// sibling `TemporaryCredentials`). It is re-exported here so this crate is the
+/// single front door: callers import the type from `multistore-oidc-provider`
+/// and need not name core's `types` module.
 ///
-/// `Debug` redacts the secret access key and session token so credentials are
-/// never leaked into logs.
-#[derive(Clone)]
-pub struct CloudCredentials {
-    /// AWS access key ID. Empty string for Azure/GCP (bearer-token-only providers).
-    pub access_key_id: String,
-    /// AWS secret access key. Empty string for Azure/GCP (bearer-token-only providers).
-    pub secret_access_key: String,
-    /// Session or bearer token. For Azure/GCP this is the sole credential.
-    pub session_token: String,
-    /// When these credentials expire.
-    pub expires_at: chrono::DateTime<chrono::Utc>,
-}
-
-impl std::fmt::Debug for CloudCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CloudCredentials")
-            .field("access_key_id", &self.access_key_id)
-            .field("secret_access_key", &"[REDACTED]")
-            .field("session_token", &"[REDACTED]")
-            .field("expires_at", &self.expires_at)
-            .finish()
-    }
-}
-
-impl Expiring for CloudCredentials {
-    fn expiration(&self) -> DateTime<Utc> {
-        self.expires_at
-    }
-}
-
-/// Refresh cached credentials once they're within this long of expiry, so a
-/// credential never expires mid-request.
-fn refresh_lead() -> chrono::Duration {
-    chrono::Duration::seconds(60)
-}
+/// Bearer-only backends (Azure/GCP) leave `access_key_id`/`secret_access_key`
+/// empty and carry the token in `session_token`.
+pub use multistore::types::BackendCredentials;
 
 /// HTTP client abstraction for outbound requests (STS token exchange).
 ///
@@ -85,9 +56,14 @@ pub trait HttpExchange:
 }
 
 /// Top-level provider that combines signing, exchange, and caching.
+///
+/// `Clone` is cheap and shares the credential cache (and the `Clone` HTTP
+/// client), so a runtime can construct one provider and reuse it across requests
+/// — keeping the cache warm instead of re-minting + re-exchanging every call.
+#[derive(Clone)]
 pub struct OidcCredentialProvider<H: HttpExchange> {
     signer: JwtSigner,
-    cache: CredentialCache<Arc<CloudCredentials>>,
+    cache: CredentialCache,
     http: H,
     issuer: String,
     audience: String,
@@ -103,7 +79,7 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
     pub fn new(signer: JwtSigner, http: H, issuer: String, audience: String) -> Self {
         Self {
             signer,
-            cache: CredentialCache::new(refresh_lead()),
+            cache: CredentialCache::new(),
             http,
             issuer,
             audience,
@@ -113,27 +89,26 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
     /// Get credentials for a backend, using cached values when available.
     ///
     /// `exchange` describes how to trade the self-signed JWT for cloud
-    /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend
-    /// for caching purposes (e.g. the role ARN). `now` is the current time,
-    /// supplied by the caller so the cache stays runtime-agnostic.
+    /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend for
+    /// caching purposes (e.g. the role ARN).
     ///
     /// Concurrent calls for the same `cache_key` are single-flighted: only one
-    /// JWT mint + exchange runs, and the rest await its result.
+    /// JWT mint + exchange runs, and the rest await its result. A cached value
+    /// is reused until it nears expiry, then proactively re-minted.
     pub async fn get_credentials<E: CredentialExchange<H>>(
         &self,
         cache_key: &str,
         exchange: &E,
         subject: &str,
         extra_claims: &[(&str, &str)],
-        now: DateTime<Utc>,
-    ) -> Result<Arc<CloudCredentials>, OidcProviderError> {
+    ) -> Result<Arc<BackendCredentials>, OidcProviderError> {
         self.cache
-            .get_or_fetch(cache_key, now, || async {
+            .get_or_fetch(cache_key, || async {
                 // Cache miss (or due for refresh): mint a JWT and exchange it.
                 let token =
                     self.signer
                         .sign(subject, &self.issuer, &self.audience, extra_claims)?;
-                let creds = exchange.exchange(&self.http, &token).await?;
+                let creds: BackendCredentials = exchange.exchange(&self.http, &token).await?;
                 Ok(Arc::new(creds))
             })
             .await
@@ -173,9 +148,9 @@ pub enum OidcProviderError {
     HttpError(String),
 }
 
-impl From<multistore_backend_federation::FederationError> for OidcProviderError {
-    fn from(e: multistore_backend_federation::FederationError) -> Self {
-        use multistore_backend_federation::FederationError as F;
+impl From<crate::exchange::aws::FederationError> for OidcProviderError {
+    fn from(e: crate::exchange::aws::FederationError) -> Self {
+        use crate::exchange::aws::FederationError as F;
         match e {
             F::Sts { code, message } => OidcProviderError::StsError { code, message },
             F::Parse(e) => OidcProviderError::ExchangeError(e.to_string()),
@@ -185,7 +160,51 @@ impl From<multistore_backend_federation::FederationError> for OidcProviderError 
 
 impl From<OidcProviderError> for multistore::error::ProxyError {
     fn from(e: OidcProviderError) -> Self {
-        multistore::error::ProxyError::Internal(e.to_string())
+        use multistore::error::ProxyError;
+
+        // Federation failures must not collapse into an opaque 500. Map each
+        // cause to a status that reflects whose problem it is, and log the full
+        // (possibly ARN-bearing) detail here — it is the only place the raw
+        // provider message is still available, and it must not reach the caller.
+        match e {
+            OidcProviderError::StsError { code, message } => {
+                tracing::error!(
+                    sts_code = %code,
+                    sts_message = %message,
+                    "backend STS rejected the federation exchange"
+                );
+                match code.as_str() {
+                    // The role's trust policy / permissions deny the proxy
+                    // identity: the object genuinely cannot be served → 403.
+                    "AccessDenied" => ProxyError::AccessDenied,
+                    // Our minted assertion was rejected (bad key, issuer, or no
+                    // registered provider), or any other STS error → 502: the
+                    // gateway failed to authenticate to its upstream broker.
+                    _ => ProxyError::BackendAuthError(code),
+                }
+            }
+            // Local signing-key problems: the deploy's OIDC_PROVIDER_KEY is
+            // missing/malformed. The gateway can't mint an assertion, so it
+            // can't federate → 502 (not a generic 500), with the cause logged.
+            OidcProviderError::KeyError(detail) => {
+                tracing::error!(error = %detail, "OIDC provider RSA key error");
+                ProxyError::BackendAuthError("ProviderKeyError".into())
+            }
+            OidcProviderError::SigningError(detail) => {
+                tracing::error!(error = %detail, "OIDC provider JWT signing error");
+                ProxyError::BackendAuthError("SigningError".into())
+            }
+            // Couldn't reach the broker or parse its reply: transient/upstream
+            // → 503 (retryable), distinct from a permanent auth rejection.
+            OidcProviderError::HttpError(detail) => {
+                tracing::error!(error = %detail, "backend STS transport error");
+                ProxyError::BackendError(detail)
+            }
+            OidcProviderError::ExchangeError(detail) => {
+                tracing::error!(error = %detail, "backend credential exchange failed");
+                ProxyError::BackendError(detail)
+            }
+        }
     }
 }
 
@@ -256,7 +275,7 @@ mod tests {
 
         let exchange = exchange::aws::AwsExchange::new("arn:aws:iam::123:role/Test".into());
         let creds = provider
-            .get_credentials("role-a", &exchange, "my-sub", &[], Utc::now())
+            .get_credentials("role-a", &exchange, "my-sub", &[])
             .await
             .unwrap();
 
@@ -278,14 +297,14 @@ mod tests {
 
         // First call — hits mock HTTP
         let creds1 = provider
-            .get_credentials("role-a", &exchange, "sub", &[], Utc::now())
+            .get_credentials("role-a", &exchange, "sub", &[])
             .await
             .unwrap();
         assert_eq!(http.calls(), 1);
 
         // Second call — should use cache, no additional HTTP call
         let creds2 = provider
-            .get_credentials("role-a", &exchange, "sub", &[], Utc::now())
+            .get_credentials("role-a", &exchange, "sub", &[])
             .await
             .unwrap();
         assert_eq!(http.calls(), 1);
@@ -305,11 +324,11 @@ mod tests {
         let exchange = exchange::aws::AwsExchange::new("arn:aws:iam::123:role/Test".into());
 
         provider
-            .get_credentials("role-a", &exchange, "sub", &[], Utc::now())
+            .get_credentials("role-a", &exchange, "sub", &[])
             .await
             .unwrap();
         provider
-            .get_credentials("role-b", &exchange, "sub", &[], Utc::now())
+            .get_credentials("role-b", &exchange, "sub", &[])
             .await
             .unwrap();
 
@@ -352,10 +371,62 @@ mod tests {
     }
 
     #[test]
-    fn error_converts_to_proxy_error() {
-        let err = OidcProviderError::ExchangeError("test".into());
-        let proxy_err: multistore::error::ProxyError = err.into();
-        assert!(proxy_err.to_string().contains("test"));
-        assert_eq!(proxy_err.status_code(), 500);
+    fn exchange_error_maps_to_retryable_503() {
+        // Transport / unparseable-response failures are upstream and retryable.
+        let proxy_err: multistore::error::ProxyError =
+            OidcProviderError::ExchangeError("boom".into()).into();
+        assert_eq!(proxy_err.status_code(), 503);
+        assert!(proxy_err.to_string().contains("boom"));
+    }
+
+    #[test]
+    fn http_error_maps_to_retryable_503() {
+        let proxy_err: multistore::error::ProxyError =
+            OidcProviderError::HttpError("connreset".into()).into();
+        assert_eq!(proxy_err.status_code(), 503);
+    }
+
+    #[test]
+    fn sts_rejection_maps_to_502_not_500() {
+        // The headline regression: a rejected federation assertion must surface
+        // as a diagnosable 502, never an opaque 500 InternalError.
+        let proxy_err: multistore::error::ProxyError = OidcProviderError::StsError {
+            code: "InvalidIdentityToken".into(),
+            message: "No OpenIDConnect provider found in your account".into(),
+        }
+        .into();
+        assert_eq!(proxy_err.status_code(), 502);
+        assert_eq!(proxy_err.s3_error_code(), "BackendAuthenticationFailed");
+        // The provider *code* is surfaced; the raw message is not.
+        let safe = proxy_err.safe_message();
+        assert!(safe.contains("InvalidIdentityToken"), "got: {safe}");
+        assert!(
+            !safe.contains("your account"),
+            "raw STS message leaked: {safe}"
+        );
+    }
+
+    #[test]
+    fn sts_access_denied_maps_to_403() {
+        // A trust-policy/permissions denial is a real authorization result.
+        let proxy_err: multistore::error::ProxyError = OidcProviderError::StsError {
+            code: "AccessDenied".into(),
+            message: "not authorized to perform sts:AssumeRoleWithWebIdentity".into(),
+        }
+        .into();
+        assert_eq!(proxy_err.status_code(), 403);
+        assert_eq!(proxy_err.s3_error_code(), "AccessDenied");
+    }
+
+    #[test]
+    fn key_and_signing_errors_map_to_502_not_500() {
+        // A bad OIDC_PROVIDER_KEY means we can't mint an assertion → 502, logged.
+        let key_err: multistore::error::ProxyError =
+            OidcProviderError::KeyError("bad pem".into()).into();
+        assert_eq!(key_err.status_code(), 502);
+
+        let sign_err: multistore::error::ProxyError =
+            OidcProviderError::SigningError("rsa failure".into()).into();
+        assert_eq!(sign_err.status_code(), 502);
     }
 }
