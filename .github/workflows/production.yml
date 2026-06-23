@@ -17,6 +17,13 @@ jobs:
       worker_name: multistore
       wrangler_config: wrangler.deploy.toml
       environment: production
+      # Production self-issues OIDC at its own public URL. Unlike preview/staging
+      # (which share STAGING_OIDC_ISSUER and one IAM OIDC provider), this issuer is
+      # unique to production: an AWS IAM OIDC provider must be registered for this
+      # exact URL (audience sts.amazonaws.com) and added to the backend role's
+      # trust policy with sub=`multistore`. Without it the worker deploys with OIDC
+      # disabled and the federated-test bucket 500s (see tests/smoke/test_federation.py).
+      oidc_issuer_override: https://multistore.development-seed.workers.dev
     secrets:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

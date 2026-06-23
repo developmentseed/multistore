@@ -15,7 +15,7 @@ use multistore::types::BucketConfig;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use crate::exchange::aws::AwsExchange;
+use crate::exchange::aws::{sts_session_name, AwsExchange};
 use crate::{HttpExchange, OidcCredentialProvider};
 
 /// AWS OIDC backend auth — exchanges a self-signed JWT for temporary
@@ -41,7 +41,13 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         })?;
         let subject = config.option("oidc_subject").unwrap_or("s3-proxy");
 
-        let exchange = AwsExchange::new(role_arn.to_string());
+        // Name the assumed-role session after the subject so the caller's
+        // CloudTrail attributes each `AssumeRoleWithWebIdentity` to the
+        // originating connection (`scv1:conn:{id}`) instead of a shared
+        // `s3-proxy`. `RoleSessionName` has a stricter charset than the JWT
+        // `sub`, so sanitize before use.
+        let mut exchange = AwsExchange::new(role_arn.to_string());
+        exchange.session_name = sts_session_name(subject);
         let creds = self
             .provider
             .get_credentials(role_arn, &exchange, subject, &[])
@@ -158,17 +164,19 @@ mod tests {
     use crate::OidcProviderError;
     use chrono::{Duration, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]
     struct MockHttp {
         call_count: Arc<AtomicUsize>,
+        last_form: Arc<Mutex<Vec<(String, String)>>>,
     }
 
     impl MockHttp {
         fn new() -> Self {
             Self {
                 call_count: Arc::new(AtomicUsize::new(0)),
+                last_form: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -180,6 +188,10 @@ mod tests {
             _form: &[(&str, &str)],
         ) -> Result<String, OidcProviderError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
+            *self.last_form.lock().unwrap() = _form
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
             let exp = (Utc::now() + Duration::hours(1)).to_rfc3339();
             Ok(format!(
                 r#"<AssumeRoleWithWebIdentityResponse>
@@ -262,6 +274,35 @@ mod tests {
         assert_eq!(resolved.get("token").unwrap(), "token_oidc");
         assert!(!resolved.contains_key("auth_type"));
         assert!(!resolved.contains_key("oidc_role_arn"));
+    }
+
+    #[tokio::test]
+    async fn session_name_reaches_sts_request() {
+        // End-to-end: the per-connection subject is sanitized and lands in the
+        // `RoleSessionName` form field sent to STS, instead of the shared default.
+        let http = MockHttp::new();
+        let provider = OidcCredentialProvider::new(
+            test_signer(),
+            http.clone(),
+            "https://issuer.example.com".into(),
+            "sts.amazonaws.com".into(),
+        );
+        let auth = AwsBackendAuth::new(provider);
+
+        let mut config = oidc_bucket_config();
+        config
+            .backend_options
+            .insert("oidc_subject".into(), "scv1:conn:abc-1".into());
+        auth.resolve_credentials(&config).await.unwrap().unwrap();
+
+        let session = http
+            .last_form
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k == "RoleSessionName")
+            .map(|(_, v)| v.clone());
+        assert_eq!(session.as_deref(), Some("scv1_conn_abc-1"));
     }
 
     #[tokio::test]

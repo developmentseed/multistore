@@ -49,6 +49,34 @@ impl AwsExchange {
     }
 }
 
+/// Map an OIDC subject to a valid AWS [`RoleSessionName`](AwsExchange::session_name).
+///
+/// `RoleSessionName` must match `[\w+=,.@-]{2,64}`; the proxy's subject
+/// (`scv1:conn:{id}`) contains `:`, which STS rejects. Replace any
+/// disallowed character with `_` and clamp to 64 chars. This is only a
+/// CloudTrail attribution label, not a security boundary (the trust policy
+/// gates on the JWT `sub`/`aud`, not the session name), so the rare
+/// truncation collision is cosmetic. Falls back to `s3-proxy` if sanitizing
+/// leaves fewer than the 2 chars STS requires.
+pub(crate) fn sts_session_name(subject: &str) -> String {
+    let name: String = subject
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "+=,.@-_".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    if name.len() < 2 {
+        "s3-proxy".to_string()
+    } else {
+        name
+    }
+}
+
 impl<H: HttpExchange> CredentialExchange<H> for AwsExchange {
     async fn exchange(&self, http: &H, jwt: &str) -> Result<BackendCredentials, OidcProviderError> {
         // Build the request with this module's `AssumeRoleWithWebIdentity`, hand
@@ -216,6 +244,26 @@ struct ErrorDetail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_name_sanitizes_subject() {
+        // Colons (and any other disallowed char) become `_`; allowed chars
+        // (alnum, `-`, `.`, `_`, `@`, `+`, `=`, `,`) pass through.
+        assert_eq!(sts_session_name("scv1:conn:abc-123"), "scv1_conn_abc-123");
+        // Already-valid default is untouched.
+        assert_eq!(sts_session_name("s3-proxy"), "s3-proxy");
+        // Clamped to AWS's 64-char ceiling.
+        assert_eq!(sts_session_name(&"a".repeat(100)).len(), 64);
+        // Degenerate subject falls back rather than emit an invalid (<2 char) name.
+        assert_eq!(sts_session_name(":"), "s3-proxy");
+        // The minted name is always within AWS's [2,64] RoleSessionName bounds
+        // and contains only permitted characters.
+        let n = sts_session_name("scv1:conn:00000000-0000-0000-0000-000000000000");
+        assert!((2..=64).contains(&n.len()));
+        assert!(n
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+=,.@-_".contains(c)));
+    }
 
     const SUCCESS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
