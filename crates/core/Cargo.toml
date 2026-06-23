@@ -25,6 +25,7 @@ url.workspace = true
 percent-encoding.workspace = true
 hmac.workspace = true
 sha2.workspace = true
+md-5.workspace = true
 quick-xml.workspace = true
 tracing.workspace = true
 object_store.workspace = true

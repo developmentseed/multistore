@@ -12,9 +12,21 @@ pub fn parse_s3_request(
     method: &Method,
     uri_path: &str,
     query: Option<&str>,
-    _headers: &http::HeaderMap,
+    headers: &http::HeaderMap,
     host_style: HostStyle,
 ) -> Result<S3Operation, ProxyError> {
+    // Server-side copy (CopyObject / UploadPartCopy) arrives as a PUT carrying
+    // `x-amz-copy-source`. It is not supported: forwarding such a request via a
+    // presigned URL would drop the copy-source header and silently overwrite the
+    // destination with an empty body. Reject it explicitly so the failure is
+    // unambiguous rather than corrupting data. See
+    // .plans/2026-06-23-data-edit-operations-design.md for the deferred design.
+    if *method == Method::PUT && headers.contains_key("x-amz-copy-source") {
+        return Err(ProxyError::NotImplemented(
+            "server-side copy (x-amz-copy-source) is not supported".into(),
+        ));
+    }
+
     // GET / with path-style → ListBuckets (no bucket in path)
     if matches!(host_style, HostStyle::Path) && uri_path.trim_start_matches('/').is_empty() {
         if *method == Method::GET {
@@ -54,6 +66,7 @@ pub fn build_s3_operation(
         .map(|(_, v)| v.clone());
 
     let has_uploads = query_params.iter().any(|(k, _)| k == "uploads");
+    let has_delete = query_params.iter().any(|(k, _)| k == "delete");
 
     match *method {
         Method::GET => {
@@ -85,6 +98,14 @@ pub fn build_s3_operation(
                     part_number,
                 })
             } else {
+                // `x-amz-copy-source` (CopyObject / UploadPartCopy) is rejected
+                // upstream in `parse_s3_request`. Callers that invoke
+                // `build_s3_operation` directly (custom resolvers) are
+                // responsible for their own copy-source handling.
+                // ponytail: deferred — trailer checksums (`x-amz-checksum-*`)
+                // sent on writes are dropped, not forwarded; they need the
+                // header-signing forward path. See
+                // .plans/2026-06-23-data-edit-operations-design.md.
                 Ok(S3Operation::PutObject { bucket, key })
             }
         }
@@ -97,6 +118,11 @@ pub fn build_s3_operation(
                     key,
                     upload_id,
                 })
+            } else if has_delete {
+                // Batch delete: `POST /{bucket}?delete` with an XML body listing
+                // keys. The keys (and per-key authorization) are handled once the
+                // body is materialized.
+                Ok(S3Operation::DeleteObjects { bucket })
             } else {
                 Err(ProxyError::InvalidRequest(
                     "unsupported POST operation".into(),
@@ -111,6 +137,10 @@ pub fn build_s3_operation(
                     upload_id,
                 })
             } else if !key.is_empty() {
+                // ponytail: deferred — versioned delete (`?versionId=`) and MFA
+                // delete are not handled; the version is ignored and the current
+                // object is deleted. Upgrade path: thread version-id through the
+                // forward. See .plans/2026-06-23-data-edit-operations-design.md.
                 Ok(S3Operation::DeleteObject { bucket, key })
             } else {
                 Err(ProxyError::InvalidRequest(
@@ -153,4 +183,62 @@ fn parse_query_params(query: Option<&str>) -> Vec<(String, String)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(
+        method: Method,
+        path: &str,
+        query: Option<&str>,
+        headers: &http::HeaderMap,
+    ) -> Result<S3Operation, ProxyError> {
+        parse_s3_request(&method, path, query, headers, HostStyle::Path)
+    }
+
+    #[test]
+    fn batch_delete_parses_as_delete_objects() {
+        let op = parse(
+            Method::POST,
+            "/my-bucket",
+            Some("delete"),
+            &http::HeaderMap::new(),
+        )
+        .unwrap();
+        assert!(
+            matches!(op, S3Operation::DeleteObjects { ref bucket } if bucket == "my-bucket"),
+            "POST ?delete should parse as DeleteObjects, got {op:?}"
+        );
+    }
+
+    #[test]
+    fn post_without_known_subresource_is_rejected() {
+        let err = parse(
+            Method::POST,
+            "/my-bucket/key",
+            None,
+            &http::HeaderMap::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProxyError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn copy_source_put_is_rejected_not_implemented() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-amz-copy-source", "/src-bucket/src-key".parse().unwrap());
+        let err = parse(Method::PUT, "/dst-bucket/dst-key", None, &headers).unwrap_err();
+        assert!(
+            matches!(err, ProxyError::NotImplemented(_)),
+            "copy-source PUT must be rejected as NotImplemented, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn plain_put_still_parses_as_put_object() {
+        let op = parse(Method::PUT, "/b/k.txt", None, &http::HeaderMap::new()).unwrap();
+        assert!(matches!(op, S3Operation::PutObject { .. }));
+    }
 }

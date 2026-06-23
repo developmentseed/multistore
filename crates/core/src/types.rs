@@ -346,6 +346,12 @@ pub enum S3Operation {
         bucket: String,
         key: String,
     },
+    /// Batch delete (`POST /{bucket}?delete`). The keys to delete live in the
+    /// request body, so this operation carries only the bucket — the body is
+    /// parsed and each key authorized individually once it arrives.
+    DeleteObjects {
+        bucket: String,
+    },
     ListBucket {
         bucket: String,
         /// Raw query string from the incoming request, forwarded to the backend.
@@ -370,7 +376,8 @@ impl S3Operation {
                 http::Method::DELETE
             }
             S3Operation::CreateMultipartUpload { .. }
-            | S3Operation::CompleteMultipartUpload { .. } => http::Method::POST,
+            | S3Operation::CompleteMultipartUpload { .. }
+            | S3Operation::DeleteObjects { .. } => http::Method::POST,
         }
     }
 
@@ -386,6 +393,9 @@ impl S3Operation {
             S3Operation::CompleteMultipartUpload { .. } => Action::CompleteMultipartUpload,
             S3Operation::AbortMultipartUpload { .. } => Action::AbortMultipartUpload,
             S3Operation::DeleteObject { .. } => Action::DeleteObject,
+            // Batch delete authorizes as DeleteObject; each key in the body is
+            // checked individually against the caller's scopes.
+            S3Operation::DeleteObjects { .. } => Action::DeleteObject,
             S3Operation::ListBuckets => Action::ListBucket,
         }
     }
@@ -401,7 +411,8 @@ impl S3Operation {
             | S3Operation::UploadPart { bucket, .. }
             | S3Operation::CompleteMultipartUpload { bucket, .. }
             | S3Operation::AbortMultipartUpload { bucket, .. }
-            | S3Operation::DeleteObject { bucket, .. } => Some(bucket),
+            | S3Operation::DeleteObject { bucket, .. }
+            | S3Operation::DeleteObjects { bucket } => Some(bucket),
             S3Operation::ListBuckets => None,
         }
     }
@@ -417,7 +428,9 @@ impl S3Operation {
             | S3Operation::CompleteMultipartUpload { key, .. }
             | S3Operation::AbortMultipartUpload { key, .. }
             | S3Operation::DeleteObject { key, .. } => key,
-            S3Operation::ListBucket { .. } | S3Operation::ListBuckets => "",
+            S3Operation::ListBucket { .. }
+            | S3Operation::ListBuckets
+            | S3Operation::DeleteObjects { .. } => "",
         }
     }
 }

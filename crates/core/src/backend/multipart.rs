@@ -22,6 +22,15 @@ pub fn build_backend_url(
     let bucket = config.option("bucket_name").unwrap_or("");
     let bucket_is_empty = bucket.is_empty();
 
+    // Batch delete targets the bucket, not a key: `{base}[/{bucket}]?delete`.
+    if matches!(operation, S3Operation::DeleteObjects { .. }) {
+        return Ok(if bucket_is_empty {
+            format!("{base}?delete")
+        } else {
+            format!("{base}/{bucket}?delete")
+        });
+    }
+
     let mut key = String::new();
     if let Some(prefix) = &config.backend_prefix {
         key.push_str(prefix.trim_end_matches('/'));

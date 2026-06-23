@@ -49,6 +49,7 @@ matchit = "0.8"
 # Crypto
 hmac = "0.12"
 sha2 = { version = "0.10", features = ["oid"] }
+md-5 = "0.10"
 rsa = "0.9"
 aes-gcm = "0.10"
 

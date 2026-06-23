@@ -25,6 +25,12 @@ pub enum ProxyError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
+    /// The requested S3 operation is recognized but not supported by the proxy
+    /// (e.g. server-side copy via `x-amz-copy-source`). Maps to S3's
+    /// `501 NotImplemented`.
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
+
     /// The request contains no authentication credentials.
     #[error("missing authentication")]
     MissingAuth,
@@ -82,6 +88,7 @@ impl ProxyError {
             Self::AccessDenied => "AccessDenied",
             Self::SignatureDoesNotMatch => "SignatureDoesNotMatch",
             Self::InvalidRequest(_) => "InvalidRequest",
+            Self::NotImplemented(_) => "NotImplemented",
             Self::MissingAuth => "AccessDenied",
             Self::ExpiredCredentials => "ExpiredToken",
             Self::InvalidOidcToken(_) => "InvalidIdentityToken",
@@ -102,6 +109,7 @@ impl ProxyError {
             Self::AccessDenied | Self::MissingAuth | Self::ExpiredCredentials => 403,
             Self::SignatureDoesNotMatch => 403,
             Self::InvalidRequest(_) => 400,
+            Self::NotImplemented(_) => 501,
             Self::InvalidOidcToken(_) => 400,
             Self::RoleNotFound(_) => 403,
             Self::PreconditionFailed => 412,
