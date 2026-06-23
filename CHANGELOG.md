@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.1](https://github.com/developmentseed/multistore/compare/v0.5.0...v0.5.1) (2026-06-23)
+
+
+### Features
+
+* **oidc-provider:** name STS session after the connection subject ([#83](https://github.com/developmentseed/multistore/issues/83)) ([9ce4560](https://github.com/developmentseed/multistore/commit/9ce4560c42bbe2d90209176945e5dacb97f54492))
+
+
+### Bug Fixes
+
+* **ci:** give production its own OIDC issuer so federation works ([#85](https://github.com/developmentseed/multistore/issues/85)) ([6a60c36](https://github.com/developmentseed/multistore/commit/6a60c3624b48bfbab1404b54a0e36a8f6ab28a9a))
+* **deps:** bump quinn-proto to 0.11.15 (RUSTSEC-2026-0185) ([#87](https://github.com/developmentseed/multistore/issues/87)) ([2e9c54e](https://github.com/developmentseed/multistore/commit/2e9c54e049d616b7443cbbd66fa69473a73effd5))
+
+
+### Miscellaneous Chores
+
+* release 0.5.1 ([7e797b1](https://github.com/developmentseed/multistore/commit/7e797b16c75dbd6bdd8d225bebebdc57fe47abb6))
+
 ## [0.5.0](https://github.com/developmentseed/multistore/compare/v0.4.0...v0.5.0) (2026-06-20)
 
 
