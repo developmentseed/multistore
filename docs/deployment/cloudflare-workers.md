@@ -86,6 +86,15 @@ printf '%s' "$OIDC_KEY" | gh secret set OIDC_PROVIDER_KEY --env staging --repo <
 printf '%s' "$OIDC_KEY" | gh secret set OIDC_PROVIDER_KEY --env preview --repo <owner>/<repo>
 ```
 
+Production is **not** part of that shared issuer. The production deploy sets
+`OIDC_PROVIDER_ISSUER` to the production worker's own URL (`oidc_issuer_override` in
+`production.yml`), so it self-issues and self-serves JWKS independently of staging.
+This requires a **dedicated** AWS IAM OIDC provider registered for that production URL
+(audience `sts.amazonaws.com`), added to the backend role's trust policy with
+`sub` = the bucket's `oidc_subject` — see [Backend Auth](../auth/backend-auth.md) for the
+provider + trust-policy setup. Until that provider exists, OIDC backend buckets return
+HTTP 500 in production (`tests/smoke/test_federation.py` fails).
+
 ### Environment Variables
 
 | Variable | Required | Description |
