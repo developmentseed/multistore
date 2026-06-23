@@ -140,6 +140,47 @@ class TestStaticCredentialWrites:
         # Cleanup
         client.delete_object(Bucket="private-uploads", Key=key)
 
+    def test_put_larger_body_single_request(self):
+        """A non-trivial single PUT (streamed, not buffered) round-trips intact."""
+        client = static_client()
+        key = f"test-large-{uuid.uuid4()}.bin"
+        # 2 MiB: well above the trivial happy-path size, still a single PUT
+        # (put_object never switches to multipart).
+        body = bytes((i % 251 for i in range(2 * MIB)))
+
+        client.put_object(Bucket="private-uploads", Key=key, Body=body)
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        data = resp["Body"].read()
+        assert len(data) == len(body)
+        assert data == body
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_put_preserves_content_headers(self):
+        """Standard entity headers set on PUT survive the round-trip.
+
+        Exercises the widened PUT forward allowlist (Content-Type was always
+        forwarded; Content-Disposition / Cache-Control are new). Note:
+        `x-amz-meta-*` user metadata is intentionally NOT forwarded (it requires
+        the deferred header-signing path), so it is not asserted.
+        """
+        client = static_client()
+        key = f"test-headers-{uuid.uuid4()}.txt"
+        client.put_object(
+            Bucket="private-uploads",
+            Key=key,
+            Body=b"payload with content metadata",
+            ContentType="application/json",
+            ContentDisposition='attachment; filename="report.json"',
+            CacheControl="max-age=3600",
+        )
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["ContentType"] == "application/json"
+        assert resp["ContentDisposition"] == 'attachment; filename="report.json"'
+        assert resp["CacheControl"] == "max-age=3600"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
     def test_list_after_write(self):
         client = static_client()
         key = f"test-list-{uuid.uuid4()}.txt"
