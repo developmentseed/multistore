@@ -41,7 +41,13 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         })?;
         let subject = config.option("oidc_subject").unwrap_or("s3-proxy");
 
-        let exchange = AwsExchange::new(role_arn.to_string());
+        // Name the assumed-role session after the subject so the caller's
+        // CloudTrail attributes each `AssumeRoleWithWebIdentity` to the
+        // originating connection (`scv1:conn:{id}`) instead of a shared
+        // `s3-proxy`. `RoleSessionName` has a stricter charset than the JWT
+        // `sub`, so sanitize before use.
+        let mut exchange = AwsExchange::new(role_arn.to_string());
+        exchange.session_name = sts_session_name(subject);
         let creds = self
             .provider
             .get_credentials(role_arn, &exchange, subject, &[])
@@ -151,6 +157,34 @@ impl<H: HttpExchange> Middleware for MaybeOidcAuth<H> {
     }
 }
 
+/// Map an OIDC subject to a valid AWS `RoleSessionName`.
+///
+/// `RoleSessionName` must match `[\w+=,.@-]{2,64}`; the proxy's subject
+/// (`scv1:conn:{id}`) contains `:`, which STS rejects. Replace any
+/// disallowed character with `_` and clamp to 64 chars. This is only a
+/// CloudTrail attribution label, not a security boundary (the trust policy
+/// gates on the JWT `sub`/`aud`, not the session name), so the rare
+/// truncation collision is cosmetic. Falls back to `s3-proxy` if sanitizing
+/// leaves fewer than the 2 chars STS requires.
+fn sts_session_name(subject: &str) -> String {
+    let name: String = subject
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "+=,.@-_".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
+    if name.len() < 2 {
+        "s3-proxy".to_string()
+    } else {
+        name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,17 +192,19 @@ mod tests {
     use crate::OidcProviderError;
     use chrono::{Duration, Utc};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]
     struct MockHttp {
         call_count: Arc<AtomicUsize>,
+        last_form: Arc<Mutex<Vec<(String, String)>>>,
     }
 
     impl MockHttp {
         fn new() -> Self {
             Self {
                 call_count: Arc::new(AtomicUsize::new(0)),
+                last_form: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
@@ -180,6 +216,10 @@ mod tests {
             _form: &[(&str, &str)],
         ) -> Result<String, OidcProviderError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
+            *self.last_form.lock().unwrap() = _form
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
             let exp = (Utc::now() + Duration::hours(1)).to_rfc3339();
             Ok(format!(
                 r#"<AssumeRoleWithWebIdentityResponse>
@@ -243,6 +283,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn session_name_sanitizes_subject() {
+        // Colons (and any other disallowed char) become `_`; allowed chars
+        // (alnum, `-`, `.`, `_`, `@`, `+`, `=`, `,`) pass through.
+        assert_eq!(sts_session_name("scv1:conn:abc-123"), "scv1_conn_abc-123");
+        // Already-valid default is untouched.
+        assert_eq!(sts_session_name("s3-proxy"), "s3-proxy");
+        // Clamped to AWS's 64-char ceiling.
+        assert_eq!(sts_session_name(&"a".repeat(100)).len(), 64);
+        // Degenerate subject falls back rather than emit an invalid (<2 char) name.
+        assert_eq!(sts_session_name(":"), "s3-proxy");
+        // The minted name is always within AWS's [2,64] RoleSessionName bounds
+        // and contains only permitted characters.
+        let n = sts_session_name("scv1:conn:00000000-0000-0000-0000-000000000000");
+        assert!((2..=64).contains(&n.len()));
+        assert!(n
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+=,.@-_".contains(c)));
+    }
+
     #[tokio::test]
     async fn resolve_injects_creds_for_oidc_bucket() {
         let http = MockHttp::new();
@@ -262,6 +322,35 @@ mod tests {
         assert_eq!(resolved.get("token").unwrap(), "token_oidc");
         assert!(!resolved.contains_key("auth_type"));
         assert!(!resolved.contains_key("oidc_role_arn"));
+    }
+
+    #[tokio::test]
+    async fn session_name_reaches_sts_request() {
+        // End-to-end: the per-connection subject is sanitized and lands in the
+        // `RoleSessionName` form field sent to STS, instead of the shared default.
+        let http = MockHttp::new();
+        let provider = OidcCredentialProvider::new(
+            test_signer(),
+            http.clone(),
+            "https://issuer.example.com".into(),
+            "sts.amazonaws.com".into(),
+        );
+        let auth = AwsBackendAuth::new(provider);
+
+        let mut config = oidc_bucket_config();
+        config
+            .backend_options
+            .insert("oidc_subject".into(), "scv1:conn:abc-1".into());
+        auth.resolve_credentials(&config).await.unwrap().unwrap();
+
+        let session = http
+            .last_form
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(k, _)| k == "RoleSessionName")
+            .map(|(_, v)| v.clone());
+        assert_eq!(session.as_deref(), Some("scv1_conn_abc-1"));
     }
 
     #[tokio::test]
