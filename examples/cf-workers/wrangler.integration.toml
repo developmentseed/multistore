@@ -60,7 +60,7 @@ bucket = "public-data"
 prefixes = []
 
 [[vars.PROXY_CONFIG.credentials.allowed_scopes]]
-actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket"]
+actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket", "create_multipart_upload", "upload_part", "complete_multipart_upload", "abort_multipart_upload"]
 bucket = "private-uploads"
 prefixes = []
 
@@ -81,7 +81,7 @@ bucket = "public-data"
 prefixes = []
 
 [[vars.PROXY_CONFIG.roles.allowed_scopes]]
-actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket"]
+actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket", "create_multipart_upload", "upload_part", "complete_multipart_upload", "abort_multipart_upload"]
 bucket = "private-uploads"
 prefixes = []
 

@@ -12,12 +12,17 @@ Environment variables:
 import os
 import uuid
 import xml.etree.ElementTree as ET
+from io import BytesIO
 
 import boto3
 import pytest
 import requests
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
+# S3 requires every multipart part except the last to be at least 5 MiB.
+MIB = 1024 * 1024
 
 PROXY_URL = os.environ.get("PROXY_URL", "http://localhost:8787")
 
@@ -189,6 +194,96 @@ class TestStaticCredentialWrites:
             with pytest.raises(ClientError) as exc_info:
                 client.get_object(Bucket="private-uploads", Key=key)
             assert exc_info.value.response["Error"]["Code"] in ("NoSuchKey", "404")
+
+
+# ---------------------------------------------------------------------------
+# Multipart uploads
+# ---------------------------------------------------------------------------
+
+class TestMultipartUploads:
+    """Exercise the full multipart upload path (Create/UploadPart/Complete/Abort)."""
+
+    def test_multipart_roundtrip_high_level(self):
+        """boto3's transfer manager: forces Create + 2x UploadPart + Complete."""
+        client = static_client()
+        key = f"test-multipart-{uuid.uuid4()}.bin"
+        # 6 MiB → two parts (5 MiB + 1 MiB) at a 5 MiB chunk size.
+        body = b"multipart-payload-block!" * (6 * MIB // 24 + 1)
+        body = body[: 6 * MIB]
+        config = TransferConfig(
+            multipart_threshold=5 * MIB,
+            multipart_chunksize=5 * MIB,
+            max_concurrency=1,
+            use_threads=False,
+        )
+
+        client.upload_fileobj(BytesIO(body), "private-uploads", key, Config=config)
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == body
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_multipart_low_level_explicit(self):
+        """Drive Create/UploadPart/Complete directly and verify the round-trip."""
+        client = static_client()
+        key = f"test-mpu-explicit-{uuid.uuid4()}.bin"
+        part1 = b"A" * (5 * MIB)
+        part2 = b"B" * (2 * MIB)
+
+        create = client.create_multipart_upload(Bucket="private-uploads", Key=key)
+        upload_id = create["UploadId"]
+        assert upload_id
+
+        parts = []
+        for num, chunk in enumerate([part1, part2], start=1):
+            up = client.upload_part(
+                Bucket="private-uploads",
+                Key=key,
+                PartNumber=num,
+                UploadId=upload_id,
+                Body=chunk,
+            )
+            parts.append({"PartNumber": num, "ETag": up["ETag"]})
+
+        client.complete_multipart_upload(
+            Bucket="private-uploads",
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == part1 + part2
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_multipart_abort(self):
+        """AbortMultipartUpload tears down an in-progress upload."""
+        client = static_client()
+        key = f"test-mpu-abort-{uuid.uuid4()}.bin"
+
+        create = client.create_multipart_upload(Bucket="private-uploads", Key=key)
+        upload_id = create["UploadId"]
+
+        client.upload_part(
+            Bucket="private-uploads",
+            Key=key,
+            PartNumber=1,
+            UploadId=upload_id,
+            Body=b"C" * (5 * MIB),
+        )
+        client.abort_multipart_upload(
+            Bucket="private-uploads", Key=key, UploadId=upload_id
+        )
+
+        # Completing an aborted upload must fail.
+        with pytest.raises(ClientError):
+            client.complete_multipart_upload(
+                Bucket="private-uploads",
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": "x"}]},
+            )
 
 
 # ---------------------------------------------------------------------------
