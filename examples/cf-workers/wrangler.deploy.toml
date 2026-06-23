@@ -40,12 +40,13 @@ region = "us-east-1"
 skip_signature = "true"
 
 # Backend-federation test bucket. The proxy mints its own OIDC assertion (iss =
-# OIDC_PROVIDER_ISSUER, the stable staging issuer) and assumes an AWS IAM role
-# via AssumeRoleWithWebIdentity to serve this private bucket — no long-lived
-# backend keys. Exercised by tests/smoke/test_federation.py on every preview and
-# staging deploy. Replace oidc_role_arn + bucket_name (+ region/endpoint) with
+# OIDC_PROVIDER_ISSUER — preview/staging share STAGING_OIDC_ISSUER; production
+# self-issues at its own worker URL) and assumes an AWS IAM role via
+# AssumeRoleWithWebIdentity to serve this private bucket — no long-lived backend
+# keys. Exercised by tests/smoke/test_federation.py on every preview, staging, and
+# production deploy. Replace oidc_role_arn + bucket_name (+ region/endpoint) with
 # your test resources; these are not secrets. The role's trust policy must trust
-# the STAGING_OIDC_ISSUER IAM OIDC provider with `sub` = oidc_subject and
+# each deploy environment's IAM OIDC provider with `sub` = oidc_subject and
 # audience sts.amazonaws.com, and grant s3:GetObject/s3:ListBucket on the bucket.
 [[vars.PROXY_CONFIG.buckets]]
 allowed_roles = []
