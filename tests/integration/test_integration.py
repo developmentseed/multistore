@@ -170,6 +170,26 @@ class TestStaticCredentialWrites:
         # Cleanup
         client.delete_object(Bucket="private-uploads", Key=key)
 
+    def test_batch_delete(self):
+        client = static_client()
+        keys = [f"test-batch-{uuid.uuid4()}.txt" for _ in range(3)]
+        for key in keys:
+            client.put_object(Bucket="private-uploads", Key=key, Body=b"batch")
+
+        resp = client.delete_objects(
+            Bucket="private-uploads",
+            Delete={"Objects": [{"Key": k} for k in keys]},
+        )
+        deleted = {d["Key"] for d in resp.get("Deleted", [])}
+        assert deleted == set(keys), resp
+        assert not resp.get("Errors"), resp
+
+        # All keys are gone.
+        for key in keys:
+            with pytest.raises(ClientError) as exc_info:
+                client.get_object(Bucket="private-uploads", Key=key)
+            assert exc_info.value.response["Error"]["Code"] in ("NoSuchKey", "404")
+
 
 # ---------------------------------------------------------------------------
 # Static credential reads
