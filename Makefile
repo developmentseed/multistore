@@ -1,4 +1,4 @@
-.PHONY: check test run-server run-workers ci docs
+.PHONY: check test test-integration run-server run-workers ci docs
 
 build: build-workers
 
@@ -23,6 +23,11 @@ clippy-fix:
 
 test:
 	cargo test
+
+# Run the integration suite locally: MinIO (docker compose) + the Workers
+# runtime (wrangler dev), mirroring CI. Pass extra pytest args via ARGS.
+test-integration:
+	./scripts/integration-test.sh $(ARGS)
 
 run-server:
 	cargo run -p multistore-server -- $(ARGS)
