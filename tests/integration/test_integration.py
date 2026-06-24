@@ -248,6 +248,60 @@ class TestStaticCredentialWrites:
         assert err["Code"] == "EntityTooLarge", err
         assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 400
 
+    def test_batch_delete_partial_authorization(self):
+        """Per-key authz: a batch delete with one in-scope and one out-of-scope
+        key deletes the allowed one, reports the other as AccessDenied, and does
+        NOT delete the out-of-scope key."""
+        full = static_client()  # full access to private-uploads
+        restricted = static_client(  # scoped to the "allowed/" prefix only
+            access_key="AKTEST000000000002",
+            secret_key="testSecretKey00000000000000000002",
+        )
+        suffix = uuid.uuid4()
+        allowed_key = f"allowed/{suffix}.txt"
+        denied_key = f"denied/{suffix}.txt"
+        full.put_object(Bucket="private-uploads", Key=allowed_key, Body=b"a")
+        full.put_object(Bucket="private-uploads", Key=denied_key, Body=b"b")
+
+        resp = restricted.delete_objects(
+            Bucket="private-uploads",
+            Delete={"Objects": [{"Key": allowed_key}, {"Key": denied_key}]},
+        )
+        deleted = {d["Key"] for d in resp.get("Deleted", [])}
+        errors = {e["Key"]: e["Code"] for e in resp.get("Errors", [])}
+        assert deleted == {allowed_key}, resp
+        assert errors == {denied_key: "AccessDenied"}, resp
+
+        # Security property: the out-of-scope key must still exist; the in-scope
+        # key must be gone.
+        full.head_object(Bucket="private-uploads", Key=denied_key)  # raises if deleted
+        with pytest.raises(ClientError) as exc:
+            full.head_object(Bucket="private-uploads", Key=allowed_key)
+        assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
+
+        full.delete_object(Bucket="private-uploads", Key=denied_key)  # cleanup
+
+    def test_copy_object_rejected(self):
+        """Server-side copy (x-amz-copy-source) is rejected with 501
+        NotImplemented and does not create the destination."""
+        client = static_client()
+        src = f"copy-src-{uuid.uuid4()}.txt"
+        dst = f"copy-dst-{uuid.uuid4()}.txt"
+        client.put_object(Bucket="private-uploads", Key=src, Body=b"source")
+        with pytest.raises(ClientError) as exc:
+            client.copy_object(
+                Bucket="private-uploads",
+                Key=dst,
+                CopySource={"Bucket": "private-uploads", "Key": src},
+            )
+        assert exc.value.response["Error"]["Code"] == "NotImplemented", exc.value.response
+        assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 501
+        # The destination must not have been created.
+        with pytest.raises(ClientError):
+            client.head_object(Bucket="private-uploads", Key=dst)
+
+        client.delete_object(Bucket="private-uploads", Key=src)  # cleanup
+
 
 # ---------------------------------------------------------------------------
 # Multipart uploads

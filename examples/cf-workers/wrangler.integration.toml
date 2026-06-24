@@ -68,6 +68,19 @@ actions = ["get_object", "head_object", "put_object", "delete_object", "list_buc
 bucket = "private-uploads"
 prefixes = []
 
+# Prefix-restricted credential — used to test per-key batch-delete authorization.
+[[vars.PROXY_CONFIG.credentials]]
+access_key_id = "AKTEST000000000002"
+created_at = "2024-01-01T00:00:00Z"
+enabled = true
+principal_name = "integration-prefix-restricted-user"
+secret_access_key = "testSecretKey00000000000000000002"
+
+[[vars.PROXY_CONFIG.credentials.allowed_scopes]]
+actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket"]
+bucket = "private-uploads"
+prefixes = ["allowed/"]
+
 # --- Roles ---
 
 [[vars.PROXY_CONFIG.roles]]
