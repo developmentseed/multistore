@@ -55,3 +55,14 @@ Handled by OIDC discovery closures (registered on the `Router` via `OidcRouterEx
 > - **Server-side copy is not supported** — A `PUT` carrying `x-amz-copy-source` (CopyObject / UploadPartCopy) is rejected with `501 NotImplemented` rather than silently overwriting the destination.
 > - **`x-amz-*` write headers are dropped** — Object metadata, storage class, tagging, ACLs, SSE, and checksum headers on writes are not forwarded (see "Writes and request headers" above).
 > - **Versioned/MFA delete is not handled** — A `?versionId=` on a delete is ignored; the current object version is deleted.
+
+### Upload size on the Cloudflare Workers runtime
+
+The Workers runtime is bounded by Cloudflare's [request-body size limit](https://developers.cloudflare.com/workers/platform/limits/#request-and-response-limits) — 100 MB on Free/Pro, 200 MB on Business, 500 MB (default) on Enterprise. This is a **hard platform limit enforced at Cloudflare's edge**: a request body larger than the plan limit is rejected with `413` before the proxy can act on it, and the proxy cannot raise it.
+
+Consequences and guidance:
+
+- **A single `PutObject` cannot exceed the plan body limit.** Upload larger objects as a **multipart upload**: each `UploadPart` is a separate request, so only the *part* size must stay under the limit. With S3's 10,000-part maximum, 100 MB parts allow objects up to ~1 TB even on Free/Pro.
+- **Configure clients to chunk below the limit.** e.g. boto3 `TransferConfig(multipart_threshold=…, multipart_chunksize=…)` with a chunk size under the plan limit; aws-cli's `s3.multipart_chunksize`.
+- Until [streaming `UploadPart`](https://github.com/developmentseed/multistore/issues/89) lands, parts on Workers are additionally capped by the 128 MB worker memory limit (parts are buffered in WASM). Keep `multipart_chunksize` comfortably below 100 MB.
+- The native server and Lambda runtimes have their own, generally higher, limits — this constraint is specific to Workers.
