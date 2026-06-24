@@ -236,6 +236,18 @@ class TestStaticCredentialWrites:
                 client.get_object(Bucket="private-uploads", Key=key)
             assert exc_info.value.response["Error"]["Code"] in ("NoSuchKey", "404")
 
+    def test_oversized_put_rejected_entity_too_large(self):
+        """A PUT exceeding MAX_UPLOAD_BYTES (10 MiB in the test config) is
+        rejected with EntityTooLarge rather than forwarded to the backend."""
+        client = static_client()
+        key = f"test-toolarge-{uuid.uuid4()}.bin"
+        body = b"z" * (12 * MIB)  # over the 10 MiB limit
+        with pytest.raises(ClientError) as exc_info:
+            client.put_object(Bucket="private-uploads", Key=key, Body=body)
+        err = exc_info.value.response["Error"]
+        assert err["Code"] == "EntityTooLarge", err
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 400
+
 
 # ---------------------------------------------------------------------------
 # Multipart uploads

@@ -93,6 +93,17 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
         gateway = gateway.with_credential_resolver(resolver.clone());
     }
 
+    // Reject uploads larger than `MAX_UPLOAD_BYTES` with S3's `EntityTooLarge`
+    // rather than letting Cloudflare's edge return an opaque `413`. Set this to
+    // the deployment's plan request-body limit (e.g. 104857600 for 100 MB).
+    if let Some(max) = env
+        .var("MAX_UPLOAD_BYTES")
+        .ok()
+        .and_then(|v| v.to_string().parse::<u64>().ok())
+    {
+        gateway = gateway.with_max_request_body_size(Some(max));
+    }
+
     // Parse request metadata and extract the body stream (zero-copy).
     let (parts, js_body) =
         RequestParts::from_web_sys(&req).map_err(|e| worker::Error::RustError(e))?;

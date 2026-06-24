@@ -31,6 +31,12 @@ pub enum ProxyError {
     #[error("not implemented: {0}")]
     NotImplemented(String),
 
+    /// The upload body exceeds the proxy's configured maximum size. Returned
+    /// as S3's `EntityTooLarge` so clients get an actionable error instead of a
+    /// runtime-specific rejection (e.g. Cloudflare's edge `413`).
+    #[error("entity too large")]
+    EntityTooLarge,
+
     /// The request contains no authentication credentials.
     #[error("missing authentication")]
     MissingAuth,
@@ -89,6 +95,7 @@ impl ProxyError {
             Self::SignatureDoesNotMatch => "SignatureDoesNotMatch",
             Self::InvalidRequest(_) => "InvalidRequest",
             Self::NotImplemented(_) => "NotImplemented",
+            Self::EntityTooLarge => "EntityTooLarge",
             Self::MissingAuth => "AccessDenied",
             Self::ExpiredCredentials => "ExpiredToken",
             Self::InvalidOidcToken(_) => "InvalidIdentityToken",
@@ -110,6 +117,7 @@ impl ProxyError {
             Self::SignatureDoesNotMatch => 403,
             Self::InvalidRequest(_) => 400,
             Self::NotImplemented(_) => 501,
+            Self::EntityTooLarge => 400,
             Self::InvalidOidcToken(_) => 400,
             Self::RoleNotFound(_) => 403,
             Self::PreconditionFailed => 412,

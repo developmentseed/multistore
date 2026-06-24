@@ -144,6 +144,12 @@ pub struct ProxyGateway<B, R, C> {
     /// When true, responses include a `Server-Timing` header with gateway
     /// processing metrics. Enabled by default.
     server_timing: bool,
+    /// Maximum accepted upload body size in bytes, if set. When a `PutObject`
+    /// or `UploadPart` declares a `Content-Length` larger than this, the proxy
+    /// rejects it with `EntityTooLarge` instead of forwarding it. Useful for
+    /// surfacing a clean S3 error ahead of a runtime body-size limit (e.g.
+    /// Cloudflare Workers' edge `413`). `None` means no proxy-enforced limit.
+    max_request_body_size: Option<u64>,
 }
 
 impl<B, R, C> ProxyGateway<B, R, C>
@@ -176,6 +182,7 @@ where
             debug_errors: false,
             user_agent: DEFAULT_USER_AGENT.to_string(),
             server_timing: true,
+            max_request_body_size: None,
         }
     }
 
@@ -244,6 +251,44 @@ where
     pub fn with_server_timing(mut self, enabled: bool) -> Self {
         self.server_timing = enabled;
         self
+    }
+
+    /// Set the maximum accepted upload body size, in bytes.
+    ///
+    /// When set, a `PutObject` or `UploadPart` whose `Content-Length` exceeds
+    /// this is rejected up front with S3's `EntityTooLarge` (HTTP 400) rather
+    /// than forwarded. Use this on runtimes with a hard request-body limit —
+    /// e.g. Cloudflare Workers, where the edge otherwise rejects oversized
+    /// bodies with an opaque `413` — to give clients an actionable S3 error.
+    ///
+    /// The check relies on a declared `Content-Length`; requests without one
+    /// (e.g. unknown-length streaming) fall through to the runtime's own limit.
+    /// `None` (the default) disables the proxy-enforced limit.
+    pub fn with_max_request_body_size(mut self, max_bytes: Option<u64>) -> Self {
+        self.max_request_body_size = max_bytes;
+        self
+    }
+
+    /// Reject an upload whose declared `Content-Length` exceeds the configured
+    /// maximum. No-op when no limit is set or no `Content-Length` is present.
+    fn check_upload_size(&self, headers: &HeaderMap) -> Result<(), ProxyError> {
+        if let Some(max) = self.max_request_body_size {
+            let declared = headers
+                .get(http::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+            if let Some(len) = declared {
+                if len > max {
+                    tracing::warn!(
+                        content_length = len,
+                        max = max,
+                        "rejecting upload exceeding configured max body size"
+                    );
+                    return Err(ProxyError::EntityTooLarge);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Inject a `Server-Timing` header into the response headers if enabled.
@@ -764,6 +809,7 @@ where
                 Ok(HandlerAction::Forward(fwd))
             }
             S3Operation::PutObject { key, .. } => {
+                self.check_upload_size(original_headers)?;
                 let fwd = self
                     .build_forward(
                         Method::PUT,
@@ -830,6 +876,10 @@ where
                         bucket_config.backend_type
                     )));
                 }
+                // UploadPart carries the part body; reject oversized parts up
+                // front. (Create/Complete/Abort bodies are small and won't trip
+                // a sane limit.)
+                self.check_upload_size(original_headers)?;
                 Ok(HandlerAction::NeedsBody(PendingRequest {
                     operation: operation.clone(),
                     bucket_config: bucket_config.clone(),
@@ -1567,6 +1617,90 @@ mod tests {
                 matches!(action, HandlerAction::NeedsBody(_)),
                 "CreateMultipartUpload should return NeedsBody"
             );
+        });
+    }
+
+    // -- Max upload size (EntityTooLarge) ------------------------------------
+
+    #[test]
+    fn put_over_max_body_size_is_rejected() {
+        run(async {
+            let gw = gateway().with_max_request_body_size(Some(1024));
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "2048".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/big.bin", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(r) => assert_eq!(
+                    r.status, 400,
+                    "oversized PUT should be rejected with EntityTooLarge (400)"
+                ),
+                other => panic!(
+                    "expected Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
+    #[test]
+    fn put_under_max_body_size_forwards() {
+        run(async {
+            let gw = gateway().with_max_request_body_size(Some(1_000_000));
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "1024".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/ok.bin", None, &headers, None)
+                .await;
+            assert!(
+                matches!(action, HandlerAction::Forward(_)),
+                "PUT within the limit should forward"
+            );
+        });
+    }
+
+    #[test]
+    fn put_with_no_limit_forwards_large_body() {
+        run(async {
+            let gw = gateway(); // default: no proxy-enforced limit
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "999999999".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/huge.bin", None, &headers, None)
+                .await;
+            assert!(
+                matches!(action, HandlerAction::Forward(_)),
+                "with no limit configured, large PUT should still forward"
+            );
+        });
+    }
+
+    #[test]
+    fn upload_part_over_max_body_size_is_rejected() {
+        run(async {
+            let gw = gateway().with_max_request_body_size(Some(1024));
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "5000".parse().unwrap());
+            let action = gw
+                .resolve_request(
+                    Method::PUT,
+                    "/test-bucket/key.bin",
+                    Some("partNumber=1&uploadId=abc"),
+                    &headers,
+                    None,
+                )
+                .await;
+            match action {
+                HandlerAction::Response(r) => assert_eq!(
+                    r.status, 400,
+                    "oversized UploadPart should be rejected with EntityTooLarge (400)"
+                ),
+                other => panic!(
+                    "expected Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
         });
     }
 
