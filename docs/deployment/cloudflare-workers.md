@@ -101,6 +101,7 @@ HTTP 500 in production (`tests/smoke/test_federation.py` fails).
 |----------|----------|-------------|
 | `PROXY_CONFIG` | Yes | JSON config (buckets, roles, credentials) |
 | `VIRTUAL_HOST_DOMAIN` | No | Domain for virtual-hosted requests |
+| `MAX_UPLOAD_BYTES` | No | Reject uploads whose `Content-Length` exceeds this with `EntityTooLarge` (400) instead of Cloudflare's edge `413`. Set to the plan's request-body limit, e.g. `104857600` (100 MB). See [Supported Operations](../reference/operations.md). |
 | `SESSION_TOKEN_KEY` | For STS | Base64-encoded 32-byte AES-256-GCM key |
 | `OIDC_PROVIDER_KEY` | For OIDC backend auth | PEM-encoded RSA private key |
 | `OIDC_PROVIDER_ISSUER` | For OIDC backend auth | Public URL for JWKS discovery |

@@ -49,9 +49,9 @@ sequenceDiagram
             Note over Middleware: after_dispatch(CompletedRequest)
             Gateway-->>Runtime: GatewayResponse::Response
             Runtime-->>Client: Return response body
-        else NeedsBody (multipart)
+        else NeedsBody (multipart, batch delete)
             Gateway->>Gateway: collect_body(body) → bytes
-            Gateway->>Backend: Signed multipart request
+            Gateway->>Backend: Signed multipart / batch-delete request
             Backend-->>Gateway: Response
             Note over Middleware: after_dispatch(CompletedRequest)
             Gateway-->>Runtime: GatewayResponse::Response
@@ -118,7 +118,7 @@ The `ProxyGateway` owns S3 request parsing, identity resolution, and bucket auth
    - Virtual-hosted: `GET /key` with `Host: bucket.s3.example.com` → same operation
 2. **Resolve identity** via the `CredentialRegistry` — verifies SigV4 signatures against stored or sealed credentials
 3. **Resolve bucket** via the `BucketRegistry` — looks up the bucket config and authorizes the caller
-4. **Dispatch** the operation based on type (forward, list, or multipart)
+4. **Dispatch** the operation based on type (forward, list, or body-bearing — multipart and batch delete)
 
 Custom `BucketRegistry` implementations can provide entirely different authorization logic, namespace mapping, or dynamic bucket configuration.
 
@@ -145,18 +145,18 @@ LIST supports backend-side pagination. V2 uses `continuation-token` and `start-a
 
 ### `NeedsBody(PendingRequest)` (internal)
 
-Used for: **CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload**
+Used for: **CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, and DeleteObjects (batch delete)**
 
-Multipart operations need the request body (e.g., the XML body for `CompleteMultipartUpload`). When using `handle_request`, this is resolved internally — the gateway calls the `collect_body` closure provided by the runtime and returns the result as `GatewayResponse::Response`. Runtimes never see this variant.
+These operations need the request body — the XML body for `CompleteMultipartUpload`, or the key list for `DeleteObjects` (each key is authorized individually once the body arrives). When using `handle_request`, this is resolved internally — the gateway calls the `collect_body` closure provided by the runtime and returns the result as `GatewayResponse::Response`. Runtimes never see this variant.
 
 For lower-level control, `ProxyGateway::handle` returns the raw three-variant `HandlerAction`, and runtimes call `handle_with_body()` themselves.
 
 > [!WARNING]
-> Multipart uploads are only supported for `backend_type = "s3"`. Non-S3 backends should use single PUT requests (object_store handles chunking internally).
+> Multipart uploads and batch delete are only supported for `backend_type = "s3"`. Non-S3 backends should use single PUT/DELETE requests (object_store handles chunking internally).
 
 ## Outbound User-Agent
 
-All outbound requests to backend object stores include a `User-Agent` header identifying multistore as the caller. This applies to both presigned URL forwards (GET, HEAD, PUT, DELETE) and raw signed requests (multipart operations).
+All outbound requests to backend object stores include a `User-Agent` header identifying multistore as the caller. This applies to both presigned URL forwards (GET, HEAD, PUT, single-object DELETE) and raw signed requests (multipart operations and batch delete).
 
 The default value is `multistore/{version}`, where `{version}` is derived from the crate version (`CARGO_PKG_VERSION`) — e.g. `multistore/0.4.0`. Override it via the gateway builder to include your application name:
 
