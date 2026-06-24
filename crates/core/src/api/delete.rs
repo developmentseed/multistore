@@ -153,6 +153,8 @@ pub fn build_delete_result(deleted: &[String], errors: &[DeleteError], quiet: bo
     #[derive(Serialize)]
     #[serde(rename = "DeleteResult")]
     struct Result<'a> {
+        #[serde(rename = "@xmlns")]
+        xmlns: &'static str,
         #[serde(rename = "Deleted")]
         deleted: Vec<Deleted<'a>>,
         #[serde(rename = "Error")]
@@ -168,7 +170,11 @@ pub fn build_delete_result(deleted: &[String], errors: &[DeleteError], quiet: bo
     } else {
         deleted.iter().map(|k| Deleted { key: k }).collect()
     };
-    let result = Result { deleted, errors };
+    let result = Result {
+        xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
+        deleted,
+        errors,
+    };
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
         quick_xml::se::to_string(&result).unwrap_or_default()
@@ -268,6 +274,10 @@ mod tests {
             message: "denied".into(),
         }];
         let verbose = build_delete_result(&deleted, &errors, false);
+        // S3's DeleteResult carries the bucket namespace on the root element.
+        assert!(
+            verbose.contains("<DeleteResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">")
+        );
         assert!(verbose.contains("<Deleted><Key>a.txt</Key></Deleted>"));
         assert!(verbose.contains("<Key>secret/x</Key>"));
         assert!(verbose.contains("<Code>AccessDenied</Code>"));
