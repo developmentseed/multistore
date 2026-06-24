@@ -4,7 +4,7 @@ use crate::api::list_rewrite::ListRewrite;
 use crate::api::response::BucketEntry;
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};
-use crate::types::{BucketConfig, BucketOwner, ResolvedIdentity, S3Operation};
+use crate::types::{Action, BucketConfig, BucketOwner, ResolvedIdentity, S3Operation};
 use std::future::Future;
 
 /// Default owner name used in `ListAllMyBucketsResult` responses.
@@ -50,6 +50,27 @@ pub trait BucketRegistry: Clone + MaybeSend + MaybeSync + 'static {
         &self,
         identity: &ResolvedIdentity,
     ) -> impl Future<Output = Result<Vec<BucketEntry>, ProxyError>> + MaybeSend;
+
+    /// Authorize a single key for a batch operation such as
+    /// [`DeleteObjects`](crate::types::S3Operation::DeleteObjects).
+    ///
+    /// Called per key by the gateway *after* the coarse [`get_bucket`](Self::get_bucket)
+    /// authorization, once the keys — which live in the request body — are known.
+    /// The default enforces the caller's scope grants via
+    /// [`key_authorized`](crate::auth::key_authorized), matching the
+    /// coarse-path scope model. Registries that authorize through a different
+    /// mechanism (e.g. an external permission API consulted in `get_bucket`)
+    /// can override this to apply their own per-key policy — returning `true`
+    /// when the bucket-level decision already covers every key.
+    fn authorize_key(
+        &self,
+        name: &str,
+        identity: &ResolvedIdentity,
+        action: Action,
+        key: &str,
+    ) -> impl Future<Output = bool> + MaybeSend {
+        async move { crate::auth::key_authorized(identity, name, action, key) }
+    }
 
     /// The owner identity returned in `ListAllMyBucketsResult` responses.
     ///

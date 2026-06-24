@@ -1138,7 +1138,11 @@ where
         let mut allowed_backend: Vec<String> = Vec::new();
         let mut errors: Vec<delete::DeleteError> = Vec::new();
         for key in request.keys() {
-            if crate::auth::key_authorized(&pending.identity, bucket, Action::DeleteObject, key) {
+            if self
+                .bucket_registry
+                .authorize_key(bucket, &pending.identity, Action::DeleteObject, key)
+                .await
+            {
                 allowed_backend.push(apply_backend_prefix(config, key));
             } else {
                 errors.push(delete::DeleteError {
