@@ -897,6 +897,9 @@ where
                         bucket_config.backend_type
                     )));
                 }
+                // The body is buffered whole; bound it like other uploads. The
+                // key count is additionally capped when the body is parsed.
+                self.check_upload_size(original_headers)?;
                 Ok(HandlerAction::NeedsBody(PendingRequest {
                     operation: operation.clone(),
                     bucket_config: bucket_config.clone(),

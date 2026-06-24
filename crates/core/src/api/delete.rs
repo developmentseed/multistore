@@ -35,17 +35,27 @@ pub struct DeleteObjectEntry {
 }
 
 impl DeleteRequest {
+    /// The maximum number of objects S3 accepts in a single batch delete.
+    pub const MAX_KEYS: usize = 1000;
+
     /// Parse a batch-delete request body.
     ///
-    /// Returns an error if the body is not well-formed XML or names no objects
-    /// (S3 rejects an empty delete with `MalformedXML`).
+    /// Mirrors S3's `MalformedXML` rejections: the body must be well-formed XML,
+    /// name at least one object, and name no more than [`MAX_KEYS`](Self::MAX_KEYS).
     pub fn parse(body: &[u8]) -> Result<Self, ProxyError> {
         let req: DeleteRequest = quick_xml::de::from_reader(body)
-            .map_err(|e| ProxyError::InvalidRequest(format!("malformed delete body: {e}")))?;
+            .map_err(|e| ProxyError::MalformedXml(format!("malformed delete body: {e}")))?;
         if req.objects.is_empty() {
-            return Err(ProxyError::InvalidRequest(
+            return Err(ProxyError::MalformedXml(
                 "delete request names no objects".into(),
             ));
+        }
+        if req.objects.len() > Self::MAX_KEYS {
+            return Err(ProxyError::MalformedXml(format!(
+                "delete request names {} objects, exceeding the {}-key limit",
+                req.objects.len(),
+                Self::MAX_KEYS
+            )));
         }
         Ok(req)
     }
@@ -191,14 +201,40 @@ mod tests {
     }
 
     #[test]
-    fn empty_delete_is_rejected() {
+    fn empty_delete_is_rejected_as_malformed_xml() {
         let body = br#"<Delete></Delete>"#;
-        assert!(DeleteRequest::parse(body).is_err());
+        assert!(matches!(
+            DeleteRequest::parse(body),
+            Err(ProxyError::MalformedXml(_))
+        ));
     }
 
     #[test]
-    fn malformed_body_is_rejected() {
-        assert!(DeleteRequest::parse(b"not xml").is_err());
+    fn malformed_body_is_rejected_as_malformed_xml() {
+        assert!(matches!(
+            DeleteRequest::parse(b"not xml"),
+            Err(ProxyError::MalformedXml(_))
+        ));
+    }
+
+    #[test]
+    fn over_key_limit_is_rejected() {
+        let mut body = String::from("<Delete>");
+        for i in 0..=DeleteRequest::MAX_KEYS {
+            body.push_str(&format!("<Object><Key>k{i}</Key></Object>"));
+        }
+        body.push_str("</Delete>");
+        assert!(matches!(
+            DeleteRequest::parse(body.as_bytes()),
+            Err(ProxyError::MalformedXml(_))
+        ));
+        // Exactly MAX_KEYS is allowed.
+        let mut ok = String::from("<Delete>");
+        for i in 0..DeleteRequest::MAX_KEYS {
+            ok.push_str(&format!("<Object><Key>k{i}</Key></Object>"));
+        }
+        ok.push_str("</Delete>");
+        assert!(DeleteRequest::parse(ok.as_bytes()).is_ok());
     }
 
     #[test]
