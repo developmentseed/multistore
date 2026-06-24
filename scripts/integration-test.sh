@@ -7,6 +7,11 @@
 #   ./scripts/integration-test.sh [extra pytest args]
 #   make test-integration
 #
+# MinIO lifecycle: if MinIO isn't running, this starts it and stops it again on
+# exit (clean one-off run). If it's already up — e.g. you ran `docker compose
+# up -d` to iterate — it's left running so repeated runs stay fast. wrangler dev
+# is always stopped on exit.
+#
 # Prerequisites: docker, node/npx, uv (uvx), and the wasm32 Rust target
 # (`rustup target add wasm32-unknown-unknown`). worker-build is installed
 # automatically if missing.
@@ -18,11 +23,25 @@ PORT="${PROXY_PORT:-8787}"
 PROXY_URL="http://localhost:${PORT}"
 WORKER_DIR="examples/cf-workers"
 
+# Tear down MinIO on exit only if we started it. If it was already running
+# (e.g. a dev who ran `docker compose up -d` to iterate), leave it warm so
+# repeated runs stay fast and we don't stop a stack we didn't start.
+STARTED_MINIO=false
 cleanup() {
   # Kill wrangler (and the workerd children it spawns).
   pkill -f "wrangler dev --config wrangler.integration.toml" 2>/dev/null || true
+  if [ "$STARTED_MINIO" = true ]; then
+    echo "==> Stopping MinIO (started by this run)"
+    docker compose down >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
+
+if curl -sf -o /dev/null http://localhost:9000/minio/health/live 2>/dev/null; then
+  echo "==> MinIO already running — leaving it up after the run"
+else
+  STARTED_MINIO=true
+fi
 
 echo "==> Starting MinIO + seeding buckets (docker compose)"
 # Not `--wait`: the one-shot seeder (minio-init) exits, which `--wait` treats as
