@@ -275,11 +275,7 @@ where
     /// maximum. No-op when no limit is set or no `Content-Length` is present.
     fn check_upload_size(&self, headers: &HeaderMap) -> Result<(), ProxyError> {
         if let Some(max) = self.max_request_body_size {
-            let declared = headers
-                .get(http::header::CONTENT_LENGTH)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok());
-            if let Some(len) = declared {
+            if let Some(len) = content_length(headers) {
                 if len > max {
                     tracing::warn!(
                         content_length = len,
@@ -409,14 +405,7 @@ where
             }
         }
 
-        fn content_length_from_headers(headers: &HeaderMap) -> Option<u64> {
-            headers
-                .get("content-length")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-        }
-
-        let request_bytes = content_length_from_headers(req.headers);
+        let request_bytes = content_length(req.headers);
 
         let (mut response, status, resp_bytes, was_forwarded, backend_start) = match action {
             HandlerAction::Response(r) => {
@@ -1274,6 +1263,14 @@ fn error_response(err: &ProxyError, resource: &str, request_id: &str, debug: boo
 /// Build an object_store Path from a bucket config and client-visible key.
 fn build_object_path(config: &BucketConfig, key: &str) -> object_store::path::Path {
     object_store::path::Path::from(apply_backend_prefix(config, key))
+}
+
+/// Parse the declared `Content-Length` header as a byte count, if present and valid.
+fn content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 /// Map a client-visible key into the backend key space by prepending
