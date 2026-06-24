@@ -16,33 +16,33 @@ use serde::{Deserialize, Serialize};
 /// Parsed inbound `<Delete>` request body.
 #[derive(Debug, Deserialize)]
 #[serde(rename = "Delete")]
-pub struct DeleteRequest {
+pub(crate) struct DeleteRequest {
     /// When true, successful deletions are omitted from the response — only
     /// errors are reported.
     #[serde(default, rename = "Quiet")]
-    pub quiet: bool,
+    pub(crate) quiet: bool,
     /// The objects to delete.
     #[serde(default, rename = "Object")]
-    pub objects: Vec<DeleteObjectEntry>,
+    pub(crate) objects: Vec<DeleteObjectEntry>,
 }
 
 /// A single `<Object>` entry in a batch-delete request.
 #[derive(Debug, Deserialize)]
-pub struct DeleteObjectEntry {
+pub(crate) struct DeleteObjectEntry {
     /// The (client-facing) object key to delete.
     #[serde(rename = "Key")]
-    pub key: String,
+    pub(crate) key: String,
 }
 
 impl DeleteRequest {
     /// The maximum number of objects S3 accepts in a single batch delete.
-    pub const MAX_KEYS: usize = 1000;
+    pub(crate) const MAX_KEYS: usize = 1000;
 
     /// Parse a batch-delete request body.
     ///
     /// Mirrors S3's `MalformedXML` rejections: the body must be well-formed XML,
     /// name at least one object, and name no more than [`MAX_KEYS`](Self::MAX_KEYS).
-    pub fn parse(body: &[u8]) -> Result<Self, ProxyError> {
+    pub(crate) fn parse(body: &[u8]) -> Result<Self, ProxyError> {
         let req: DeleteRequest = quick_xml::de::from_reader(body)
             .map_err(|e| ProxyError::MalformedXml(format!("malformed delete body: {e}")))?;
         if req.objects.is_empty() {
@@ -61,7 +61,7 @@ impl DeleteRequest {
     }
 
     /// The client-facing keys named in the request, in order.
-    pub fn keys(&self) -> impl Iterator<Item = &str> {
+    pub(crate) fn keys(&self) -> impl Iterator<Item = &str> {
         self.objects.iter().map(|o| o.key.as_str())
     }
 }
@@ -72,7 +72,7 @@ impl DeleteRequest {
 /// (i.e. with any `backend_prefix` applied). `Quiet` is always `false` so the
 /// backend reports each deletion explicitly, letting the proxy map results back
 /// to client keys before applying the client's own quiet preference.
-pub fn build_backend_delete_body(backend_keys: &[String]) -> String {
+pub(crate) fn build_backend_delete_body(backend_keys: &[String]) -> String {
     #[derive(Serialize)]
     #[serde(rename = "Delete")]
     struct Body<'a> {
@@ -98,32 +98,32 @@ pub fn build_backend_delete_body(backend_keys: &[String]) -> String {
 
 /// A per-key error in a `<DeleteResult>`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeleteError {
+pub(crate) struct DeleteError {
     /// The object key the error applies to.
     #[serde(rename = "Key")]
-    pub key: String,
+    pub(crate) key: String,
     /// S3 error code (e.g. `AccessDenied`).
     #[serde(rename = "Code")]
-    pub code: String,
+    pub(crate) code: String,
     /// Human-readable message.
     #[serde(rename = "Message")]
-    pub message: String,
+    pub(crate) message: String,
 }
 
 /// The backend's keys that were deleted and any per-key errors it reported.
 #[derive(Debug)]
-pub struct BackendOutcome {
+pub(crate) struct BackendOutcome {
     /// Backend keys reported as deleted.
-    pub deleted: Vec<String>,
+    pub(crate) deleted: Vec<String>,
     /// Per-key errors reported by the backend (backend key space).
-    pub errors: Vec<DeleteError>,
+    pub(crate) errors: Vec<DeleteError>,
 }
 
 /// Parse a backend `<DeleteResult>` response.
 ///
 /// Tolerates the extra elements S3 includes (`VersionId`, `DeleteMarker`, …) and
 /// returns only what the proxy needs to rebuild the client response.
-pub fn parse_backend_result(xml: &[u8]) -> Result<BackendOutcome, ProxyError> {
+pub(crate) fn parse_backend_result(xml: &[u8]) -> Result<BackendOutcome, ProxyError> {
     #[derive(Deserialize)]
     #[serde(rename = "DeleteResult")]
     struct DeleteResultXml {
@@ -149,7 +149,11 @@ pub fn parse_backend_result(xml: &[u8]) -> Result<BackendOutcome, ProxyError> {
 ///
 /// `deleted` and `errors` are in client key space. In `quiet` mode the
 /// `<Deleted>` entries are omitted (S3 semantics); errors are always reported.
-pub fn build_delete_result(deleted: &[String], errors: &[DeleteError], quiet: bool) -> String {
+pub(crate) fn build_delete_result(
+    deleted: &[String],
+    errors: &[DeleteError],
+    quiet: bool,
+) -> String {
     #[derive(Serialize)]
     #[serde(rename = "DeleteResult")]
     struct DeleteResultXml<'a> {
