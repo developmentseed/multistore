@@ -101,7 +101,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
         .ok()
         .and_then(|v| v.to_string().parse::<u64>().ok())
     {
-        gateway = gateway.with_max_request_body_size(Some(max));
+        gateway = gateway.with_max_request_body_size(max);
     }
 
     // Parse request metadata and extract the body stream (zero-copy).

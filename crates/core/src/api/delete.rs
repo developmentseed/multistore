@@ -101,7 +101,7 @@ pub struct DeleteError {
 }
 
 /// The backend's keys that were deleted and any per-key errors it reported.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct BackendOutcome {
     /// Backend keys reported as deleted.
     pub deleted: Vec<String>,

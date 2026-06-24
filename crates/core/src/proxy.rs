@@ -263,9 +263,9 @@ where
     ///
     /// The check relies on a declared `Content-Length`; requests without one
     /// (e.g. unknown-length streaming) fall through to the runtime's own limit.
-    /// `None` (the default) disables the proxy-enforced limit.
-    pub fn with_max_request_body_size(mut self, max_bytes: Option<u64>) -> Self {
-        self.max_request_body_size = max_bytes;
+    /// Leaving this unset (the default) disables the proxy-enforced limit.
+    pub fn with_max_request_body_size(mut self, max_bytes: u64) -> Self {
+        self.max_request_body_size = Some(max_bytes);
         self
     }
 
@@ -1267,25 +1267,11 @@ fn error_response(err: &ProxyError, resource: &str, request_id: &str, debug: boo
 
 /// Build an object_store Path from a bucket config and client-visible key.
 fn build_object_path(config: &BucketConfig, key: &str) -> object_store::path::Path {
-    match &config.backend_prefix {
-        Some(prefix) => {
-            let p = prefix.trim_end_matches('/');
-            if p.is_empty() {
-                object_store::path::Path::from(key)
-            } else {
-                let mut full_key = String::with_capacity(p.len() + 1 + key.len());
-                full_key.push_str(p);
-                full_key.push('/');
-                full_key.push_str(key);
-                object_store::path::Path::from(full_key)
-            }
-        }
-        None => object_store::path::Path::from(key),
-    }
+    object_store::path::Path::from(apply_backend_prefix(config, key))
 }
 
 /// Map a client-visible key into the backend key space by prepending
-/// `backend_prefix` (the string counterpart of [`build_object_path`]).
+/// `backend_prefix`.
 fn apply_backend_prefix(config: &BucketConfig, key: &str) -> String {
     match &config.backend_prefix {
         Some(prefix) => {
@@ -1625,7 +1611,7 @@ mod tests {
     #[test]
     fn put_over_max_body_size_is_rejected() {
         run(async {
-            let gw = gateway().with_max_request_body_size(Some(1024));
+            let gw = gateway().with_max_request_body_size(1024);
             let mut headers = HeaderMap::new();
             headers.insert("content-length", "2048".parse().unwrap());
             let action = gw
@@ -1647,7 +1633,7 @@ mod tests {
     #[test]
     fn put_under_max_body_size_forwards() {
         run(async {
-            let gw = gateway().with_max_request_body_size(Some(1_000_000));
+            let gw = gateway().with_max_request_body_size(1_000_000);
             let mut headers = HeaderMap::new();
             headers.insert("content-length", "1024".parse().unwrap());
             let action = gw
@@ -1679,7 +1665,7 @@ mod tests {
     #[test]
     fn upload_part_over_max_body_size_is_rejected() {
         run(async {
-            let gw = gateway().with_max_request_body_size(Some(1024));
+            let gw = gateway().with_max_request_body_size(1024);
             let mut headers = HeaderMap::new();
             headers.insert("content-length", "5000".parse().unwrap());
             let action = gw
