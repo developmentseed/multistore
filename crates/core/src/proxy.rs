@@ -1144,12 +1144,10 @@ where
         let quiet = request.quiet;
 
         // Partition keys by per-key authorization.
-        let mut allowed_client: Vec<String> = Vec::new();
         let mut allowed_backend: Vec<String> = Vec::new();
         let mut errors: Vec<delete::DeleteError> = Vec::new();
         for key in request.keys() {
             if crate::auth::key_authorized(&pending.identity, bucket, Action::DeleteObject, key) {
-                allowed_client.push(key.to_string());
                 allowed_backend.push(apply_backend_prefix(config, key));
             } else {
                 errors.push(delete::DeleteError {
@@ -1211,10 +1209,13 @@ where
                     }
                 }
                 Err(e) => {
-                    // The backend returned 2xx but an unparseable body. Treat the
-                    // forwarded keys as deleted rather than failing the request.
-                    tracing::warn!(error = %e, "could not parse backend delete result; assuming success");
-                    deleted_client.extend(allowed_client.iter().cloned());
+                    // A 2xx with an unparseable DeleteResult is a backend
+                    // contract violation. Surface it rather than fabricating
+                    // success for keys whose actual fate is unknown.
+                    tracing::error!(error = %e, "backend returned an unparseable delete result");
+                    return Err(ProxyError::BackendError(
+                        "backend returned an unparseable delete result".into(),
+                    ));
                 }
             }
         }

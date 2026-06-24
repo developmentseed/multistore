@@ -126,7 +126,7 @@ pub struct BackendOutcome {
 pub fn parse_backend_result(xml: &[u8]) -> Result<BackendOutcome, ProxyError> {
     #[derive(Deserialize)]
     #[serde(rename = "DeleteResult")]
-    struct Result {
+    struct DeleteResultXml {
         #[serde(default, rename = "Deleted")]
         deleted: Vec<Deleted>,
         #[serde(default, rename = "Error")]
@@ -137,7 +137,7 @@ pub fn parse_backend_result(xml: &[u8]) -> Result<BackendOutcome, ProxyError> {
         #[serde(rename = "Key")]
         key: String,
     }
-    let parsed: Result = quick_xml::de::from_reader(xml)
+    let parsed: DeleteResultXml = quick_xml::de::from_reader(xml)
         .map_err(|e| ProxyError::BackendError(format!("malformed delete result: {e}")))?;
     Ok(BackendOutcome {
         deleted: parsed.deleted.into_iter().map(|d| d.key).collect(),
@@ -152,7 +152,7 @@ pub fn parse_backend_result(xml: &[u8]) -> Result<BackendOutcome, ProxyError> {
 pub fn build_delete_result(deleted: &[String], errors: &[DeleteError], quiet: bool) -> String {
     #[derive(Serialize)]
     #[serde(rename = "DeleteResult")]
-    struct Result<'a> {
+    struct DeleteResultXml<'a> {
         #[serde(rename = "@xmlns")]
         xmlns: &'static str,
         #[serde(rename = "Deleted")]
@@ -170,7 +170,7 @@ pub fn build_delete_result(deleted: &[String], errors: &[DeleteError], quiet: bo
     } else {
         deleted.iter().map(|k| Deleted { key: k }).collect()
     };
-    let result = Result {
+    let result = DeleteResultXml {
         xmlns: "http://s3.amazonaws.com/doc/2006-03-01/",
         deleted,
         errors,

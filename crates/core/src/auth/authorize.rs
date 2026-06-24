@@ -13,8 +13,12 @@ fn key_matches_prefix(key: &str, prefix: &str) -> bool {
     if prefix.ends_with('/') || prefix.is_empty() {
         return key.starts_with(prefix);
     }
-    // Prefix does not end with '/' — require an exact match or a '/' boundary
-    key == prefix || key.starts_with(&format!("{}/", prefix))
+    // Prefix does not end with '/' — require an exact match or a '/' boundary.
+    // Done without allocating: this runs per key × scope × prefix on batch ops.
+    key == prefix
+        || (key.len() > prefix.len()
+            && key.starts_with(prefix)
+            && key.as_bytes()[prefix.len()] == b'/')
 }
 
 /// Check if a resolved identity is authorized to perform an operation.
