@@ -166,14 +166,17 @@ pub(crate) fn canonicalize_query_string(query: &str) -> String {
     if query.is_empty() {
         return String::new();
     }
-    let mut parts: Vec<String> = query
+    // Borrow params that are already `key=value`; only the value-less flags
+    // (`?delete`, `?uploads`) need an owned `key=`. This keeps the common path
+    // allocation-free on the per-request signing/verification hot path.
+    let mut parts: Vec<std::borrow::Cow<str>> = query
         .split('&')
         .filter(|p| !p.is_empty())
         .map(|p| {
             if p.contains('=') {
-                p.to_string()
+                std::borrow::Cow::Borrowed(p)
             } else {
-                format!("{p}=")
+                std::borrow::Cow::Owned(format!("{p}="))
             }
         })
         .collect();

@@ -10,7 +10,7 @@
 //!   -> resolve request (ProxyGateway with static config registries)
 //!   -> Forward: web_sys::fetch with ReadableStream passthrough (zero-copy)
 //!   -> Response: LIST XML via object_store, errors, synthetic responses
-//!   -> NeedsBody: multipart operations via raw signed HTTP
+//!   -> NeedsBody: multipart operations and batch delete via raw signed HTTP
 //! ```
 //!
 //! # Configuration

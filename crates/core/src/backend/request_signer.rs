@@ -1,9 +1,11 @@
 //! Outbound SigV4 request signing.
 //!
 //! [`S3RequestSigner`] signs raw HTTP requests destined for S3-compatible
-//! backends using AWS Signature Version 4. Used for multipart operations
-//! (CreateMultipartUpload, UploadPart, CompleteMultipartUpload,
-//! AbortMultipartUpload) that go through [`backend::ProxyBackend::send_raw`](crate::backend::ProxyBackend::send_raw).
+//! backends using AWS Signature Version 4. Used for the operations that go
+//! through [`backend::ProxyBackend::send_raw`](crate::backend::ProxyBackend::send_raw)
+//! rather than presigned URLs: multipart operations (CreateMultipartUpload,
+//! UploadPart, CompleteMultipartUpload, AbortMultipartUpload) and batch delete
+//! (DeleteObjects).
 
 use crate::auth::sigv4::{canonicalize_query_string, hmac_sha256};
 use crate::error::ProxyError;

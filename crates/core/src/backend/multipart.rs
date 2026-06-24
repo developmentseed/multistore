@@ -1,8 +1,11 @@
-//! Multipart URL building and request signing for S3-compatible backends.
+//! Backend URL building and request signing for raw signed (non-presigned)
+//! S3 operations.
 //!
-//! These helpers are used by [`Gateway::execute_multipart`](crate::proxy::Gateway)
-//! for CreateMultipartUpload, UploadPart, CompleteMultipartUpload, and
-//! AbortMultipartUpload operations.
+//! These helpers build the backend URL and sign the request for the operations
+//! that go through [`ProxyBackend::send_raw`](crate::backend::ProxyBackend::send_raw):
+//! the multipart operations (CreateMultipartUpload, UploadPart,
+//! CompleteMultipartUpload, AbortMultipartUpload) and batch delete
+//! (DeleteObjects).
 
 use crate::backend::request_signer::S3RequestSigner;
 use crate::error::ProxyError;

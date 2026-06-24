@@ -65,7 +65,7 @@ use crate::middleware::{
 use crate::registry::{BucketRegistry, CredentialRegistry};
 use crate::route_handler::{ProxyResponseBody, RequestInfo};
 use crate::router::Router;
-use crate::types::{Action, BackendType, BucketConfig, ResolvedIdentity, S3Operation};
+use crate::types::{Action, BucketConfig, ResolvedIdentity, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
 use object_store::list::PaginatedListOptions;
@@ -144,11 +144,12 @@ pub struct ProxyGateway<B, R, C> {
     /// When true, responses include a `Server-Timing` header with gateway
     /// processing metrics. Enabled by default.
     server_timing: bool,
-    /// Maximum accepted upload body size in bytes, if set. When a `PutObject`
-    /// or `UploadPart` declares a `Content-Length` larger than this, the proxy
-    /// rejects it with `EntityTooLarge` instead of forwarding it. Useful for
-    /// surfacing a clean S3 error ahead of a runtime body-size limit (e.g.
-    /// Cloudflare Workers' edge `413`). `None` means no proxy-enforced limit.
+    /// Maximum accepted upload body size in bytes, if set. When a body-bearing
+    /// write (`PutObject`, `UploadPart`, or `DeleteObjects`) declares a
+    /// `Content-Length` larger than this, the proxy rejects it with
+    /// `EntityTooLarge` instead of forwarding it. Useful for surfacing a clean
+    /// S3 error ahead of a runtime body-size limit (e.g. Cloudflare Workers'
+    /// edge `413`). `None` means no proxy-enforced limit.
     max_request_body_size: Option<u64>,
 }
 
@@ -255,9 +256,10 @@ where
 
     /// Set the maximum accepted upload body size, in bytes.
     ///
-    /// When set, a `PutObject` or `UploadPart` whose `Content-Length` exceeds
-    /// this is rejected up front with S3's `EntityTooLarge` (HTTP 400) rather
-    /// than forwarded. Use this on runtimes with a hard request-body limit —
+    /// When set, a body-bearing write (`PutObject`, `UploadPart`, or
+    /// `DeleteObjects`) whose `Content-Length` exceeds this is rejected up front
+    /// with S3's `EntityTooLarge` (HTTP 400) rather than forwarded. Use this on
+    /// runtimes with a hard request-body limit —
     /// e.g. Cloudflare Workers, where the edge otherwise rejects oversized
     /// bodies with an opaque `413` — to give clients an actionable S3 error.
     ///
@@ -870,7 +872,7 @@ where
             | S3Operation::UploadPart { .. }
             | S3Operation::CompleteMultipartUpload { .. }
             | S3Operation::AbortMultipartUpload { .. } => {
-                if !bucket_config.supports_s3_multipart() {
+                if !bucket_config.is_s3_backend() {
                     return Err(ProxyError::InvalidRequest(format!(
                         "multipart operations not supported for '{}' backends",
                         bucket_config.backend_type
@@ -891,7 +893,7 @@ where
             // Batch delete needs the body to read the key list and authorize
             // each key individually.
             S3Operation::DeleteObjects { .. } => {
-                if bucket_config.parsed_backend_type() != Some(BackendType::S3) {
+                if !bucket_config.is_s3_backend() {
                     return Err(ProxyError::NotImplemented(format!(
                         "batch delete not supported for '{}' backends",
                         bucket_config.backend_type
@@ -1296,12 +1298,13 @@ fn strip_backend_prefix(config: &BucketConfig, key: &str) -> String {
         Some(prefix) => {
             let p = prefix.trim_end_matches('/');
             if p.is_empty() {
-                key.to_string()
-            } else {
-                key.strip_prefix(&format!("{p}/"))
-                    .unwrap_or(key)
-                    .to_string()
+                return key.to_string();
             }
+            // Strip `{p}/` without allocating a pattern string (runs per key).
+            key.strip_prefix(p)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .unwrap_or(key)
+                .to_string()
         }
         None => key.to_string(),
     }

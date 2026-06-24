@@ -99,8 +99,10 @@ impl BucketConfig {
         }
     }
 
-    /// Whether this backend supports S3-style multipart uploads via raw HTTP.
-    pub fn supports_s3_multipart(&self) -> bool {
+    /// Whether this is an S3 backend. Operations that go through raw signed
+    /// HTTP rather than presigned URLs — multipart uploads and batch delete —
+    /// are gated on this.
+    pub fn is_s3_backend(&self) -> bool {
         matches!(self.parsed_backend_type(), Some(BackendType::S3))
     }
 
