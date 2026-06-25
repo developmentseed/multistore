@@ -77,6 +77,13 @@ use uuid::Uuid;
 /// TTL for presigned URLs. Short because they're used immediately.
 const PRESIGNED_URL_TTL: Duration = Duration::from_secs(300);
 
+/// Rejection for aws-chunked uploads with *signed* chunks: each chunk signature
+/// is bound to the client's key and can't be re-signed to the backend creds.
+const SIGNED_AWS_CHUNKED_UNSUPPORTED: &str =
+    "aws-chunked uploads with signed chunks (x-amz-content-sha256: \
+     STREAMING-AWS4-HMAC-SHA256-PAYLOAD) are not supported; configure the client \
+     to use a trailing checksum (the default) or multipart";
+
 /// Default User-Agent header value sent with outbound backend requests.
 ///
 /// Identifies multistore as the caller to backend object stores, useful for
@@ -758,6 +765,16 @@ where
             .as_deref()
             .expect("bucket_config must be set for bucket-targeted operations");
 
+        // The deferred-body operations (UploadPart/multipart/batch-delete) all
+        // build the same pending request from the current context.
+        let pending = || PendingRequest {
+            operation: operation.clone(),
+            bucket_config: bucket_config.clone(),
+            original_headers: original_headers.clone(),
+            request_id: request_id.to_string(),
+            identity: ctx.identity.clone(),
+        };
+
         match operation {
             S3Operation::GetObject { key, .. } => {
                 let fwd = self
@@ -801,6 +818,15 @@ where
             }
             S3Operation::PutObject { key, .. } => {
                 self.check_upload_size(original_headers)?;
+                // An `aws-chunked` body can't be presigned (S3 only de-chunks a
+                // streaming-signed request, so a presigned PUT would store the
+                // raw chunk envelope) — stream-re-sign or reject it.
+                if let Some(fwd) = self
+                    .try_streaming_forward(bucket_config, operation, original_headers, request_id)
+                    .await?
+                {
+                    return Ok(HandlerAction::Forward(fwd));
+                }
                 let fwd = self
                     .build_forward(
                         Method::PUT,
@@ -856,28 +882,27 @@ where
                     .await?;
                 Ok(HandlerAction::Response(result))
             }
-            // Multipart operations need the request body
+            // UploadPart carries the part body, which modern clients also send
+            // as aws-chunked — same streaming re-sign / reject handling as
+            // PutObject. A plain part still buffers via the raw-signed path.
+            S3Operation::UploadPart { .. } => {
+                Self::require_s3_backend(bucket_config)?;
+                self.check_upload_size(original_headers)?;
+                if let Some(fwd) = self
+                    .try_streaming_forward(bucket_config, operation, original_headers, request_id)
+                    .await?
+                {
+                    return Ok(HandlerAction::Forward(fwd));
+                }
+                Ok(HandlerAction::NeedsBody(pending()))
+            }
+            // Multipart control operations carry only a small (XML or empty)
+            // body, which is buffered and re-signed.
             S3Operation::CreateMultipartUpload { .. }
-            | S3Operation::UploadPart { .. }
             | S3Operation::CompleteMultipartUpload { .. }
             | S3Operation::AbortMultipartUpload { .. } => {
-                if !bucket_config.is_s3_backend() {
-                    return Err(ProxyError::InvalidRequest(format!(
-                        "multipart operations not supported for '{}' backends",
-                        bucket_config.backend_type
-                    )));
-                }
-                // UploadPart carries the part body; reject oversized parts up
-                // front. (Create/Complete/Abort bodies are small and won't trip
-                // a sane limit.)
-                self.check_upload_size(original_headers)?;
-                Ok(HandlerAction::NeedsBody(PendingRequest {
-                    operation: operation.clone(),
-                    bucket_config: bucket_config.clone(),
-                    original_headers: original_headers.clone(),
-                    request_id: request_id.to_string(),
-                    identity: ctx.identity.clone(),
-                }))
+                Self::require_s3_backend(bucket_config)?;
+                Ok(HandlerAction::NeedsBody(pending()))
             }
             // Batch delete needs the body to read the key list and authorize
             // each key individually.
@@ -891,13 +916,7 @@ where
                 // The body is buffered whole; bound it like other uploads. The
                 // key count is additionally capped when the body is parsed.
                 self.check_upload_size(original_headers)?;
-                Ok(HandlerAction::NeedsBody(PendingRequest {
-                    operation: operation.clone(),
-                    bucket_config: bucket_config.clone(),
-                    original_headers: original_headers.clone(),
-                    request_id: request_id.to_string(),
-                    identity: ctx.identity.clone(),
-                }))
+                Ok(HandlerAction::NeedsBody(pending()))
             }
             _ => Err(ProxyError::Internal("unexpected operation".into())),
         }
@@ -933,6 +952,111 @@ where
             method,
             url,
             headers: fwd_headers,
+            request_id: request_id.to_string(),
+        })
+    }
+
+    /// Handle a body-bearing PUT (PutObject/UploadPart) whose body is
+    /// `aws-chunked`: stream an unsigned-payload upload through after re-signing
+    /// the seed (returns the `Forward`), reject a signed-chunk one, or return
+    /// `None` for a plain body so the caller takes its own path.
+    async fn try_streaming_forward(
+        &self,
+        config: &BucketConfig,
+        operation: &S3Operation,
+        original_headers: &HeaderMap,
+        request_id: &str,
+    ) -> Result<Option<ForwardRequest>, ProxyError> {
+        match crate::aws_chunked::streaming_upload(original_headers) {
+            Some(crate::aws_chunked::StreamingUpload::Unsigned) => Ok(Some(
+                self.build_streaming_forward(config, operation, original_headers, request_id)
+                    .await?,
+            )),
+            Some(crate::aws_chunked::StreamingUpload::Signed) => Err(ProxyError::NotImplemented(
+                SIGNED_AWS_CHUNKED_UNSUPPORTED.to_string(),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Reject multipart operations on non-S3 backends (an S3-only feature).
+    fn require_s3_backend(config: &BucketConfig) -> Result<(), ProxyError> {
+        if config.is_s3_backend() {
+            Ok(())
+        } else {
+            Err(ProxyError::InvalidRequest(format!(
+                "multipart operations not supported for '{}' backends",
+                config.backend_type
+            )))
+        }
+    }
+
+    /// Build a header-signed streaming PUT for an `aws-chunked`
+    /// *unsigned-payload* upload (PutObject or UploadPart).
+    ///
+    /// These can't be presigned (a presigned URL signs `UNSIGNED-PAYLOAD`, which
+    /// S3 won't de-chunk) and shouldn't be buffered (memory). Instead we re-sign
+    /// only the request seed with the backend credentials — reusing the client's
+    /// `STREAMING-…` `x-amz-content-sha256` and the de-chunk headers — and let
+    /// the runtime stream the chunk framing through untouched for S3 to
+    /// de-chunk. Zero-copy, no buffering.
+    ///
+    /// Only headers that are stable through the runtime's streaming fetch are
+    /// signed. `Content-Length` is forwarded but left *unsigned*: the transfer
+    /// framing is the runtime's to manage, so signing it risks a mismatch — S3
+    /// sizes the payload from `x-amz-decoded-content-length` and the chunk
+    /// framing regardless.
+    async fn build_streaming_forward(
+        &self,
+        config: &BucketConfig,
+        operation: &S3Operation,
+        original_headers: &HeaderMap,
+        request_id: &str,
+    ) -> Result<ForwardRequest, ProxyError> {
+        let url = url::Url::parse(&build_backend_url(config, operation)?)
+            .map_err(|e| ProxyError::Internal(format!("invalid backend URL: {e}")))?;
+
+        let mut headers = HeaderMap::new();
+        for name in &[
+            "content-type",
+            "content-encoding",
+            "x-amz-decoded-content-length",
+            "x-amz-trailer",
+        ] {
+            if let Some(v) = original_headers.get(*name) {
+                headers.insert(*name, v.clone());
+            }
+        }
+
+        // Re-sign the seed with the backend creds, reusing the client's exact
+        // streaming sentinel (the `-TRAILER` suffix matters) as the payload
+        // hash. The caller has classified this as a streaming upload, so the
+        // header is present.
+        let payload_hash = original_headers
+            .get("x-amz-content-sha256")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                ProxyError::Internal("aws-chunked upload missing x-amz-content-sha256".into())
+            })?;
+        sign_s3_request(
+            &Method::PUT,
+            url.as_str(),
+            &mut headers,
+            config,
+            payload_hash,
+        )?;
+
+        // Forwarded unsigned (see the doc comment).
+        if let Some(cl) = original_headers.get(http::header::CONTENT_LENGTH) {
+            headers.insert(http::header::CONTENT_LENGTH, cl.clone());
+        }
+        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+
+        tracing::debug!(path = url.path(), "aws-chunked write via streaming re-sign");
+        Ok(ForwardRequest {
+            method: Method::PUT,
+            url,
+            headers,
             request_id: request_id.to_string(),
         })
     }
@@ -1666,6 +1790,96 @@ mod tests {
             assert!(
                 matches!(action, HandlerAction::Forward(_)),
                 "with no limit configured, large PUT should still forward"
+            );
+        });
+    }
+
+    /// An aws-chunked unsigned-payload upload (the modern aws-cli default) is
+    /// re-signed for the backend and streamed through — not buffered, not
+    /// presigned. The forwarded request reuses the streaming sentinel and
+    /// carries a fresh backend Authorization plus the de-chunk headers.
+    fn unsigned_aws_chunked_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-encoding", "aws-chunked".parse().unwrap());
+        headers.insert(
+            "x-amz-content-sha256",
+            "STREAMING-UNSIGNED-PAYLOAD-TRAILER".parse().unwrap(),
+        );
+        headers.insert("content-length", "52".parse().unwrap());
+        headers.insert("x-amz-decoded-content-length", "7".parse().unwrap());
+        headers.insert("x-amz-trailer", "x-amz-checksum-crc64nvme".parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn put_unsigned_aws_chunked_streams_via_resign() {
+        run(async {
+            let gw = gateway();
+            let headers = unsigned_aws_chunked_headers();
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/test.md", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    assert_eq!(fwd.method, Method::PUT);
+                    // Re-signed seed reusing the streaming sentinel (not decoded).
+                    assert_eq!(
+                        fwd.headers.get("x-amz-content-sha256").unwrap(),
+                        "STREAMING-UNSIGNED-PAYLOAD-TRAILER"
+                    );
+                    // De-chunk headers preserved, fresh backend auth attached.
+                    assert_eq!(fwd.headers.get("content-encoding").unwrap(), "aws-chunked");
+                    assert!(fwd.headers.contains_key("x-amz-decoded-content-length"));
+                    assert!(fwd.headers.contains_key("authorization"));
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn put_signed_aws_chunked_is_rejected() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("content-encoding", "aws-chunked".parse().unwrap());
+            headers.insert(
+                "x-amz-content-sha256",
+                "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse().unwrap(),
+            );
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/test.md", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(r) => assert_eq!(
+                    r.status, 501,
+                    "signed aws-chunked uploads should be rejected with NotImplemented"
+                ),
+                other => panic!(
+                    "expected Response(501), got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
+    #[test]
+    fn upload_part_unsigned_aws_chunked_streams_via_resign() {
+        run(async {
+            let gw = gateway();
+            let headers = unsigned_aws_chunked_headers();
+            let action = gw
+                .resolve_request(
+                    Method::PUT,
+                    "/test-bucket/key.bin",
+                    Some("partNumber=1&uploadId=abc"),
+                    &headers,
+                    None,
+                )
+                .await;
+            assert!(
+                matches!(action, HandlerAction::Forward(_)),
+                "unsigned aws-chunked UploadPart should stream via re-sign, not buffer"
             );
         });
     }
