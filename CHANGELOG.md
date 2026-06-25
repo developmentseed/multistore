@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0](https://github.com/developmentseed/multistore/compare/v0.5.1...v0.6.0) (2026-06-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* RoleConfig.required_audience renamed to required_audiences. Code constructing RoleConfig must update the field; serialized configs using `required_audience` continue to work.
+
+### Features
+
+* accept multiple audiences for STS role validation ([#90](https://github.com/developmentseed/multistore/issues/90)) ([1fb09fa](https://github.com/developmentseed/multistore/commit/1fb09facf13c2822f59955734a7c5bbd76cc5b51))
+* data edit operations — batch delete, copy rejection, wider write headers ([#88](https://github.com/developmentseed/multistore/issues/88)) ([55e3a32](https://github.com/developmentseed/multistore/commit/55e3a32277ce707fed2b3825e28a0bd4f988c891))
+
+
+### Miscellaneous Chores
+
+* release 0.6.0 ([072544d](https://github.com/developmentseed/multistore/commit/072544d57759dc94e6c6c0b30cd8fef68f7ec523))
+
 ## [0.5.1](https://github.com/developmentseed/multistore/compare/v0.5.0...v0.5.1) (2026-06-23)
 
 
