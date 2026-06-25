@@ -123,8 +123,16 @@ pub struct RoleConfig {
     #[serde(default)]
     pub trusted_oidc_issuers: Vec<String>,
 
-    /// Required audience claim value.
-    pub required_audience: Option<String>,
+    /// Audience claim values accepted for this role. A token is accepted if its
+    /// `aud` claim matches any entry; empty means no audience restriction.
+    /// Deserializes from a single string or a list, and from the legacy
+    /// `required_audience` key, for backward compatibility.
+    #[serde(
+        default,
+        alias = "required_audience",
+        deserialize_with = "deserialize_audiences"
+    )]
+    pub required_audiences: Vec<String>,
 
     /// Conditions on the subject claim (glob patterns).
     /// e.g., "repo:myorg/myrepo:ref:refs/heads/main"
@@ -137,6 +145,25 @@ pub struct RoleConfig {
 
     /// Maximum session duration in seconds.
     pub max_session_duration_secs: u64,
+}
+
+/// Deserialize a role's accepted audiences from either a single string or a
+/// list, so legacy `required_audience: "x"` configs keep working alongside
+/// `required_audiences: ["x", "y"]`.
+fn deserialize_audiences<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
 }
 
 /// Defines what a credential is allowed to access.

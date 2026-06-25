@@ -120,6 +120,24 @@ fn rsa_public_key_from_components(n: &str, e: &str) -> Result<RsaPublicKey, Prox
         .map_err(|e| ProxyError::InvalidOidcToken(format!("invalid RSA key: {}", e)))
 }
 
+/// Whether a token's `aud` claim is acceptable for a set of accepted audiences.
+///
+/// An empty `accepted` set means no audience restriction (always allowed). The
+/// `aud` claim may be a single string or an array; it passes if any of its
+/// values is in `accepted`.
+fn audience_allowed(aud_claim: Option<&serde_json::Value>, accepted: &[String]) -> bool {
+    if accepted.is_empty() {
+        return true;
+    }
+    match aud_claim {
+        Some(serde_json::Value::String(aud)) => accepted.iter().any(|a| a == aud),
+        Some(serde_json::Value::Array(auds)) => auds
+            .iter()
+            .any(|a| a.as_str().is_some_and(|s| accepted.iter().any(|x| x == s))),
+        _ => false,
+    }
+}
+
 /// Verify a JWT using the provided JWK.
 pub fn verify_token(
     token: &str,
@@ -178,21 +196,12 @@ pub fn verify_token(
         )));
     }
 
-    // Validate audience if required
-    if let Some(ref required_aud) = role.required_audience {
-        let aud_valid = match claims.get("aud") {
-            Some(serde_json::Value::String(aud)) => aud == required_aud,
-            Some(serde_json::Value::Array(auds)) => auds
-                .iter()
-                .any(|a| a.as_str() == Some(required_aud.as_str())),
-            _ => false,
-        };
-        if !aud_valid {
-            return Err(ProxyError::InvalidOidcToken(format!(
-                "audience mismatch: expected {}",
-                required_aud
-            )));
-        }
+    // Validate audience if restricted.
+    if !audience_allowed(claims.get("aud"), &role.required_audiences) {
+        return Err(ProxyError::InvalidOidcToken(format!(
+            "audience mismatch: expected one of {:?}",
+            role.required_audiences
+        )));
     }
 
     // Validate time-based claims with clock skew tolerance
@@ -305,5 +314,37 @@ impl JwksCache {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::audience_allowed;
+    use serde_json::json;
+
+    #[test]
+    fn empty_accepted_means_no_restriction() {
+        assert!(audience_allowed(None, &[]));
+        assert!(audience_allowed(Some(&json!("anything")), &[]));
+    }
+
+    #[test]
+    fn string_aud_matches_any_accepted() {
+        let accepted = vec!["frontend".to_string(), "cli".to_string()];
+        assert!(audience_allowed(Some(&json!("frontend")), &accepted));
+        assert!(audience_allowed(Some(&json!("cli")), &accepted));
+        assert!(!audience_allowed(Some(&json!("other")), &accepted));
+    }
+
+    #[test]
+    fn array_aud_matches_when_any_overlaps() {
+        let accepted = vec!["cli".to_string()];
+        assert!(audience_allowed(Some(&json!(["other", "cli"])), &accepted));
+        assert!(!audience_allowed(Some(&json!(["a", "b"])), &accepted));
+    }
+
+    #[test]
+    fn missing_or_restricted_mismatch_is_rejected() {
+        assert!(!audience_allowed(None, &["cli".to_string()]));
     }
 }
