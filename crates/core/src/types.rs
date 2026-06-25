@@ -123,8 +123,17 @@ pub struct RoleConfig {
     #[serde(default)]
     pub trusted_oidc_issuers: Vec<String>,
 
-    /// Required audience claim value.
-    pub required_audience: Option<String>,
+    /// Audience claim values accepted for this role. A token is accepted if its
+    /// `aud` claim matches any entry; empty (or absent/null) means no audience
+    /// restriction. Accepts a single string or a list, and the legacy
+    /// `required_audience` key, for backward compatibility — set one key or the
+    /// other, not both (specifying both is a config error).
+    #[serde(
+        default,
+        alias = "required_audience",
+        deserialize_with = "deserialize_audiences"
+    )]
+    pub required_audiences: Vec<String>,
 
     /// Conditions on the subject claim (glob patterns).
     /// e.g., "repo:myorg/myrepo:ref:refs/heads/main"
@@ -137,6 +146,29 @@ pub struct RoleConfig {
 
     /// Maximum session duration in seconds.
     pub max_session_duration_secs: u64,
+}
+
+/// Deserialize a role's accepted audiences from either a single string or a
+/// list, so legacy `required_audience: "x"` configs keep working alongside
+/// `required_audiences: ["x", "y"]`.
+fn deserialize_audiences<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    // `Option` so an explicit `null` (e.g. legacy `required_audience: null`)
+    // maps to "unrestricted", matching the old `Option<String>` behavior
+    // instead of failing to parse.
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        None => vec![],
+        Some(OneOrMany::One(s)) => vec![s],
+        Some(OneOrMany::Many(v)) => v,
+    })
 }
 
 /// Defines what a credential is allowed to access.
@@ -541,5 +573,58 @@ mod tests {
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("super-secret"));
         assert!(!dbg.contains("super-session"));
+    }
+
+    /// Parse a `RoleConfig` from JSON with the given audience field snippet
+    /// (e.g. `,"required_audiences":["x"]`), so the deserialization edge cases
+    /// for the audience config can be exercised directly.
+    fn parse_role(audience_field: &str) -> Result<RoleConfig, serde_json::Error> {
+        serde_json::from_str(&format!(
+            r#"{{"role_id":"r","name":"R","max_session_duration_secs":3600{audience_field}}}"#
+        ))
+    }
+
+    #[test]
+    fn audiences_accepts_legacy_single_string() {
+        let r = parse_role(r#","required_audience":"x""#).unwrap();
+        assert_eq!(r.required_audiences, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn audiences_accepts_single_string_and_list() {
+        assert_eq!(
+            parse_role(r#","required_audiences":"x""#)
+                .unwrap()
+                .required_audiences,
+            vec!["x".to_string()]
+        );
+        assert_eq!(
+            parse_role(r#","required_audiences":["x","y"]"#)
+                .unwrap()
+                .required_audiences,
+            vec!["x".to_string(), "y".to_string()]
+        );
+    }
+
+    #[test]
+    fn audiences_absent_or_null_is_unrestricted() {
+        // Absent, or an explicit null on either key, means "no restriction" —
+        // matching the old `Option<String>` behavior rather than erroring.
+        assert!(parse_role("").unwrap().required_audiences.is_empty());
+        assert!(parse_role(r#","required_audiences":null"#)
+            .unwrap()
+            .required_audiences
+            .is_empty());
+        assert!(parse_role(r#","required_audience":null"#)
+            .unwrap()
+            .required_audiences
+            .is_empty());
+    }
+
+    #[test]
+    fn audiences_both_keys_is_an_error() {
+        // Setting both the legacy and new keys fails loudly rather than
+        // silently picking one, so a leftover key during migration is caught.
+        assert!(parse_role(r#","required_audience":"x","required_audiences":["y"]"#).is_err());
     }
 }

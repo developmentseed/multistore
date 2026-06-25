@@ -284,7 +284,7 @@ mod tests {
                 role_id: "my-role".into(),
                 name: "My Role".into(),
                 trusted_oidc_issuers: vec!["https://issuer.example.com".into()],
-                required_audience: None,
+                required_audiences: vec![],
                 subject_conditions: vec![],
                 allowed_scopes: vec![],
                 max_session_duration_secs: 3600,

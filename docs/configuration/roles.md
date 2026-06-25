@@ -9,7 +9,7 @@ Roles define trust policies for OIDC token exchange via `AssumeRoleWithWebIdenti
 role_id = "github-actions-deployer"
 name = "GitHub Actions Deploy Role"
 trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
-required_audience = "sts.s3proxy.example.com"
+required_audiences = ["sts.s3proxy.example.com"]
 subject_conditions = [
     "repo:myorg/myapp:ref:refs/heads/main",
     "repo:myorg/infrastructure:*",
@@ -34,7 +34,7 @@ actions = ["get_object", "head_object"]
 | `role_id` | string | Yes | Identifier used as the `RoleArn` in STS requests |
 | `name` | string | Yes | Human-readable display name |
 | `trusted_oidc_issuers` | string[] | Validated as required | OIDC provider URLs whose tokens are accepted. Deserializes fine when absent, but config validation rejects a role with no issuers (it could never accept a token). |
-| `required_audience` | string | No | If set, the token's `aud` claim must match |
+| `required_audiences` | string \| string[] | No | Accepted `aud` claim values. A token passes if its `aud` matches any entry; empty or omitted means no audience restriction. Accepts a single string or a list. The legacy `required_audience` key (single string) is still accepted for backward compatibility — set one key or the other, not both. |
 | `subject_conditions` | string[] | No | Glob patterns matched against the `sub` claim. When omitted or empty, the subject check is skipped entirely and all subjects match. |
 | `max_session_duration_secs` | integer | Yes | Maximum session lifetime granted by this role |
 | `allowed_scopes` | AccessScope[] | Yes | Buckets, prefixes, and actions granted |
@@ -46,7 +46,7 @@ When a client calls `AssumeRoleWithWebIdentity`, the proxy evaluates the JWT aga
 1. **Issuer** — The JWT's `iss` claim must match one of `trusted_oidc_issuers`
 2. **Algorithm** — Only RS256 is supported
 3. **Signature** — Verified against the issuer's JWKS (fetched and cached)
-4. **Audience** — If `required_audience` is set, the JWT's `aud` claim must match
+4. **Audience** — If `required_audiences` is non-empty, the JWT's `aud` claim must match at least one of the accepted values
 5. **Subject** — If `subject_conditions` is non-empty, the JWT's `sub` claim must match at least one pattern. If it is empty (or omitted), the subject check is skipped and all subjects pass.
 
 If any check fails, the STS request returns an error.
