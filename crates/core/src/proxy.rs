@@ -65,7 +65,7 @@ use crate::middleware::{
 use crate::registry::{BucketRegistry, CredentialRegistry};
 use crate::route_handler::{ProxyResponseBody, RequestInfo};
 use crate::router::Router;
-use crate::types::{BucketConfig, ResolvedIdentity, S3Operation};
+use crate::types::{Action, BucketConfig, ResolvedIdentity, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
 use object_store::list::PaginatedListOptions;
@@ -144,6 +144,13 @@ pub struct ProxyGateway<B, R, C> {
     /// When true, responses include a `Server-Timing` header with gateway
     /// processing metrics. Enabled by default.
     server_timing: bool,
+    /// Maximum accepted upload body size in bytes, if set. When a body-bearing
+    /// write (`PutObject`, `UploadPart`, or `DeleteObjects`) declares a
+    /// `Content-Length` larger than this, the proxy rejects it with
+    /// `EntityTooLarge` instead of forwarding it. Useful for surfacing a clean
+    /// S3 error ahead of a runtime body-size limit (e.g. Cloudflare Workers'
+    /// edge `413`). `None` means no proxy-enforced limit.
+    max_request_body_size: Option<u64>,
 }
 
 impl<B, R, C> ProxyGateway<B, R, C>
@@ -176,6 +183,7 @@ where
             debug_errors: false,
             user_agent: DEFAULT_USER_AGENT.to_string(),
             server_timing: true,
+            max_request_body_size: None,
         }
     }
 
@@ -244,6 +252,41 @@ where
     pub fn with_server_timing(mut self, enabled: bool) -> Self {
         self.server_timing = enabled;
         self
+    }
+
+    /// Set the maximum accepted upload body size, in bytes.
+    ///
+    /// When set, a body-bearing write (`PutObject`, `UploadPart`, or
+    /// `DeleteObjects`) whose `Content-Length` exceeds this is rejected up front
+    /// with S3's `EntityTooLarge` (HTTP 400) rather than forwarded. Use this on
+    /// runtimes with a hard request-body limit —
+    /// e.g. Cloudflare Workers, where the edge otherwise rejects oversized
+    /// bodies with an opaque `413` — to give clients an actionable S3 error.
+    ///
+    /// The check relies on a declared `Content-Length`; requests without one
+    /// (e.g. unknown-length streaming) fall through to the runtime's own limit.
+    /// Leaving this unset (the default) disables the proxy-enforced limit.
+    pub fn with_max_request_body_size(mut self, max_bytes: u64) -> Self {
+        self.max_request_body_size = Some(max_bytes);
+        self
+    }
+
+    /// Reject an upload whose declared `Content-Length` exceeds the configured
+    /// maximum. No-op when no limit is set or no `Content-Length` is present.
+    fn check_upload_size(&self, headers: &HeaderMap) -> Result<(), ProxyError> {
+        if let Some(max) = self.max_request_body_size {
+            if let Some(len) = content_length(headers) {
+                if len > max {
+                    tracing::warn!(
+                        content_length = len,
+                        max = max,
+                        "rejecting upload exceeding configured max body size"
+                    );
+                    return Err(ProxyError::EntityTooLarge);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Inject a `Server-Timing` header into the response headers if enabled.
@@ -362,14 +405,7 @@ where
             }
         }
 
-        fn content_length_from_headers(headers: &HeaderMap) -> Option<u64> {
-            headers
-                .get("content-length")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-        }
-
-        let request_bytes = content_length_from_headers(req.headers);
+        let request_bytes = content_length(req.headers);
 
         let (mut response, status, resp_bytes, was_forwarded, backend_start) = match action {
             HandlerAction::Response(r) => {
@@ -650,18 +686,23 @@ where
         )
     }
 
-    /// Phase 2: Complete a multipart operation with the request body.
+    /// Phase 2: Complete a body-bearing operation with the materialized body.
     ///
-    /// Called by the runtime after materializing the body for a `NeedsBody` action.
-    /// Middleware is not re-run here — it already executed during phase 1
-    /// when the `NeedsBody` action was produced.
+    /// Called by the runtime after materializing the body for a `NeedsBody`
+    /// action — multipart operations and batch delete. Middleware is not re-run
+    /// here — it already executed during phase 1 when the `NeedsBody` action was
+    /// produced.
     pub async fn handle_with_body(&self, pending: PendingRequest, body: Bytes) -> ProxyResult {
-        match self.execute_multipart(&pending, body).await {
+        let result = match &pending.operation {
+            S3Operation::DeleteObjects { .. } => self.execute_delete_objects(&pending, body).await,
+            _ => self.execute_multipart(&pending, body).await,
+        };
+        match result {
             Ok(result) => {
                 tracing::info!(
                     request_id = %pending.request_id,
                     status = result.status,
-                    "multipart request completed"
+                    "body request completed"
                 );
                 result
             }
@@ -671,7 +712,7 @@ where
                     error = %err,
                     status = err.status_code(),
                     s3_code = %err.s3_error_code(),
-                    "multipart request failed"
+                    "body request failed"
                 );
                 error_response(
                     &err,
@@ -759,13 +800,31 @@ where
                 Ok(HandlerAction::Forward(fwd))
             }
             S3Operation::PutObject { key, .. } => {
+                self.check_upload_size(original_headers)?;
                 let fwd = self
                     .build_forward(
                         Method::PUT,
                         bucket_config,
                         key,
                         original_headers,
-                        &["content-type", "content-length", "content-md5"],
+                        // Standard HTTP entity headers are safe to forward to a
+                        // presigned URL: S3 applies them even though they are not
+                        // part of the (host-only) presigned signature. `x-amz-*`
+                        // write headers (metadata, SSE, tagging, storage-class,
+                        // checksums) are deliberately NOT forwarded here — S3
+                        // rejects unsigned `x-amz-*` headers on presigned
+                        // requests, so they need the header-signing path. See
+                        // .plans/2026-06-23-data-edit-operations-design.md.
+                        &[
+                            "content-type",
+                            "content-length",
+                            "content-md5",
+                            "content-disposition",
+                            "content-encoding",
+                            "content-language",
+                            "cache-control",
+                            "expires",
+                        ],
                         request_id,
                     )
                     .await?;
@@ -802,17 +861,42 @@ where
             | S3Operation::UploadPart { .. }
             | S3Operation::CompleteMultipartUpload { .. }
             | S3Operation::AbortMultipartUpload { .. } => {
-                if !bucket_config.supports_s3_multipart() {
+                if !bucket_config.is_s3_backend() {
                     return Err(ProxyError::InvalidRequest(format!(
                         "multipart operations not supported for '{}' backends",
                         bucket_config.backend_type
                     )));
                 }
+                // UploadPart carries the part body; reject oversized parts up
+                // front. (Create/Complete/Abort bodies are small and won't trip
+                // a sane limit.)
+                self.check_upload_size(original_headers)?;
                 Ok(HandlerAction::NeedsBody(PendingRequest {
                     operation: operation.clone(),
                     bucket_config: bucket_config.clone(),
                     original_headers: original_headers.clone(),
                     request_id: request_id.to_string(),
+                    identity: ctx.identity.clone(),
+                }))
+            }
+            // Batch delete needs the body to read the key list and authorize
+            // each key individually.
+            S3Operation::DeleteObjects { .. } => {
+                if !bucket_config.is_s3_backend() {
+                    return Err(ProxyError::NotImplemented(format!(
+                        "batch delete not supported for '{}' backends",
+                        bucket_config.backend_type
+                    )));
+                }
+                // The body is buffered whole; bound it like other uploads. The
+                // key count is additionally capped when the body is parsed.
+                self.check_upload_size(original_headers)?;
+                Ok(HandlerAction::NeedsBody(PendingRequest {
+                    operation: operation.clone(),
+                    bucket_config: bucket_config.clone(),
+                    original_headers: original_headers.clone(),
+                    request_id: request_id.to_string(),
+                    identity: ctx.identity.clone(),
                 }))
             }
             _ => Err(ProxyError::Internal("unexpected operation".into())),
@@ -1028,6 +1112,118 @@ where
             body: ProxyResponseBody::from_bytes(raw_resp.body),
         })
     }
+
+    /// Execute a batch delete (`DeleteObjects`) via raw signed HTTP.
+    ///
+    /// Each key in the request body is authorized individually against the
+    /// caller's scopes (the earlier [`authorize`](crate::auth::authorize) check
+    /// only verified the caller may delete *something* in the bucket). Keys the
+    /// caller is not allowed to delete are reported as per-key `AccessDenied`
+    /// errors (S3's partial-result semantics) rather than failing the whole
+    /// request; the remaining keys are forwarded to the backend.
+    async fn execute_delete_objects(
+        &self,
+        pending: &PendingRequest,
+        body: Bytes,
+    ) -> Result<ProxyResult, ProxyError> {
+        use crate::api::delete;
+
+        let config = &pending.bucket_config;
+        let bucket = pending.operation.bucket().unwrap_or_default();
+
+        let request = delete::DeleteRequest::parse(&body)?;
+        let quiet = request.quiet;
+
+        // Partition keys by per-key authorization.
+        let mut allowed_backend: Vec<String> = Vec::new();
+        let mut errors: Vec<delete::DeleteError> = Vec::new();
+        for key in request.keys() {
+            if self
+                .bucket_registry
+                .authorize_key(bucket, &pending.identity, Action::DeleteObject, key)
+                .await
+            {
+                allowed_backend.push(apply_backend_prefix(config, key));
+            } else {
+                errors.push(delete::DeleteError {
+                    key: key.to_string(),
+                    code: "AccessDenied".into(),
+                    message: "Access Denied".into(),
+                });
+            }
+        }
+
+        let mut deleted_client: Vec<String> = Vec::new();
+
+        if !allowed_backend.is_empty() {
+            let backend_body = Bytes::from(delete::build_backend_delete_body(&allowed_backend));
+            let backend_url = build_backend_url(config, &pending.operation)?;
+
+            let mut headers = HeaderMap::new();
+            headers.insert("content-type", "application/xml".parse().unwrap());
+            // S3 requires a Content-MD5 (or trailing checksum) on DeleteObjects.
+            headers.insert(
+                "content-md5",
+                content_md5(&backend_body)
+                    .parse()
+                    .map_err(|_| ProxyError::Internal("invalid content-md5 header".into()))?,
+            );
+            headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+
+            let payload_hash = hash_payload(&backend_body);
+            sign_s3_request(
+                &Method::POST,
+                &backend_url,
+                &mut headers,
+                config,
+                &payload_hash,
+            )?;
+
+            let raw_resp = self
+                .backend
+                .send_raw(Method::POST, backend_url, headers, backend_body)
+                .await?;
+
+            tracing::debug!(status = raw_resp.status, "batch delete backend response");
+
+            if raw_resp.status >= 300 {
+                return Err(ProxyError::BackendError(format!(
+                    "backend rejected batch delete with status {}",
+                    raw_resp.status
+                )));
+            }
+
+            match delete::parse_backend_result(&raw_resp.body) {
+                Ok(outcome) => {
+                    for k in outcome.deleted {
+                        deleted_client.push(strip_backend_prefix(config, &k));
+                    }
+                    for mut e in outcome.errors {
+                        e.key = strip_backend_prefix(config, &e.key);
+                        errors.push(e);
+                    }
+                }
+                Err(e) => {
+                    // A 2xx with an unparseable DeleteResult is a backend
+                    // contract violation. Surface it rather than fabricating
+                    // success for keys whose actual fate is unknown.
+                    tracing::error!(error = %e, "backend returned an unparseable delete result");
+                    return Err(ProxyError::BackendError(
+                        "backend returned an unparseable delete result".into(),
+                    ));
+                }
+            }
+        }
+
+        let xml = delete::build_delete_result(&deleted_client, &errors, quiet);
+        let mut resp_headers = HeaderMap::new();
+        resp_headers.insert("content-type", "application/xml".parse().unwrap());
+        Ok(ProxyResult {
+            status: 200,
+            headers: resp_headers,
+            body: ProxyResponseBody::from_bytes(Bytes::from(xml)),
+        })
+    }
 }
 
 impl<B, R, C> Dispatch for ProxyGateway<B, R, C>
@@ -1070,21 +1266,56 @@ fn error_response(err: &ProxyError, resource: &str, request_id: &str, debug: boo
 
 /// Build an object_store Path from a bucket config and client-visible key.
 fn build_object_path(config: &BucketConfig, key: &str) -> object_store::path::Path {
+    object_store::path::Path::from(apply_backend_prefix(config, key))
+}
+
+/// Parse the declared `Content-Length` header as a byte count, if present and valid.
+fn content_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
+/// Map a client-visible key into the backend key space by prepending
+/// `backend_prefix`.
+fn apply_backend_prefix(config: &BucketConfig, key: &str) -> String {
     match &config.backend_prefix {
         Some(prefix) => {
             let p = prefix.trim_end_matches('/');
             if p.is_empty() {
-                object_store::path::Path::from(key)
+                key.to_string()
             } else {
-                let mut full_key = String::with_capacity(p.len() + 1 + key.len());
-                full_key.push_str(p);
-                full_key.push('/');
-                full_key.push_str(key);
-                object_store::path::Path::from(full_key)
+                format!("{p}/{key}")
             }
         }
-        None => object_store::path::Path::from(key),
+        None => key.to_string(),
     }
+}
+
+/// Strip `backend_prefix` from a backend key to recover the client-visible key.
+fn strip_backend_prefix(config: &BucketConfig, key: &str) -> String {
+    match &config.backend_prefix {
+        Some(prefix) => {
+            let p = prefix.trim_end_matches('/');
+            if p.is_empty() {
+                return key.to_string();
+            }
+            // Strip `{p}/` without allocating a pattern string (runs per key).
+            key.strip_prefix(p)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .unwrap_or(key)
+                .to_string()
+        }
+        None => key.to_string(),
+    }
+}
+
+/// Compute the base64-encoded MD5 of `body` for the `Content-MD5` header.
+fn content_md5(body: &[u8]) -> String {
+    use base64::Engine;
+    use md5::{Digest, Md5};
+    base64::engine::general_purpose::STANDARD.encode(Md5::digest(body))
 }
 
 #[cfg(test)]
@@ -1383,6 +1614,90 @@ mod tests {
         });
     }
 
+    // -- Max upload size (EntityTooLarge) ------------------------------------
+
+    #[test]
+    fn put_over_max_body_size_is_rejected() {
+        run(async {
+            let gw = gateway().with_max_request_body_size(1024);
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "2048".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/big.bin", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(r) => assert_eq!(
+                    r.status, 400,
+                    "oversized PUT should be rejected with EntityTooLarge (400)"
+                ),
+                other => panic!(
+                    "expected Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
+    #[test]
+    fn put_under_max_body_size_forwards() {
+        run(async {
+            let gw = gateway().with_max_request_body_size(1_000_000);
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "1024".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/ok.bin", None, &headers, None)
+                .await;
+            assert!(
+                matches!(action, HandlerAction::Forward(_)),
+                "PUT within the limit should forward"
+            );
+        });
+    }
+
+    #[test]
+    fn put_with_no_limit_forwards_large_body() {
+        run(async {
+            let gw = gateway(); // default: no proxy-enforced limit
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "999999999".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/huge.bin", None, &headers, None)
+                .await;
+            assert!(
+                matches!(action, HandlerAction::Forward(_)),
+                "with no limit configured, large PUT should still forward"
+            );
+        });
+    }
+
+    #[test]
+    fn upload_part_over_max_body_size_is_rejected() {
+        run(async {
+            let gw = gateway().with_max_request_body_size(1024);
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "5000".parse().unwrap());
+            let action = gw
+                .resolve_request(
+                    Method::PUT,
+                    "/test-bucket/key.bin",
+                    Some("partNumber=1&uploadId=abc"),
+                    &headers,
+                    None,
+                )
+                .await;
+            match action {
+                HandlerAction::Response(r) => assert_eq!(
+                    r.status, 400,
+                    "oversized UploadPart should be rejected with EntityTooLarge (400)"
+                ),
+                other => panic!(
+                    "expected Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
     // -- Middleware test types -----------------------------------------------
 
     struct BlockMiddleware;
@@ -1578,6 +1893,161 @@ mod tests {
             assert!(
                 extract_server_timing(&response).is_none(),
                 "Server-Timing should not be present when disabled"
+            );
+        });
+    }
+
+    // -- Batch delete (DeleteObjects) -----------------------------------------
+
+    /// Backend that captures the forwarded delete body and returns a canned
+    /// `DeleteResult` marking `allowed/a.txt` deleted.
+    #[derive(Clone)]
+    struct DeleteMockBackend {
+        captured: Arc<std::sync::Mutex<Option<Bytes>>>,
+    }
+
+    impl ProxyBackend for DeleteMockBackend {
+        type ResponseBody = ();
+        type Body = ();
+
+        async fn forward(
+            &self,
+            _request: ForwardRequest,
+            _body: (),
+        ) -> Result<ForwardResponse<()>, ProxyError> {
+            unimplemented!()
+        }
+
+        fn create_paginated_store(
+            &self,
+            _config: &BucketConfig,
+        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
+            unimplemented!()
+        }
+
+        fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
+            crate::backend::build_signer(config)
+        }
+
+        async fn send_raw(
+            &self,
+            _method: http::Method,
+            _url: String,
+            _headers: HeaderMap,
+            body: Bytes,
+        ) -> Result<RawResponse, ProxyError> {
+            *self.captured.lock().unwrap() = Some(body);
+            Ok(RawResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                body: Bytes::from_static(
+                    b"<?xml version=\"1.0\"?><DeleteResult><Deleted><Key>allowed/a.txt</Key></Deleted></DeleteResult>",
+                ),
+            })
+        }
+    }
+
+    #[test]
+    fn batch_delete_filters_unauthorized_keys_per_key() {
+        use crate::types::{AccessScope, AuthenticatedIdentity};
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let backend = DeleteMockBackend {
+                captured: captured.clone(),
+            };
+            let gw = ProxyGateway::new(backend, MockRegistry, MockCreds, None);
+
+            let identity = ResolvedIdentity::Authenticated(AuthenticatedIdentity {
+                principal_name: "tester".into(),
+                allowed_scopes: vec![AccessScope {
+                    bucket: "test-bucket".into(),
+                    prefixes: vec!["allowed/".into()],
+                    actions: vec![Action::DeleteObject],
+                }],
+            });
+
+            let pending = PendingRequest {
+                operation: S3Operation::DeleteObjects {
+                    bucket: "test-bucket".into(),
+                },
+                bucket_config: test_bucket_config("test-bucket"),
+                original_headers: HeaderMap::new(),
+                request_id: "rid".into(),
+                identity,
+            };
+
+            let body = Bytes::from_static(
+                br#"<Delete><Object><Key>allowed/a.txt</Key></Object><Object><Key>denied/b.txt</Key></Object></Delete>"#,
+            );
+
+            let result = gw.handle_with_body(pending, body).await;
+            assert_eq!(result.status, 200);
+
+            let xml = match result.body {
+                ProxyResponseBody::Bytes(b) => String::from_utf8(b.to_vec()).unwrap(),
+                ProxyResponseBody::Empty => panic!("expected a body"),
+            };
+            // Authorized key deleted; unauthorized key reported as AccessDenied.
+            assert!(
+                xml.contains("<Deleted><Key>allowed/a.txt</Key></Deleted>"),
+                "{xml}"
+            );
+            assert!(xml.contains("<Key>denied/b.txt</Key>"), "{xml}");
+            assert!(xml.contains("<Code>AccessDenied</Code>"), "{xml}");
+
+            // The denied key must never be forwarded to the backend.
+            let sent = captured
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("backend was called");
+            let sent = String::from_utf8(sent.to_vec()).unwrap();
+            assert!(sent.contains("allowed/a.txt"), "forwarded body: {sent}");
+            assert!(
+                !sent.contains("denied/b.txt"),
+                "denied key leaked to backend: {sent}"
+            );
+        });
+    }
+
+    #[test]
+    fn batch_delete_all_denied_skips_backend() {
+        use crate::types::{AccessScope, AuthenticatedIdentity};
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let backend = DeleteMockBackend {
+                captured: captured.clone(),
+            };
+            let gw = ProxyGateway::new(backend, MockRegistry, MockCreds, None);
+
+            // Scope grants only a different prefix → every requested key is denied.
+            let identity = ResolvedIdentity::Authenticated(AuthenticatedIdentity {
+                principal_name: "tester".into(),
+                allowed_scopes: vec![AccessScope {
+                    bucket: "test-bucket".into(),
+                    prefixes: vec!["other/".into()],
+                    actions: vec![Action::DeleteObject],
+                }],
+            });
+
+            let pending = PendingRequest {
+                operation: S3Operation::DeleteObjects {
+                    bucket: "test-bucket".into(),
+                },
+                bucket_config: test_bucket_config("test-bucket"),
+                original_headers: HeaderMap::new(),
+                request_id: "rid".into(),
+                identity,
+            };
+
+            let body =
+                Bytes::from_static(br#"<Delete><Object><Key>secret/a.txt</Key></Object></Delete>"#);
+            let result = gw.handle_with_body(pending, body).await;
+            assert_eq!(result.status, 200);
+            // Backend must not be contacted when nothing is authorized.
+            assert!(
+                captured.lock().unwrap().is_none(),
+                "backend should be skipped"
             );
         });
     }

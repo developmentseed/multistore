@@ -1132,6 +1132,7 @@ dependencies = [
  "hmac",
  "http",
  "matchit 0.8.4",
+ "md-5",
  "object_store",
  "percent-encoding",
  "quick-xml 0.37.5",

@@ -1,8 +1,11 @@
-//! Multipart URL building and request signing for S3-compatible backends.
+//! Backend URL building and request signing for raw signed (non-presigned)
+//! S3 operations.
 //!
-//! These helpers are used by [`Gateway::execute_multipart`](crate::proxy::Gateway)
-//! for CreateMultipartUpload, UploadPart, CompleteMultipartUpload, and
-//! AbortMultipartUpload operations.
+//! These helpers build the backend URL and sign the request for the operations
+//! that go through [`ProxyBackend::send_raw`](crate::backend::ProxyBackend::send_raw):
+//! the multipart operations (CreateMultipartUpload, UploadPart,
+//! CompleteMultipartUpload, AbortMultipartUpload) and batch delete
+//! (DeleteObjects).
 
 use crate::backend::request_signer::S3RequestSigner;
 use crate::error::ProxyError;
@@ -21,6 +24,15 @@ pub fn build_backend_url(
     let base = endpoint.trim_end_matches('/');
     let bucket = config.option("bucket_name").unwrap_or("");
     let bucket_is_empty = bucket.is_empty();
+
+    // Batch delete targets the bucket, not a key: `{base}[/{bucket}]?delete`.
+    if matches!(operation, S3Operation::DeleteObjects { .. }) {
+        return Ok(if bucket_is_empty {
+            format!("{base}?delete")
+        } else {
+            format!("{base}/{bucket}?delete")
+        });
+    }
 
     let mut key = String::new();
     if let Some(prefix) = &config.backend_prefix {

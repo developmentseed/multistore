@@ -1,11 +1,13 @@
 //! Outbound SigV4 request signing.
 //!
 //! [`S3RequestSigner`] signs raw HTTP requests destined for S3-compatible
-//! backends using AWS Signature Version 4. Used for multipart operations
-//! (CreateMultipartUpload, UploadPart, CompleteMultipartUpload,
-//! AbortMultipartUpload) that go through [`backend::ProxyBackend::send_raw`](crate::backend::ProxyBackend::send_raw).
+//! backends using AWS Signature Version 4. Used for the operations that go
+//! through [`backend::ProxyBackend::send_raw`](crate::backend::ProxyBackend::send_raw)
+//! rather than presigned URLs: multipart operations (CreateMultipartUpload,
+//! UploadPart, CompleteMultipartUpload, AbortMultipartUpload) and batch delete
+//! (DeleteObjects).
 
-use crate::auth::sigv4::hmac_sha256;
+use crate::auth::sigv4::{canonicalize_query_string, hmac_sha256};
 use crate::error::ProxyError;
 use http::HeaderMap;
 
@@ -75,9 +77,11 @@ impl S3RequestSigner {
         };
         headers.insert("host", host_header.parse().unwrap());
 
-        // Canonical request
+        // Canonical request. The query must be in SigV4 canonical form — every
+        // parameter as `key=value` (value-less flags like `?uploads`/`?delete`
+        // get a trailing `=`), sorted — or the backend rejects the signature.
         let canonical_uri = url.path();
-        let canonical_querystring = url.query().unwrap_or("");
+        let canonical_querystring = canonicalize_query_string(url.query().unwrap_or(""));
 
         let mut signed_header_names: Vec<&str> = headers.keys().map(|k| k.as_str()).collect();
         signed_header_names.sort();

@@ -23,6 +23,9 @@ The proxy returns S3-compatible error responses in XML format:
 | InvalidOidcToken | 400 | `InvalidIdentityToken` | JWT validation failed (bad signature, untrusted issuer, etc.) |
 | RoleNotFound | 403 | `AccessDenied` | Requested role doesn't exist in config |
 | InvalidRequest | 400 | `InvalidRequest` | Malformed S3 request |
+| MalformedXml | 400 | `MalformedXML` | Request body XML is malformed, empty, or exceeds limits (e.g. a batch delete naming no objects or more than 1000 keys) |
+| NotImplemented | 501 | `NotImplemented` | Recognized but unsupported operation (e.g. server-side copy via `x-amz-copy-source`) |
+| EntityTooLarge | 400 | `EntityTooLarge` | Upload `Content-Length` exceeds the configured maximum body size |
 | BackendError | 503 | `ServiceUnavailable` | Backend object store is unreachable or returned an error |
 | PreconditionFailed | 412 | `PreconditionFailed` | Conditional request failed (If-Match, etc.) |
 | NotModified | 304 | `NotModified` | Conditional request — content not changed |

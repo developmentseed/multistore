@@ -1,5 +1,6 @@
 //! S3 API parsing and response serialization.
 
+pub mod delete;
 pub mod list;
 pub mod list_rewrite;
 pub mod request;

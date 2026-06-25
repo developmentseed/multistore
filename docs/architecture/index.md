@@ -36,7 +36,7 @@ flowchart LR
 
 **Two-phase dispatch** — The `ProxyGateway` separates request resolution from execution. `resolve_request()` determines what to do; the runtime executes it. This keeps streaming logic in runtime-specific code where it belongs.
 
-**Presigned URLs for streaming** — GET, HEAD, PUT, and DELETE operations use presigned URLs. The runtime forwards the request directly to the backend — no buffering, no double-handling of bodies.
+**Presigned URLs for streaming** — GET, HEAD, PUT, and single-object DELETE use presigned URLs. The runtime forwards the request directly to the backend — no buffering, no double-handling of bodies. Body-bearing operations that can't be presigned (multipart and batch delete) instead use raw SigV4-signed HTTP, buffering the (small) body.
 
 **Pluggable traits** — Four trait boundaries enable customization:
 - `Router` / `RouteHandler` — Path-based pre-dispatch request interception (STS, OIDC discovery, custom endpoints)

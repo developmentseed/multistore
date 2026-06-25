@@ -12,12 +12,17 @@ Environment variables:
 import os
 import uuid
 import xml.etree.ElementTree as ET
+from io import BytesIO
 
 import boto3
 import pytest
 import requests
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
+# S3 requires every multipart part except the last to be at least 5 MiB.
+MIB = 1024 * 1024
 
 PROXY_URL = os.environ.get("PROXY_URL", "http://localhost:8787")
 
@@ -135,6 +140,47 @@ class TestStaticCredentialWrites:
         # Cleanup
         client.delete_object(Bucket="private-uploads", Key=key)
 
+    def test_put_larger_body_single_request(self):
+        """A non-trivial single PUT (streamed, not buffered) round-trips intact."""
+        client = static_client()
+        key = f"test-large-{uuid.uuid4()}.bin"
+        # 2 MiB: well above the trivial happy-path size, still a single PUT
+        # (put_object never switches to multipart).
+        body = bytes((i % 251 for i in range(2 * MIB)))
+
+        client.put_object(Bucket="private-uploads", Key=key, Body=body)
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        data = resp["Body"].read()
+        assert len(data) == len(body)
+        assert data == body
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_put_preserves_content_headers(self):
+        """Standard entity headers set on PUT survive the round-trip.
+
+        Exercises the widened PUT forward allowlist (Content-Type was always
+        forwarded; Content-Disposition / Cache-Control are new). Note:
+        `x-amz-meta-*` user metadata is intentionally NOT forwarded (it requires
+        the deferred header-signing path), so it is not asserted.
+        """
+        client = static_client()
+        key = f"test-headers-{uuid.uuid4()}.txt"
+        client.put_object(
+            Bucket="private-uploads",
+            Key=key,
+            Body=b"payload with content metadata",
+            ContentType="application/json",
+            ContentDisposition='attachment; filename="report.json"',
+            CacheControl="max-age=3600",
+        )
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["ContentType"] == "application/json"
+        assert resp["ContentDisposition"] == 'attachment; filename="report.json"'
+        assert resp["CacheControl"] == "max-age=3600"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
     def test_list_after_write(self):
         client = static_client()
         key = f"test-list-{uuid.uuid4()}.txt"
@@ -169,6 +215,182 @@ class TestStaticCredentialWrites:
 
         # Cleanup
         client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_batch_delete(self):
+        client = static_client()
+        keys = [f"test-batch-{uuid.uuid4()}.txt" for _ in range(3)]
+        for key in keys:
+            client.put_object(Bucket="private-uploads", Key=key, Body=b"batch")
+
+        resp = client.delete_objects(
+            Bucket="private-uploads",
+            Delete={"Objects": [{"Key": k} for k in keys]},
+        )
+        deleted = {d["Key"] for d in resp.get("Deleted", [])}
+        assert deleted == set(keys), resp
+        assert not resp.get("Errors"), resp
+
+        # All keys are gone.
+        for key in keys:
+            with pytest.raises(ClientError) as exc_info:
+                client.get_object(Bucket="private-uploads", Key=key)
+            assert exc_info.value.response["Error"]["Code"] in ("NoSuchKey", "404")
+
+    def test_oversized_put_rejected_entity_too_large(self):
+        """A PUT exceeding MAX_UPLOAD_BYTES (10 MiB in the test config) is
+        rejected with EntityTooLarge rather than forwarded to the backend."""
+        client = static_client()
+        key = f"test-toolarge-{uuid.uuid4()}.bin"
+        body = b"z" * (12 * MIB)  # over the 10 MiB limit
+        with pytest.raises(ClientError) as exc_info:
+            client.put_object(Bucket="private-uploads", Key=key, Body=body)
+        err = exc_info.value.response["Error"]
+        assert err["Code"] == "EntityTooLarge", err
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 400
+
+    def test_batch_delete_partial_authorization(self):
+        """Per-key authz: a batch delete with one in-scope and one out-of-scope
+        key deletes the allowed one, reports the other as AccessDenied, and does
+        NOT delete the out-of-scope key."""
+        full = static_client()  # full access to private-uploads
+        restricted = static_client(  # scoped to the "allowed/" prefix only
+            access_key="AKTEST000000000002",
+            secret_key="testSecretKey00000000000000000002",
+        )
+        suffix = uuid.uuid4()
+        allowed_key = f"allowed/{suffix}.txt"
+        denied_key = f"denied/{suffix}.txt"
+        full.put_object(Bucket="private-uploads", Key=allowed_key, Body=b"a")
+        full.put_object(Bucket="private-uploads", Key=denied_key, Body=b"b")
+
+        resp = restricted.delete_objects(
+            Bucket="private-uploads",
+            Delete={"Objects": [{"Key": allowed_key}, {"Key": denied_key}]},
+        )
+        deleted = {d["Key"] for d in resp.get("Deleted", [])}
+        errors = {e["Key"]: e["Code"] for e in resp.get("Errors", [])}
+        assert deleted == {allowed_key}, resp
+        assert errors == {denied_key: "AccessDenied"}, resp
+
+        # Security property: the out-of-scope key must still exist; the in-scope
+        # key must be gone.
+        full.head_object(Bucket="private-uploads", Key=denied_key)  # raises if deleted
+        with pytest.raises(ClientError) as exc:
+            full.head_object(Bucket="private-uploads", Key=allowed_key)
+        assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
+
+        full.delete_object(Bucket="private-uploads", Key=denied_key)  # cleanup
+
+    def test_copy_object_rejected(self):
+        """Server-side copy (x-amz-copy-source) is rejected with 501
+        NotImplemented and does not create the destination."""
+        client = static_client()
+        src = f"copy-src-{uuid.uuid4()}.txt"
+        dst = f"copy-dst-{uuid.uuid4()}.txt"
+        client.put_object(Bucket="private-uploads", Key=src, Body=b"source")
+        with pytest.raises(ClientError) as exc:
+            client.copy_object(
+                Bucket="private-uploads",
+                Key=dst,
+                CopySource={"Bucket": "private-uploads", "Key": src},
+            )
+        assert exc.value.response["Error"]["Code"] == "NotImplemented", exc.value.response
+        assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 501
+        # The destination must not have been created.
+        with pytest.raises(ClientError):
+            client.head_object(Bucket="private-uploads", Key=dst)
+
+        client.delete_object(Bucket="private-uploads", Key=src)  # cleanup
+
+
+# ---------------------------------------------------------------------------
+# Multipart uploads
+# ---------------------------------------------------------------------------
+
+class TestMultipartUploads:
+    """Exercise the full multipart upload path (Create/UploadPart/Complete/Abort)."""
+
+    def test_multipart_roundtrip_high_level(self):
+        """boto3's transfer manager: forces Create + 2x UploadPart + Complete."""
+        client = static_client()
+        key = f"test-multipart-{uuid.uuid4()}.bin"
+        # 6 MiB → two parts (5 MiB + 1 MiB) at a 5 MiB chunk size.
+        body = b"multipart-payload-block!" * (6 * MIB // 24 + 1)
+        body = body[: 6 * MIB]
+        config = TransferConfig(
+            multipart_threshold=5 * MIB,
+            multipart_chunksize=5 * MIB,
+            max_concurrency=1,
+            use_threads=False,
+        )
+
+        client.upload_fileobj(BytesIO(body), "private-uploads", key, Config=config)
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == body
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_multipart_low_level_explicit(self):
+        """Drive Create/UploadPart/Complete directly and verify the round-trip."""
+        client = static_client()
+        key = f"test-mpu-explicit-{uuid.uuid4()}.bin"
+        part1 = b"A" * (5 * MIB)
+        part2 = b"B" * (2 * MIB)
+
+        create = client.create_multipart_upload(Bucket="private-uploads", Key=key)
+        upload_id = create["UploadId"]
+        assert upload_id
+
+        parts = []
+        for num, chunk in enumerate([part1, part2], start=1):
+            up = client.upload_part(
+                Bucket="private-uploads",
+                Key=key,
+                PartNumber=num,
+                UploadId=upload_id,
+                Body=chunk,
+            )
+            parts.append({"PartNumber": num, "ETag": up["ETag"]})
+
+        client.complete_multipart_upload(
+            Bucket="private-uploads",
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == part1 + part2
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_multipart_abort(self):
+        """AbortMultipartUpload tears down an in-progress upload."""
+        client = static_client()
+        key = f"test-mpu-abort-{uuid.uuid4()}.bin"
+
+        create = client.create_multipart_upload(Bucket="private-uploads", Key=key)
+        upload_id = create["UploadId"]
+
+        client.upload_part(
+            Bucket="private-uploads",
+            Key=key,
+            PartNumber=1,
+            UploadId=upload_id,
+            Body=b"C" * (5 * MIB),
+        )
+        client.abort_multipart_upload(
+            Bucket="private-uploads", Key=key, UploadId=upload_id
+        )
+
+        # Completing an aborted upload must fail.
+        with pytest.raises(ClientError):
+            client.complete_multipart_upload(
+                Bucket="private-uploads",
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": "x"}]},
+            )
 
 
 # ---------------------------------------------------------------------------

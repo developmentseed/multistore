@@ -25,6 +25,24 @@ pub enum ProxyError {
     #[error("invalid request: {0}")]
     InvalidRequest(String),
 
+    /// The XML in the request body was not well-formed or did not validate
+    /// against the expected schema (e.g. a batch-delete body that is malformed,
+    /// empty, or exceeds the 1000-key limit). Maps to S3's `400 MalformedXML`.
+    #[error("malformed XML: {0}")]
+    MalformedXml(String),
+
+    /// The requested S3 operation is recognized but not supported by the proxy
+    /// (e.g. server-side copy via `x-amz-copy-source`). Maps to S3's
+    /// `501 NotImplemented`.
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
+
+    /// The upload body exceeds the proxy's configured maximum size. Returned
+    /// as S3's `EntityTooLarge` so clients get an actionable error instead of a
+    /// runtime-specific rejection (e.g. Cloudflare's edge `413`).
+    #[error("entity too large")]
+    EntityTooLarge,
+
     /// The request contains no authentication credentials.
     #[error("missing authentication")]
     MissingAuth,
@@ -82,6 +100,9 @@ impl ProxyError {
             Self::AccessDenied => "AccessDenied",
             Self::SignatureDoesNotMatch => "SignatureDoesNotMatch",
             Self::InvalidRequest(_) => "InvalidRequest",
+            Self::MalformedXml(_) => "MalformedXML",
+            Self::NotImplemented(_) => "NotImplemented",
+            Self::EntityTooLarge => "EntityTooLarge",
             Self::MissingAuth => "AccessDenied",
             Self::ExpiredCredentials => "ExpiredToken",
             Self::InvalidOidcToken(_) => "InvalidIdentityToken",
@@ -102,6 +123,9 @@ impl ProxyError {
             Self::AccessDenied | Self::MissingAuth | Self::ExpiredCredentials => 403,
             Self::SignatureDoesNotMatch => 403,
             Self::InvalidRequest(_) => 400,
+            Self::MalformedXml(_) => 400,
+            Self::NotImplemented(_) => 501,
+            Self::EntityTooLarge => 400,
             Self::InvalidOidcToken(_) => 400,
             Self::RoleNotFound(_) => 403,
             Self::PreconditionFailed => 412,

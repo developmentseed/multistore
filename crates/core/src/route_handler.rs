@@ -97,12 +97,16 @@ impl ProxyResult {
     }
 }
 
-/// Opaque state for a multipart operation that needs the request body.
+/// Opaque state for an operation that needs the request body before it can be
+/// completed (multipart operations and batch delete).
 pub struct PendingRequest {
     pub(crate) operation: crate::types::S3Operation,
     pub(crate) bucket_config: crate::types::BucketConfig,
     pub(crate) original_headers: HeaderMap,
     pub(crate) request_id: String,
+    /// The resolved caller identity, needed for per-key authorization of batch
+    /// operations (e.g. `DeleteObjects`). Unused by multipart operations.
+    pub(crate) identity: crate::types::ResolvedIdentity,
 }
 
 /// Response headers that must NOT be forwarded to clients.

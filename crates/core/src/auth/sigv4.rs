@@ -154,12 +154,32 @@ pub fn verify_sigv4_signature(
     Ok(matched)
 }
 
-/// Sort query string parameters for SigV4 canonical request construction.
+/// Build the SigV4 canonical query string: every parameter as `key=value`,
+/// sorted.
+///
+/// A value-less flag parameter (e.g. `?uploads`, `?delete`) is canonicalized
+/// with an empty value and a trailing `=` per the SigV4 spec. Clients (and
+/// backends) sign it that way, so the proxy must reconstruct it identically on
+/// both the inbound-verification and outbound-signing sides or the signature
+/// will not match. Empty segments (from a stray `&`) are dropped.
 pub(crate) fn canonicalize_query_string(query: &str) -> String {
     if query.is_empty() {
         return String::new();
     }
-    let mut parts: Vec<&str> = query.split('&').collect();
+    // Borrow params that are already `key=value`; only the value-less flags
+    // (`?delete`, `?uploads`) need an owned `key=`. This keeps the common path
+    // allocation-free on the per-request signing/verification hot path.
+    let mut parts: Vec<std::borrow::Cow<str>> = query
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            if p.contains('=') {
+                std::borrow::Cow::Borrowed(p)
+            } else {
+                std::borrow::Cow::Owned(format!("{p}="))
+            }
+        })
+        .collect();
     parts.sort_unstable();
     parts.join("&")
 }
@@ -179,4 +199,50 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         .zip(b.iter())
         .fold(0u8, |acc, (x, y)| acc | (x ^ y))
         == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonicalize_query_string;
+
+    #[test]
+    fn empty_query_is_empty() {
+        assert_eq!(canonicalize_query_string(""), "");
+    }
+
+    #[test]
+    fn value_less_flag_gets_trailing_equals() {
+        // The bug that broke multipart and batch delete: `?uploads` / `?delete`
+        // must canonicalize to `uploads=` / `delete=`.
+        assert_eq!(canonicalize_query_string("uploads"), "uploads=");
+        assert_eq!(canonicalize_query_string("delete"), "delete=");
+    }
+
+    #[test]
+    fn valued_params_are_sorted_and_unchanged() {
+        assert_eq!(
+            canonicalize_query_string("list-type=2&prefix=foo"),
+            "list-type=2&prefix=foo"
+        );
+        // Sorting is by the full encoded parameter.
+        assert_eq!(
+            canonicalize_query_string("partNumber=1&uploadId=abc"),
+            "partNumber=1&uploadId=abc"
+        );
+        assert_eq!(canonicalize_query_string("b=2&a=1"), "a=1&b=2");
+    }
+
+    #[test]
+    fn mixed_flag_and_valued_params() {
+        // Real shape of a versioned delete-style request.
+        assert_eq!(
+            canonicalize_query_string("versionId=v1&delete"),
+            "delete=&versionId=v1"
+        );
+    }
+
+    #[test]
+    fn stray_empty_segments_are_dropped() {
+        assert_eq!(canonicalize_query_string("delete&"), "delete=");
+    }
 }

@@ -10,7 +10,7 @@
 //!   -> resolve request (ProxyGateway with static config registries)
 //!   -> Forward: web_sys::fetch with ReadableStream passthrough (zero-copy)
 //!   -> Response: LIST XML via object_store, errors, synthetic responses
-//!   -> NeedsBody: multipart operations via raw signed HTTP
+//!   -> NeedsBody: multipart operations and batch delete via raw signed HTTP
 //! ```
 //!
 //! # Configuration
@@ -91,6 +91,17 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
     }
     if let Some(ref resolver) = token_key {
         gateway = gateway.with_credential_resolver(resolver.clone());
+    }
+
+    // Reject uploads larger than `MAX_UPLOAD_BYTES` with S3's `EntityTooLarge`
+    // rather than letting Cloudflare's edge return an opaque `413`. Set this to
+    // the deployment's plan request-body limit (e.g. 104857600 for 100 MB).
+    if let Some(max) = env
+        .var("MAX_UPLOAD_BYTES")
+        .ok()
+        .and_then(|v| v.to_string().parse::<u64>().ok())
+    {
+        gateway = gateway.with_max_request_body_size(max);
     }
 
     // Parse request metadata and extract the body stream (zero-copy).

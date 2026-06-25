@@ -16,6 +16,12 @@ cargo check
 
 # Check (WASM)
 cargo check -p multistore-cf-workers --target wasm32-unknown-unknown
+
+# Unit + doc tests
+cargo test
+
+# Integration tests (MinIO via docker compose behind wrangler dev; mirrors CI)
+make test-integration
 ```
 
 ## Release Process

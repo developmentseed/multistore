@@ -146,21 +146,30 @@ impl ProxyBackend for WorkerBackend {
 
         // Fetch via worker
         let worker_req: worker::Request = ws_request.into();
-        let mut worker_resp = Fetch::Request(worker_req)
+        let worker_resp = Fetch::Request(worker_req)
             .send()
             .await
             .map_err(|e| ProxyError::BackendError(format!("fetch failed: {}", e)))?;
 
         let status = worker_resp.status_code();
 
-        // Read response body as bytes (multipart responses are small)
-        let resp_bytes = worker_resp
-            .bytes()
-            .await
-            .map_err(|e| ProxyError::Internal(format!("failed to read response: {}", e)))?;
-
+        // Convert to `web_sys::Response` and read the headers BEFORE consuming
+        // the body. The `worker::Response → web_sys::Response` conversion panics
+        // once the body has been read, so reading bytes first (and converting
+        // after) blew up `send_raw` on every multipart/batch-delete response.
+        // `forward()` relies on the same before-body ordering.
         let ws_response: web_sys::Response = worker_resp.into();
         let resp_headers = headermap_from_js(&ws_response.headers());
+
+        // Read the (small) response body via `arrayBuffer()`.
+        let buf = wasm_bindgen_futures::JsFuture::from(
+            ws_response
+                .array_buffer()
+                .map_err(|e| ProxyError::Internal(format!("arrayBuffer() failed: {:?}", e)))?,
+        )
+        .await
+        .map_err(|e| ProxyError::Internal(format!("failed to read response: {:?}", e)))?;
+        let resp_bytes = js_sys::Uint8Array::new(&buf).to_vec();
 
         Ok(RawResponse {
             status,

@@ -464,6 +464,20 @@ impl<R: BucketRegistry> BucketRegistry for MappedRegistry<R> {
         self.inner.list_buckets(identity).await
     }
 
+    /// Forward per-key authorization to the inner registry, so an inner
+    /// registry's `authorize_key` override is honored (the default trait impl
+    /// would bypass it). Arguments pass through unchanged, matching how
+    /// `get_bucket` forwards the bucket name.
+    async fn authorize_key(
+        &self,
+        name: &str,
+        identity: &multistore::types::ResolvedIdentity,
+        action: multistore::types::Action,
+        key: &str,
+    ) -> bool {
+        self.inner.authorize_key(name, identity, action, key).await
+    }
+
     fn bucket_owner(&self) -> multistore::types::BucketOwner {
         self.inner.bucket_owner()
     }
