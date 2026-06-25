@@ -80,7 +80,7 @@ When a client calls `AssumeRoleWithWebIdentity`:
 3. The proxy fetches the issuer's JWKS endpoint and verifies the JWT signature (RS256)
 4. The proxy evaluates the trust policy:
    - **Issuer**: must be in the role's `trusted_oidc_issuers`
-   - **Audience**: if `required_audience` is set on the role, the token's `aud` claim must match
+   - **Audience**: if the role's `required_audiences` is non-empty, the token's `aud` claim must match at least one of the accepted values
    - **Subject**: the token's `sub` claim must match at least one of the role's `subject_conditions` (supports `*` glob wildcards)
 5. The proxy mints temporary credentials scoped to the role's `allowed_scopes`
 6. If `SESSION_TOKEN_KEY` is configured, the credentials are AES-256-GCM encrypted into the session token (see [Sealed Session Tokens](./sealed-tokens))
@@ -125,7 +125,7 @@ The proxy works with any OIDC-compliant identity provider that serves a JWKS end
 
 1. The provider's issuer URL (must serve `/.well-known/openid-configuration` with a `jwks_uri`)
 2. The `sub` claim format for configuring `subject_conditions`
-3. Optionally, the audience claim value for `required_audience`
+3. Optionally, the audience claim value(s) for `required_audiences`
 
 <details>
 <summary><strong>GitHub Actions</strong> — OIDC tokens for CI/CD workflows</summary>
@@ -137,7 +137,7 @@ The proxy works with any OIDC-compliant identity provider that serves a JWKS end
 role_id = "github-actions-deployer"
 name = "GitHub Actions Deploy Role"
 trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
-required_audience = "sts.s3proxy.example.com"
+required_audiences = ["sts.s3proxy.example.com"]
 subject_conditions = [
     "repo:myorg/myapp:ref:refs/heads/main",
     "repo:myorg/myapp:ref:refs/heads/release/*",
@@ -209,7 +209,7 @@ jobs:
 role_id = "auth0-user"
 name = "Auth0 User"
 trusted_oidc_issuers = ["https://your-tenant.auth0.com/"]
-required_audience = "https://s3proxy.example.com"
+required_audiences = ["https://s3proxy.example.com"]
 subject_conditions = ["*"]  # Or restrict by user ID patterns
 max_session_duration_secs = 3600
 
@@ -289,7 +289,7 @@ actions = ["get_object", "head_object", "put_object", "list_bucket"]
 
 - **Issuer URL**: `https://cognito-idp.{region}.amazonaws.com/{user-pool-id}`
 - **Subject claim**: Cognito user UUID
-- **Audience**: the App Client ID (set `required_audience` to match)
+- **Audience**: the App Client ID (set `required_audiences` to match)
 
 </details>
 

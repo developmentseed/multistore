@@ -70,7 +70,7 @@ container_name = "public-datasets"
 role_id = "github-actions-deployer"         # Used as RoleArn in STS requests
 name = "GitHub Actions Deploy Role"
 trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
-required_audience = "sts.s3proxy.example.com"  # Token's `aud` must match
+required_audiences = ["sts.s3proxy.example.com"]  # Token's `aud` must match one of these
 
 # Glob patterns for the `sub` claim
 subject_conditions = [

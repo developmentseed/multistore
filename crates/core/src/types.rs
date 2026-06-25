@@ -124,9 +124,10 @@ pub struct RoleConfig {
     pub trusted_oidc_issuers: Vec<String>,
 
     /// Audience claim values accepted for this role. A token is accepted if its
-    /// `aud` claim matches any entry; empty means no audience restriction.
-    /// Deserializes from a single string or a list, and from the legacy
-    /// `required_audience` key, for backward compatibility.
+    /// `aud` claim matches any entry; empty (or absent/null) means no audience
+    /// restriction. Accepts a single string or a list, and the legacy
+    /// `required_audience` key, for backward compatibility — set one key or the
+    /// other, not both (specifying both is a config error).
     #[serde(
         default,
         alias = "required_audience",
@@ -160,9 +161,13 @@ where
         One(String),
         Many(Vec<String>),
     }
-    Ok(match OneOrMany::deserialize(deserializer)? {
-        OneOrMany::One(s) => vec![s],
-        OneOrMany::Many(v) => v,
+    // `Option` so an explicit `null` (e.g. legacy `required_audience: null`)
+    // maps to "unrestricted", matching the old `Option<String>` behavior
+    // instead of failing to parse.
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        None => vec![],
+        Some(OneOrMany::One(s)) => vec![s],
+        Some(OneOrMany::Many(v)) => v,
     })
 }
 
@@ -568,5 +573,58 @@ mod tests {
         let dbg = format!("{config:?}");
         assert!(!dbg.contains("super-secret"));
         assert!(!dbg.contains("super-session"));
+    }
+
+    /// Parse a `RoleConfig` from JSON with the given audience field snippet
+    /// (e.g. `,"required_audiences":["x"]`), so the deserialization edge cases
+    /// for the audience config can be exercised directly.
+    fn parse_role(audience_field: &str) -> Result<RoleConfig, serde_json::Error> {
+        serde_json::from_str(&format!(
+            r#"{{"role_id":"r","name":"R","max_session_duration_secs":3600{audience_field}}}"#
+        ))
+    }
+
+    #[test]
+    fn audiences_accepts_legacy_single_string() {
+        let r = parse_role(r#","required_audience":"x""#).unwrap();
+        assert_eq!(r.required_audiences, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn audiences_accepts_single_string_and_list() {
+        assert_eq!(
+            parse_role(r#","required_audiences":"x""#)
+                .unwrap()
+                .required_audiences,
+            vec!["x".to_string()]
+        );
+        assert_eq!(
+            parse_role(r#","required_audiences":["x","y"]"#)
+                .unwrap()
+                .required_audiences,
+            vec!["x".to_string(), "y".to_string()]
+        );
+    }
+
+    #[test]
+    fn audiences_absent_or_null_is_unrestricted() {
+        // Absent, or an explicit null on either key, means "no restriction" —
+        // matching the old `Option<String>` behavior rather than erroring.
+        assert!(parse_role("").unwrap().required_audiences.is_empty());
+        assert!(parse_role(r#","required_audiences":null"#)
+            .unwrap()
+            .required_audiences
+            .is_empty());
+        assert!(parse_role(r#","required_audience":null"#)
+            .unwrap()
+            .required_audiences
+            .is_empty());
+    }
+
+    #[test]
+    fn audiences_both_keys_is_an_error() {
+        // Setting both the legacy and new keys fails loudly rather than
+        // silently picking one, so a leftover key during migration is caught.
+        assert!(parse_role(r#","required_audience":"x","required_audiences":["y"]"#).is_err());
     }
 }
