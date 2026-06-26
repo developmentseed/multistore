@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/developmentseed/multistore/compare/v0.6.0...v0.6.1) (2026-06-26)
+
+
+### Bug Fixes
+
+* **proxy:** stream-resign aws-chunked uploads instead of decoding ([#92](https://github.com/developmentseed/multistore/issues/92)) ([55d17c0](https://github.com/developmentseed/multistore/commit/55d17c019ba636bb7c75e0cfc5d296d69d630c18))
+
 ## [0.6.0](https://github.com/developmentseed/multistore/compare/v0.5.1...v0.6.0) (2026-06-25)
 
 
