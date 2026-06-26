@@ -62,6 +62,33 @@ bucket_name = "multistore-test-bucket"
 endpoint = "https://s3.us-west-2.amazonaws.com"
 region = "us-west-2"
 
+# Writable bucket for the multipart write smoke test
+# (tests/smoke/test_smoke.py::TestMultipartUpload). The regression it guards —
+# dropped `x-amz-checksum-*` headers causing `InvalidPart` on
+# CompleteMultipartUpload — only reproduces against *real* AWS S3; MinIO accepts
+# the inconsistent upload, so it can't live in the MinIO integration suite.
+#
+# Reuses the federated-test backend bucket + OIDC role, namespaced under a
+# `smoke-writable/` prefix. The role's policy already grants PutObject/GetObject/
+# DeleteObject/ListBucket (which cover Create/Upload/Complete); add
+# `s3:AbortMultipartUpload` so failed uploads clean up instead of orphaning
+# parts. To activate, set SMOKE_WRITE_BUCKET=smoke-writable in the smoke job;
+# until then the test self-skips.
+[[vars.PROXY_CONFIG.buckets]]
+allowed_roles = ["github-actions"]
+anonymous_access = false
+backend_type = "s3"
+backend_prefix = "smoke-writable/"
+name = "smoke-writable"
+
+[vars.PROXY_CONFIG.buckets.backend_options]
+auth_type = "oidc"
+oidc_role_arn = "arn:aws:iam::470592060578:role/multistore-github-ci"
+oidc_subject = "multistore"
+bucket_name = "multistore-test-bucket"
+endpoint = "https://s3.us-west-2.amazonaws.com"
+region = "us-west-2"
+
 [[vars.PROXY_CONFIG.credentials]]
 access_key_id = "AKPROXY00000EXAMPLE"
 secret_access_key = "EXAMPLE000000000000"
@@ -86,6 +113,23 @@ trusted_oidc_issuers = [
 [[vars.PROXY_CONFIG.roles.allowed_scopes]]
 actions = ["get_object", "head_object", "list_bucket"]
 bucket = "cholmes"
+prefixes = []
+
+# Write access for the multipart write smoke test (see the `smoke-writable`
+# bucket above). Multipart needs the create/upload/complete/abort actions.
+[[vars.PROXY_CONFIG.roles.allowed_scopes]]
+actions = [
+  "get_object",
+  "head_object",
+  "put_object",
+  "delete_object",
+  "list_bucket",
+  "create_multipart_upload",
+  "upload_part",
+  "complete_multipart_upload",
+  "abort_multipart_upload",
+]
+bucket = "smoke-writable"
 prefixes = []
 
 [[vars.PROXY_CONFIG.roles]]
