@@ -968,16 +968,29 @@ where
         request_id: &str,
     ) -> Result<Option<ForwardRequest>, ProxyError> {
         match crate::aws_chunked::streaming_upload(original_headers) {
-            Some((crate::aws_chunked::StreamingUpload::Unsigned, sentinel)) => Ok(Some(
-                self.build_streaming_forward(
-                    config,
-                    operation,
-                    sentinel,
-                    original_headers,
-                    request_id,
-                )
-                .await?,
-            )),
+            Some((crate::aws_chunked::StreamingUpload::Unsigned, sentinel)) => {
+                // Streaming re-sign hardcodes S3 SigV4 seed signing; a non-S3
+                // backend can't be presigned for aws-chunked either, so a
+                // streaming upload there has no valid path — reject rather than
+                // mis-sign. (UploadPart gates on this earlier too; this also
+                // covers PutObject's streaming arm.)
+                if !config.is_s3_backend() {
+                    return Err(ProxyError::InvalidRequest(format!(
+                        "aws-chunked streaming uploads are not supported for '{}' backends",
+                        config.backend_type
+                    )));
+                }
+                Ok(Some(
+                    self.build_streaming_forward(
+                        config,
+                        operation,
+                        sentinel,
+                        original_headers,
+                        request_id,
+                    )
+                    .await?,
+                ))
+            }
             Some((crate::aws_chunked::StreamingUpload::Signed, _)) => Err(
                 ProxyError::NotImplemented(SIGNED_AWS_CHUNKED_UNSUPPORTED.to_string()),
             ),
@@ -1020,18 +1033,9 @@ where
         original_headers: &HeaderMap,
         request_id: &str,
     ) -> Result<ForwardRequest, ProxyError> {
-        // This path hardcodes S3 SigV4 seed signing (`build_backend_url` +
-        // `sign_s3_request`). A non-S3 backend can't be presigned for aws-chunked
-        // either, so a streaming upload there has no valid path — reject it
-        // rather than mis-sign. (UploadPart already gates on this earlier; this
-        // also covers the PutObject streaming arm.)
-        if !config.is_s3_backend() {
-            return Err(ProxyError::InvalidRequest(format!(
-                "aws-chunked streaming uploads are not supported for '{}' backends",
-                config.backend_type
-            )));
-        }
-
+        // Caller (`try_streaming_forward`) has already gated on an S3 backend;
+        // this path hardcodes S3 SigV4 seed signing (`build_backend_url` +
+        // `sign_s3_request`).
         let url = url::Url::parse(&build_backend_url(config, operation)?)
             .map_err(|e| ProxyError::Internal(format!("invalid backend URL: {e}")))?;
 

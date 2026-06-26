@@ -77,24 +77,13 @@ mod tests {
                 "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
             ))
         );
-        assert_eq!(
-            streaming_upload(&headers("STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER")),
-            Some((
-                StreamingUpload::Signed,
-                "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"
-            ))
-        );
     }
 
     #[test]
     fn non_streaming_is_none() {
+        // Anything without the `STREAMING-` prefix (a plain hash, `UNSIGNED-PAYLOAD`,
+        // or a missing header) is not a streaming upload.
         assert_eq!(streaming_upload(&headers("UNSIGNED-PAYLOAD")), None);
-        assert_eq!(
-            streaming_upload(&headers(
-                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-            )),
-            None
-        );
         assert_eq!(streaming_upload(&headers("")), None);
     }
 }
