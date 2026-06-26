@@ -21,6 +21,8 @@ jobs:
       worker_name: multistore-proxy-pr-${{ github.event.pull_request.number }}
       wrangler_config: wrangler.deploy.toml
       environment: preview
+      # Run the real-S3 multipart write smoke test on every preview.
+      smoke_write_bucket: smoke-writable
       # Mint tokens with the STABLE staging issuer rather than this PR's own URL.
       # All deployments share OIDC_PROVIDER_KEY, so a preview can sign assertions
       # whose `iss` is the staging URL; AWS then validates them against the

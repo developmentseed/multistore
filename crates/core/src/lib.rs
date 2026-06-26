@@ -23,6 +23,7 @@
 
 pub mod api;
 pub mod auth;
+pub(crate) mod aws_chunked;
 pub mod backend;
 pub mod error;
 pub mod maybe_send;

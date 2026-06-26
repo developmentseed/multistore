@@ -152,6 +152,3 @@ pub fn hash_payload(payload: &[u8]) -> String {
 
 /// The SigV4 sentinel for unsigned payloads (used with streaming uploads).
 pub const UNSIGNED_PAYLOAD: &str = "UNSIGNED-PAYLOAD";
-
-/// The SigV4 sentinel for streaming payloads.
-pub const STREAMING_PAYLOAD: &str = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD";

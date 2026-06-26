@@ -7,15 +7,35 @@ Requires environment variables:
 """
 
 import os
+import uuid
 import xml.etree.ElementTree as ET
+from io import BytesIO
 
 import boto3
 import pytest
 import requests
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
 DEPLOY_URL = os.environ.get("DEPLOY_URL", "http://localhost:8787")
+
+# S3 requires every multipart part except the last to be at least 5 MiB.
+MIB = 1024 * 1024
+
+# A writable bucket on a *real* AWS-S3 backend, addressable by the smoke
+# identity. The integration suite already covers multipart against MinIO, but
+# MinIO does not enforce S3's flexible-checksum validation — the exact gap that
+# let the dropped-`x-amz-checksum-*` bug through — so this regression must run
+# against real S3. The preview's other buckets are read-only (`skip_signature`)
+# mirrors, so this is opt-in: set SMOKE_WRITE_BUCKET to the writable bucket's
+# virtual name (see `smoke-writable` in examples/cf-workers/wrangler.deploy.toml).
+WRITE_BUCKET = os.environ.get("SMOKE_WRITE_BUCKET")
+
+requires_write_bucket = pytest.mark.skipif(
+    not WRITE_BUCKET,
+    reason="SMOKE_WRITE_BUCKET not set (no writable real-S3 bucket configured)",
+)
 
 
 def assume_role(role_arn: str, oidc_token: str) -> dict:
@@ -229,3 +249,46 @@ class TestRangeRequests:
                 f"CF may be serving a cached full-body response."
             )
             assert resp.headers.get("content-range") is not None
+
+
+@requires_oidc
+@requires_write_bucket
+class TestMultipartUpload:
+    """Multipart upload against a real S3 backend.
+
+    Regression guard for the dropped flexible-checksum headers bug: modern AWS
+    CLI/SDK enable CRC32 integrity checksums by default, so a multipart upload
+    sends a per-part checksum on each UploadPart and echoes them on
+    CompleteMultipartUpload. If the proxy drops the `x-amz-checksum-*` headers,
+    the upload is initialized with no checksum context while the parts carry
+    checksums, and S3 rejects completion with `InvalidPart`. Checksums are
+    forced on here (`ChecksumAlgorithm=CRC32`) so the path is exercised
+    regardless of the client's botocore default.
+
+    This is what `aws s3 cp` of a large file does and what originally surfaced
+    the bug; MinIO (the integration backend) does not reproduce it.
+    """
+
+    def test_multipart_roundtrip_with_checksums(self, actions_credentials):
+        client = s3_client(actions_credentials)
+        key = f"smoke-multipart-{uuid.uuid4()}.bin"
+        # 6 MiB → two parts (5 MiB + 1 MiB) at a 5 MiB chunk size.
+        body = bytes(i % 251 for i in range(6 * MIB))
+        config = TransferConfig(
+            multipart_threshold=5 * MIB,
+            multipart_chunksize=5 * MIB,
+            max_concurrency=1,
+            use_threads=False,
+        )
+        try:
+            client.upload_fileobj(
+                BytesIO(body),
+                WRITE_BUCKET,
+                key,
+                Config=config,
+                ExtraArgs={"ChecksumAlgorithm": "CRC32"},
+            )
+            resp = client.get_object(Bucket=WRITE_BUCKET, Key=key)
+            assert resp["Body"].read() == body
+        finally:
+            client.delete_object(Bucket=WRITE_BUCKET, Key=key)
