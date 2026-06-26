@@ -968,13 +968,19 @@ where
         request_id: &str,
     ) -> Result<Option<ForwardRequest>, ProxyError> {
         match crate::aws_chunked::streaming_upload(original_headers) {
-            Some(crate::aws_chunked::StreamingUpload::Unsigned) => Ok(Some(
-                self.build_streaming_forward(config, operation, original_headers, request_id)
-                    .await?,
+            Some((crate::aws_chunked::StreamingUpload::Unsigned, sentinel)) => Ok(Some(
+                self.build_streaming_forward(
+                    config,
+                    operation,
+                    sentinel,
+                    original_headers,
+                    request_id,
+                )
+                .await?,
             )),
-            Some(crate::aws_chunked::StreamingUpload::Signed) => Err(ProxyError::NotImplemented(
-                SIGNED_AWS_CHUNKED_UNSUPPORTED.to_string(),
-            )),
+            Some((crate::aws_chunked::StreamingUpload::Signed, _)) => Err(
+                ProxyError::NotImplemented(SIGNED_AWS_CHUNKED_UNSUPPORTED.to_string()),
+            ),
             None => Ok(None),
         }
     }
@@ -1010,9 +1016,22 @@ where
         &self,
         config: &BucketConfig,
         operation: &S3Operation,
+        payload_hash: &str,
         original_headers: &HeaderMap,
         request_id: &str,
     ) -> Result<ForwardRequest, ProxyError> {
+        // This path hardcodes S3 SigV4 seed signing (`build_backend_url` +
+        // `sign_s3_request`). A non-S3 backend can't be presigned for aws-chunked
+        // either, so a streaming upload there has no valid path — reject it
+        // rather than mis-sign. (UploadPart already gates on this earlier; this
+        // also covers the PutObject streaming arm.)
+        if !config.is_s3_backend() {
+            return Err(ProxyError::InvalidRequest(format!(
+                "aws-chunked streaming uploads are not supported for '{}' backends",
+                config.backend_type
+            )));
+        }
+
         let url = url::Url::parse(&build_backend_url(config, operation)?)
             .map_err(|e| ProxyError::Internal(format!("invalid backend URL: {e}")))?;
 
@@ -1029,15 +1048,8 @@ where
         }
 
         // Re-sign the seed with the backend creds, reusing the client's exact
-        // streaming sentinel (the `-TRAILER` suffix matters) as the payload
-        // hash. The caller has classified this as a streaming upload, so the
-        // header is present.
-        let payload_hash = original_headers
-            .get("x-amz-content-sha256")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| {
-                ProxyError::Internal("aws-chunked upload missing x-amz-content-sha256".into())
-            })?;
+        // streaming sentinel (`payload_hash`, the `-TRAILER` suffix matters) as
+        // the canonical-request payload hash.
         sign_s3_request(
             &Method::PUT,
             url.as_str(),
@@ -1548,9 +1560,16 @@ mod tests {
             "secret_access_key".into(),
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".into(),
         );
+        // A bucket named `azure-*` resolves to a non-S3 backend so tests can
+        // exercise the non-S3 rejection paths; everything else is S3.
+        let backend_type = if name.starts_with("azure") {
+            "azure"
+        } else {
+            "s3"
+        };
         BucketConfig {
             name: name.to_string(),
-            backend_type: "s3".into(),
+            backend_type: backend_type.into(),
             backend_prefix: None,
             anonymous_access: true,
             allowed_roles: vec![],
@@ -1877,10 +1896,49 @@ mod tests {
                     None,
                 )
                 .await;
-            assert!(
-                matches!(action, HandlerAction::Forward(_)),
-                "unsigned aws-chunked UploadPart should stream via re-sign, not buffer"
-            );
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    // The arm-specific behavior: the part query must survive into
+                    // the forwarded backend URL (otherwise S3 treats it as a PUT).
+                    let q = fwd.url.query().unwrap_or("");
+                    assert!(
+                        q.contains("partNumber=1") && q.contains("uploadId=abc"),
+                        "UploadPart forward must carry partNumber/uploadId, got query {q:?}"
+                    );
+                    assert_eq!(
+                        fwd.headers.get("x-amz-content-sha256").unwrap(),
+                        "STREAMING-UNSIGNED-PAYLOAD-TRAILER"
+                    );
+                }
+                other => panic!(
+                    "expected Forward (stream via re-sign, not buffer), got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
+    #[test]
+    fn streaming_put_on_non_s3_backend_is_rejected() {
+        run(async {
+            let gw = gateway();
+            let headers = unsigned_aws_chunked_headers();
+            // `azure-bucket` resolves to a non-S3 backend (see test_bucket_config).
+            // A streaming upload there has no presign or seed-sign path, so it
+            // must reject cleanly rather than mis-route into S3 signing.
+            let action = gw
+                .resolve_request(Method::PUT, "/azure-bucket/test.md", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(r) => assert_eq!(
+                    r.status, 400,
+                    "aws-chunked PUT to a non-S3 backend should be rejected, not mis-signed"
+                ),
+                other => panic!(
+                    "expected Response(400), got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
         });
     }
 

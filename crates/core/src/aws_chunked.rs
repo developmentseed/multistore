@@ -24,19 +24,19 @@ pub(crate) enum StreamingUpload {
     Signed,
 }
 
-/// Classify a request body from its `x-amz-content-sha256`, returning `None`
-/// for an ordinary (non-streaming) upload.
-pub(crate) fn streaming_upload(headers: &HeaderMap) -> Option<StreamingUpload> {
-    let variant = headers
-        .get("x-amz-content-sha256")?
-        .to_str()
-        .ok()?
-        .strip_prefix("STREAMING-")?;
-    Some(if variant.contains("UNSIGNED") {
+/// Classify a request body from its `x-amz-content-sha256`, returning the
+/// upload kind together with the sentinel value (so the caller can reuse it as
+/// the seed's payload hash without re-reading it). `None` for an ordinary
+/// (non-streaming) upload.
+pub(crate) fn streaming_upload(headers: &HeaderMap) -> Option<(StreamingUpload, &str)> {
+    let sentinel = headers.get("x-amz-content-sha256")?.to_str().ok()?;
+    let variant = sentinel.strip_prefix("STREAMING-")?;
+    let kind = if variant.contains("UNSIGNED") {
         StreamingUpload::Unsigned
     } else {
         StreamingUpload::Signed
-    })
+    };
+    Some((kind, sentinel))
 }
 
 #[cfg(test)]
@@ -54,13 +54,17 @@ mod tests {
     #[test]
     fn unsigned_streaming_is_unsigned() {
         // The aws-cli/SDK default (CRC64NVME trailer), and the no-trailer form.
+        // The sentinel is returned verbatim (the `-TRAILER` suffix matters).
         assert_eq!(
             streaming_upload(&headers("STREAMING-UNSIGNED-PAYLOAD-TRAILER")),
-            Some(StreamingUpload::Unsigned)
+            Some((
+                StreamingUpload::Unsigned,
+                "STREAMING-UNSIGNED-PAYLOAD-TRAILER"
+            ))
         );
         assert_eq!(
             streaming_upload(&headers("STREAMING-UNSIGNED-PAYLOAD")),
-            Some(StreamingUpload::Unsigned)
+            Some((StreamingUpload::Unsigned, "STREAMING-UNSIGNED-PAYLOAD"))
         );
     }
 
@@ -68,11 +72,17 @@ mod tests {
     fn signed_streaming_is_signed() {
         assert_eq!(
             streaming_upload(&headers("STREAMING-AWS4-HMAC-SHA256-PAYLOAD")),
-            Some(StreamingUpload::Signed)
+            Some((
+                StreamingUpload::Signed,
+                "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+            ))
         );
         assert_eq!(
             streaming_upload(&headers("STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER")),
-            Some(StreamingUpload::Signed)
+            Some((
+                StreamingUpload::Signed,
+                "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"
+            ))
         );
     }
 
