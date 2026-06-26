@@ -112,6 +112,12 @@ jobs:
       # here on both preview (PR) and staging deploys, against the stable
       # staging OIDC issuer — see preview.yml / staging.yml.
       FEDERATION_TEST_KEY: ${{ vars.FEDERATION_TEST_KEY }}
+      # Virtual bucket name the multipart write smoke test uploads to
+      # (TestMultipartUpload). Leave the `SMOKE_WRITE_BUCKET` repo/environment
+      # variable unset to skip that test; set it to `smoke-writable` (the bucket
+      # wired in wrangler.deploy.toml) once the backend role has write +
+      # s3:AbortMultipartUpload permissions.
+      SMOKE_WRITE_BUCKET: ${{ vars.SMOKE_WRITE_BUCKET }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
