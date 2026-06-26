@@ -68,21 +68,24 @@ region = "us-west-2"
 # CompleteMultipartUpload — only reproduces against *real* AWS S3; MinIO accepts
 # the inconsistent upload, so it can't live in the MinIO integration suite.
 #
-# To activate: create the backend bucket, grant the OIDC role s3:PutObject /
-# s3:GetObject / s3:DeleteObject / s3:AbortMultipartUpload / s3:ListBucket on it,
-# and set SMOKE_WRITE_BUCKET=smoke-writable in the smoke-test job's env. Until
-# then the test self-skips. Swap bucket_name/oidc_role_arn for your resources.
+# Reuses the federated-test backend bucket + OIDC role, namespaced under a
+# `smoke-writable/` prefix. The role's policy already grants PutObject/GetObject/
+# DeleteObject/ListBucket (which cover Create/Upload/Complete); add
+# `s3:AbortMultipartUpload` so failed uploads clean up instead of orphaning
+# parts. To activate, set SMOKE_WRITE_BUCKET=smoke-writable in the smoke job;
+# until then the test self-skips.
 [[vars.PROXY_CONFIG.buckets]]
 allowed_roles = ["github-actions"]
 anonymous_access = false
 backend_type = "s3"
+backend_prefix = "smoke-writable/"
 name = "smoke-writable"
 
 [vars.PROXY_CONFIG.buckets.backend_options]
 auth_type = "oidc"
 oidc_role_arn = "arn:aws:iam::470592060578:role/multistore-github-ci"
 oidc_subject = "multistore"
-bucket_name = "multistore-smoke-writable"
+bucket_name = "multistore-test-bucket"
 endpoint = "https://s3.us-west-2.amazonaws.com"
 region = "us-west-2"
 
