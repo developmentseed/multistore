@@ -1215,10 +1215,23 @@ where
 
         let mut headers = HeaderMap::new();
 
-        // Forward relevant headers
-        for header_name in &["content-type", "content-length", "content-md5"] {
-            if let Some(val) = pending.original_headers.get(*header_name) {
-                headers.insert(*header_name, val.clone());
+        // Forward entity headers plus the client's flexible-checksum headers.
+        // Modern AWS SDKs/CLI enable CRC32 integrity checksums by default:
+        // CreateMultipartUpload declares the algorithm (`x-amz-checksum-algorithm`)
+        // and CompleteMultipartUpload echoes the per-part / full-object checksums
+        // (`x-amz-checksum-type`, `x-amz-checksum-crc32`, …). Dropping them leaves
+        // the MPU with no checksum context while the parts are stored *with*
+        // checksums, so S3 rejects the completion with `InvalidPart`. This raw
+        // path signs every header present (see `sign_s3_request`), so forwarding
+        // them here is safe — unlike the presigned PutObject path, where S3
+        // rejects unsigned `x-amz-*` headers.
+        for (name, val) in pending.original_headers.iter() {
+            let n = name.as_str();
+            if matches!(n, "content-type" | "content-length" | "content-md5")
+                || n.starts_with("x-amz-checksum")
+                || n == "x-amz-sdk-checksum-algorithm"
+            {
+                headers.insert(name.clone(), val.clone());
             }
         }
         headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
@@ -2324,6 +2337,129 @@ mod tests {
             assert!(
                 captured.lock().unwrap().is_none(),
                 "backend should be skipped"
+            );
+        });
+    }
+
+    /// Backend that captures the headers forwarded to `send_raw`.
+    #[derive(Clone)]
+    struct CaptureHeadersBackend {
+        captured: Arc<std::sync::Mutex<Option<HeaderMap>>>,
+    }
+
+    impl ProxyBackend for CaptureHeadersBackend {
+        type ResponseBody = ();
+        type Body = ();
+
+        async fn forward(
+            &self,
+            _request: ForwardRequest,
+            _body: (),
+        ) -> Result<ForwardResponse<()>, ProxyError> {
+            unimplemented!()
+        }
+
+        fn create_paginated_store(
+            &self,
+            _config: &BucketConfig,
+        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
+            unimplemented!()
+        }
+
+        fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
+            crate::backend::build_signer(config)
+        }
+
+        async fn send_raw(
+            &self,
+            _method: http::Method,
+            _url: String,
+            headers: HeaderMap,
+            _body: Bytes,
+        ) -> Result<RawResponse, ProxyError> {
+            *self.captured.lock().unwrap() = Some(headers);
+            Ok(RawResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                body: Bytes::new(),
+            })
+        }
+    }
+
+    /// Regression guard: modern AWS CLI/SDK enable CRC32 integrity checksums by
+    /// default, so CompleteMultipartUpload carries `x-amz-checksum-*` headers.
+    /// They must be forwarded to *and signed for* the backend — dropping them
+    /// leaves the upload with no checksum context and S3 fails the completion
+    /// with `InvalidPart`.
+    #[test]
+    fn complete_multipart_forwards_and_signs_checksum_headers() {
+        use crate::types::AuthenticatedIdentity;
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let backend = CaptureHeadersBackend {
+                captured: captured.clone(),
+            };
+            let gw = ProxyGateway::new(backend, MockRegistry, MockCreds, None);
+
+            let mut original_headers = HeaderMap::new();
+            original_headers.insert("content-type", "application/xml".parse().unwrap());
+            original_headers.insert("x-amz-checksum-crc32", "AAAAAA==".parse().unwrap());
+            original_headers.insert("x-amz-checksum-type", "FULL_OBJECT".parse().unwrap());
+            original_headers.insert("x-amz-sdk-checksum-algorithm", "CRC32".parse().unwrap());
+            // The client's own credentials must never be forwarded; the proxy
+            // re-signs with the backend creds.
+            original_headers.insert(
+                "authorization",
+                "AWS4-HMAC-SHA256 client-bogus".parse().unwrap(),
+            );
+
+            let pending = PendingRequest {
+                operation: S3Operation::CompleteMultipartUpload {
+                    bucket: "test-bucket".into(),
+                    key: "big.dmg".into(),
+                    upload_id: "upload-1".into(),
+                },
+                bucket_config: test_bucket_config("test-bucket"),
+                original_headers,
+                request_id: "rid".into(),
+                identity: ResolvedIdentity::Authenticated(AuthenticatedIdentity {
+                    principal_name: "tester".into(),
+                    allowed_scopes: vec![],
+                }),
+            };
+
+            let body = Bytes::from_static(
+                br#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>"abc"</ETag><ChecksumCRC32>AAAAAA==</ChecksumCRC32></Part></CompleteMultipartUpload>"#,
+            );
+
+            let result = gw.handle_with_body(pending, body).await;
+            assert_eq!(result.status, 200);
+
+            let sent = captured
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("backend was called");
+
+            // 1. The checksum headers reach the backend.
+            assert_eq!(sent.get("x-amz-checksum-crc32").unwrap(), "AAAAAA==");
+            assert_eq!(sent.get("x-amz-checksum-type").unwrap(), "FULL_OBJECT");
+            assert_eq!(sent.get("x-amz-sdk-checksum-algorithm").unwrap(), "CRC32");
+
+            // 2. The client's Authorization is replaced by a fresh proxy signature.
+            let auth = sent.get("authorization").unwrap().to_str().unwrap();
+            assert!(
+                auth.starts_with("AWS4-HMAC-SHA256 Credential="),
+                "expected re-signed Authorization, got: {auth}"
+            );
+
+            // 3. The checksum headers are part of SignedHeaders — without this S3
+            //    ignores them and the completion fails with InvalidPart.
+            assert!(
+                auth.contains("x-amz-checksum-crc32")
+                    && auth.contains("x-amz-checksum-type")
+                    && auth.contains("x-amz-sdk-checksum-algorithm"),
+                "checksum headers missing from SignedHeaders: {auth}"
             );
         });
     }
