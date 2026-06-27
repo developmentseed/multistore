@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/developmentseed/multistore/compare/v0.6.1...v0.6.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* **cf-workers:** bypass Cloudflare cache for HEAD subrequests ([#95](https://github.com/developmentseed/multistore/issues/95)) ([973bff7](https://github.com/developmentseed/multistore/commit/973bff70b2ffb59fc7bf825a267359e660b66ad1))
+
 ## [0.6.1](https://github.com/developmentseed/multistore/compare/v0.6.0...v0.6.1) (2026-06-26)
 
 
