@@ -63,6 +63,27 @@ pub struct ForwardRequest {
     pub request_id: String,
 }
 
+impl ForwardRequest {
+    /// Whether the runtime must skip any shared/CDN cache when executing this
+    /// forward (e.g. set Cloudflare's `RequestCache::NoStore` on the subrequest).
+    ///
+    /// Two request shapes are unsafe against a full-object `GET` cache:
+    ///
+    /// * **`HEAD`** — a CDN that only caches `GET` (e.g. Cloudflare) may rewrite
+    ///   an outbound `HEAD` on a cacheable-looking URL (a key with a static-asset
+    ///   extension such as `.dmg`/`.tif`/`.zip`/`.gif`) into a `GET`. Because the
+    ///   backend URL is presigned for the *original* method, the rewritten `GET`
+    ///   fails SigV4 and the store returns `403 SignatureDoesNotMatch`.
+    /// * **`Range`** — a partial (`206`) response must never be written to or
+    ///   served from the full-object cache entry.
+    ///
+    /// Plain full-object `GET` is intentionally left cacheable so the edge can
+    /// serve public objects.
+    pub fn should_bypass_cache(&self) -> bool {
+        self.method == Method::HEAD || self.headers.contains_key(http::header::RANGE)
+    }
+}
+
 /// The result of handling a proxy request.
 pub struct ProxyResult {
     /// HTTP status code for the response.
@@ -302,6 +323,34 @@ pub trait RouteHandler: MaybeSend + MaybeSync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn forward(method: Method, range: Option<&str>) -> ForwardRequest {
+        let mut headers = http::HeaderMap::new();
+        if let Some(r) = range {
+            headers.insert(http::header::RANGE, r.parse().unwrap());
+        }
+        ForwardRequest {
+            method,
+            url: "https://example.com/bucket/object".parse().unwrap(),
+            headers,
+            request_id: "test".into(),
+        }
+    }
+
+    #[test]
+    fn should_bypass_cache_predicate() {
+        // HEAD must bypass: a GET-only CDN rewrites it to GET on a
+        // cacheable-extension URL, and the presigned (HEAD-signed) backend URL
+        // then fails SigV4 -> 403 SignatureDoesNotMatch.
+        assert!(forward(Method::HEAD, None).should_bypass_cache());
+        // Range (any method) must bypass: don't serve/write partials to the
+        // full-object cache entry.
+        assert!(forward(Method::GET, Some("bytes=0-0")).should_bypass_cache());
+        assert!(forward(Method::HEAD, Some("bytes=0-1023")).should_bypass_cache());
+        // Full-object GET stays cacheable; writes don't match.
+        assert!(!forward(Method::GET, None).should_bypass_cache());
+        assert!(!forward(Method::PUT, None).should_bypass_cache());
+    }
 
     #[test]
     fn test_blocks_hop_by_hop_headers() {
