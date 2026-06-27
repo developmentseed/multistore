@@ -45,8 +45,11 @@ impl ProxyBackend for WorkerBackend {
         init.set_method(request.method.as_str());
         init.set_headers(&WsHeaders::from(&request.headers).into_inner().into());
 
-        // Bypass Cloudflare's subrequest cache for Range requests.
-        if request.headers.contains_key(http::header::RANGE) {
+        // Bypass Cloudflare's subrequest cache for reads where leaving it on
+        // would break the request (HEAD rewritten to GET on cacheable-extension
+        // URLs, or Range poisoning the full-object cache). See
+        // `ForwardRequest::should_bypass_cache`.
+        if request.should_bypass_cache() {
             init.set_cache(web_sys::RequestCache::NoStore);
         }
 
