@@ -292,3 +292,34 @@ class TestMultipartUpload:
             assert resp["Body"].read() == body
         finally:
             client.delete_object(Bucket=WRITE_BUCKET, Key=key)
+
+
+@requires_write_bucket
+class TestHeadOnCacheableExtension:
+    """Regression guard for HEAD on a key with a cacheable static-asset extension.
+
+    Cloudflare's edge cache only operates on GET; for a URL it treats as a
+    cacheable static asset (a key whose extension is in CF's default list, e.g.
+    `.tif`/`.dmg`/`.zip`) it rewrites an outbound HEAD into a GET. Because the
+    proxy forwards each read via a presigned URL signed for the *original*
+    method, the rewritten GET fails SigV4 and S3 returns
+    `403 SignatureDoesNotMatch`. The proxy must mark HEAD subrequests
+    `RequestCache::NoStore` so the edge leaves the method alone.
+
+    Only reproduces against the real Cloudflare edge — MinIO (the integration
+    backend) has no edge cache — so this lives in the smoke suite. The `.tif`
+    extension is what makes the URL look cacheable; a key with no extension was
+    never affected.
+    """
+
+    def test_head_object_with_cacheable_extension(self, actions_credentials):
+        client = s3_client(actions_credentials)
+        key = f"smoke-head-{uuid.uuid4()}.tif"
+        try:
+            client.put_object(Bucket=WRITE_BUCKET, Key=key, Body=b"regression")
+            # Before the fix, Cloudflare rewrote this HEAD to GET and S3
+            # returned 403 SignatureDoesNotMatch (boto3 would raise here).
+            resp = client.head_object(Bucket=WRITE_BUCKET, Key=key)
+            assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+        finally:
+            client.delete_object(Bucket=WRITE_BUCKET, Key=key)
