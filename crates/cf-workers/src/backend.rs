@@ -29,6 +29,37 @@ use worker::Fetch;
 #[derive(Clone)]
 pub struct WorkerBackend;
 
+/// The byte length to wrap a streamed PUT body in, or `None` to forward the raw
+/// stream. Returns `None` for aws-chunked bodies (S3 sizes those from
+/// `x-amz-decoded-content-length`) and for bodies with no usable
+/// `Content-Length`.
+fn fixed_body_length(headers: &HeaderMap) -> Option<u64> {
+    let aws_chunked = headers
+        .get(http::header::CONTENT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("aws-chunked"))
+        .unwrap_or(false);
+    if aws_chunked {
+        return None;
+    }
+    headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
+/// Build a Cloudflare `FixedLengthStream` of the given length (parts can exceed
+/// `u32::MAX`, so fall back to the BigInt constructor).
+fn new_fixed_length_stream(
+    len: u64,
+) -> Result<worker::worker_sys::FixedLengthStream, wasm_bindgen::JsValue> {
+    if len <= u32::MAX as u64 {
+        worker::worker_sys::FixedLengthStream::new(len as u32)
+    } else {
+        worker::worker_sys::FixedLengthStream::new_big_int(js_sys::BigInt::from(len))
+    }
+}
+
 impl ProxyBackend for WorkerBackend {
     type ResponseBody = web_sys::Response;
     type Body = JsBody;
@@ -53,10 +84,31 @@ impl ProxyBackend for WorkerBackend {
             init.set_cache(web_sys::RequestCache::NoStore);
         }
 
-        // For PUT: attach the original ReadableStream directly (zero-copy!).
+        // For PUT: stream the body through (zero-copy). A bare `ReadableStream`
+        // body makes the Workers runtime send the subrequest with
+        // `Transfer-Encoding: chunked` and *drop* `Content-Length` — which S3
+        // rejects for a non-aws-chunked payload (it can't size the object/part),
+        // leaving the subrequest hung until the whole body streams through.
+        // Wrapping the stream in a `FixedLengthStream` makes the runtime emit a
+        // real `Content-Length`. aws-chunked bodies are sized by S3 from
+        // `x-amz-decoded-content-length` and keep their chunk framing, so those
+        // pass through raw.
         if request.method == http::Method::PUT {
             if let Some(stream) = js_body.stream() {
-                init.set_body(stream);
+                match fixed_body_length(&request.headers) {
+                    Some(len) => {
+                        let fls = new_fixed_length_stream(len).map_err(|e| {
+                            ProxyError::Internal(format!("FixedLengthStream init failed: {e:?}"))
+                        })?;
+                        let transform: &web_sys::TransformStream = fls.as_ref();
+                        // The outbound fetch consuming `readable` pulls the body
+                        // through the transform; the pipe is driven by that
+                        // backpressure, so it streams rather than buffers.
+                        let _ = stream.pipe_to(&transform.writable());
+                        init.set_body(&transform.readable());
+                    }
+                    None => init.set_body(stream),
+                }
             }
         }
 
