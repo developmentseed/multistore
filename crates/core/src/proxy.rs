@@ -452,6 +452,16 @@ where
         let mut body = Some(body);
         let mut prebuffered: Option<Bytes> = None;
         if self.op_needs_buffered_body(req) {
+            // Bound the declared body size before reading it. This eager read is
+            // ahead of dispatch's own `check_upload_size`, so without this guard
+            // an oversized buffered op (e.g. a batch `DeleteObjects`) would be
+            // fully materialized into memory before being rejected. Header-only,
+            // no I/O.
+            if let Err(e) = self.check_upload_size(req.headers) {
+                let mut r = error_response(&e, req.path, "", self.debug_errors);
+                self.maybe_inject_server_timing(&mut r.headers, total_start, None, None);
+                return GatewayResponse::Response(r);
+            }
             match collect_body(body.take().expect("body present")).await {
                 Ok(bytes) => prebuffered = Some(bytes),
                 Err(e) => {
@@ -490,7 +500,25 @@ where
             }
             HandlerAction::Forward(fwd) => {
                 let backend_start = chrono::Utc::now();
-                let fwd_body = body.take().expect("streaming op retains its body");
+                // `body` is consumed only here (streaming/forward ops). If the
+                // eager pre-read already took it, `op_needs_buffered_body`
+                // over-matched an op that dispatched to Forward — fail closed
+                // rather than panic on the missing body.
+                let Some(fwd_body) = body.take() else {
+                    let mut r = error_response(
+                        &ProxyError::Internal("request body already consumed".into()),
+                        req.path,
+                        &metadata.request_id,
+                        self.debug_errors,
+                    );
+                    self.maybe_inject_server_timing(
+                        &mut r.headers,
+                        total_start,
+                        Some(dispatch_start),
+                        None,
+                    );
+                    return GatewayResponse::Response(r);
+                };
                 match self.backend.forward(fwd, fwd_body).await {
                     Ok(mut resp) => {
                         resp.headers = filter_response_headers(&resp.headers);
