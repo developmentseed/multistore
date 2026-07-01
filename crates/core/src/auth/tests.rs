@@ -334,6 +334,109 @@ fn unknown_access_key_is_rejected() {
 }
 
 #[test]
+fn encoded_signing_path_verifies() {
+    run(async {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let config = MockConfig::with_credential(secret);
+
+        let date_stamp = "20240101";
+        let amz_date = "20240101T000000Z";
+        let payload_hash = "UNSIGNED-PAYLOAD";
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "s3.example.com".parse().unwrap());
+        headers.insert("x-amz-date", amz_date.parse().unwrap());
+        headers.insert("x-amz-content-sha256", payload_hash.parse().unwrap());
+
+        // The client signs the percent-encoded path (a space → `%20`).
+        let auth = sign_request(
+            &http::Method::GET,
+            "/test-bucket/foo%20bar",
+            "",
+            &headers,
+            "AKIAIOSFODNN7EXAMPLE",
+            secret,
+            date_stamp,
+            amz_date,
+            "us-east-1",
+            &["host", "x-amz-content-sha256", "x-amz-date"],
+            payload_hash,
+        );
+        headers.insert("authorization", auth.parse().unwrap());
+
+        // Verifying against that same encoded path succeeds.
+        let identity = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/foo%20bar",
+            "",
+            &headers,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            identity,
+            crate::types::ResolvedIdentity::Authenticated(_)
+        ));
+    });
+}
+
+#[test]
+fn decoded_signing_path_is_rejected() {
+    // Regression: the client signs `/test-bucket/foo%20bar`, but verifying
+    // against the *decoded* `/test-bucket/foo bar` produces a different
+    // canonical URI, so it must fail. This is the exact shape of the bug that
+    // broke uploads of keys containing spaces — a decoded path reached signing.
+    run(async {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let config = MockConfig::with_credential(secret);
+
+        let date_stamp = "20240101";
+        let amz_date = "20240101T000000Z";
+        let payload_hash = "UNSIGNED-PAYLOAD";
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "s3.example.com".parse().unwrap());
+        headers.insert("x-amz-date", amz_date.parse().unwrap());
+        headers.insert("x-amz-content-sha256", payload_hash.parse().unwrap());
+
+        let auth = sign_request(
+            &http::Method::GET,
+            "/test-bucket/foo%20bar",
+            "",
+            &headers,
+            "AKIAIOSFODNN7EXAMPLE",
+            secret,
+            date_stamp,
+            amz_date,
+            "us-east-1",
+            &["host", "x-amz-content-sha256", "x-amz-date"],
+            payload_hash,
+        );
+        headers.insert("authorization", auth.parse().unwrap());
+
+        let err = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/foo bar", // decoded — wrong for signing
+            "",
+            &headers,
+            &config,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, ProxyError::SignatureDoesNotMatch),
+            "decoded signing path must not verify, got: {:?}",
+            err
+        );
+    });
+}
+
+#[test]
 fn temporary_credential_wrong_session_token_is_rejected() {
     run(async {
         let config = MockConfig::empty();
