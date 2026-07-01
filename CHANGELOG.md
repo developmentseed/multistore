@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.3](https://github.com/developmentseed/multistore/compare/v0.6.2...v0.6.3) (2026-07-01)
+
+
+### Bug Fixes
+
+* bound buffered-op body size and fail closed on classifier over-match ([#102](https://github.com/developmentseed/multistore/issues/102)) ([06ac75b](https://github.com/developmentseed/multistore/commit/06ac75b49c8429ec738fc2f48314a81cd9a8d402))
+* **cf-workers:** sign the encoded request path; harden the signing-path contract ([#103](https://github.com/developmentseed/multistore/issues/103)) ([43a1781](https://github.com/developmentseed/multistore/commit/43a1781caca6f4997b9595cd4604d8971d398c45))
+* eliminate cross-request body I/O on multipart & batch-delete writes ([#100](https://github.com/developmentseed/multistore/issues/100)) ([60b4278](https://github.com/developmentseed/multistore/commit/60b4278f07bd2745e0be19c23c9260f9366a6c9c))
+
 ## [0.6.2](https://github.com/developmentseed/multistore/compare/v0.6.1...v0.6.2) (2026-06-27)
 
 
