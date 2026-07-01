@@ -84,8 +84,9 @@ impl ProxyBackend for WorkerBackend {
             init.set_cache(web_sys::RequestCache::NoStore);
         }
 
-        // For PUT: stream the body through (zero-copy). A bare `ReadableStream`
-        // body makes the Workers runtime send the subrequest with
+        // For PUT: stream the body through without buffering it in WASM memory.
+        // A bare `ReadableStream` body makes the Workers runtime send the
+        // subrequest with
         // `Transfer-Encoding: chunked` and *drop* `Content-Length` — which S3
         // rejects for a non-aws-chunked payload (it can't size the object/part),
         // leaving the subrequest hung until the whole body streams through.
@@ -103,7 +104,12 @@ impl ProxyBackend for WorkerBackend {
                         let transform: &web_sys::TransformStream = fls.as_ref();
                         // The outbound fetch consuming `readable` pulls the body
                         // through the transform; the pipe is driven by that
-                        // backpressure, so it streams rather than buffers.
+                        // backpressure, so it streams rather than buffers. The
+                        // returned promise is intentionally dropped: a pipe
+                        // failure (e.g. the client sending fewer/more bytes than
+                        // Content-Length, which errors the FixedLengthStream)
+                        // also errors `readable`, so the awaited outbound fetch
+                        // fails and the error surfaces there.
                         let _ = stream.pipe_to(&transform.writable());
                         init.set_body(&transform.readable());
                     }

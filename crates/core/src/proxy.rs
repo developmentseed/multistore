@@ -337,6 +337,22 @@ where
         )
     }
 
+    /// Build an error [`GatewayResponse`] with its `Server-Timing` header
+    /// stamped. Used by the early returns in `handle_request` (body too large,
+    /// body read failure, body already consumed) that bail before dispatch.
+    fn early_error(
+        &self,
+        error: &ProxyError,
+        path: &str,
+        request_id: &str,
+        total_start: chrono::DateTime<chrono::Utc>,
+        dispatch_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> GatewayResponse<B::ResponseBody> {
+        let mut r = error_response(error, path, request_id, self.debug_errors);
+        self.maybe_inject_server_timing(&mut r.headers, total_start, dispatch_start, None);
+        GatewayResponse::Response(r)
+    }
+
     /// Inject a `Server-Timing` header into the response headers if enabled.
     fn maybe_inject_server_timing(
         &self,
@@ -452,18 +468,25 @@ where
         let mut body = Some(body);
         let mut prebuffered: Option<Bytes> = None;
         if self.op_needs_buffered_body(req) {
+            // Bound the declared body size before reading it. This eager read is
+            // ahead of dispatch's own `check_upload_size`, so without this guard
+            // an oversized buffered op (e.g. a batch `DeleteObjects`) would be
+            // fully materialized into memory before being rejected. Header-only,
+            // no I/O.
+            if let Err(e) = self.check_upload_size(req.headers) {
+                return self.early_error(&e, req.path, "", total_start, None);
+            }
             match collect_body(body.take().expect("body present")).await {
                 Ok(bytes) => prebuffered = Some(bytes),
                 Err(e) => {
                     tracing::error!(error = %e, "failed to read request body");
-                    let mut r = error_response(
+                    return self.early_error(
                         &ProxyError::Internal("failed to read request body".into()),
                         req.path,
                         "",
-                        self.debug_errors,
+                        total_start,
+                        None,
                     );
-                    self.maybe_inject_server_timing(&mut r.headers, total_start, None, None);
-                    return GatewayResponse::Response(r);
                 }
             }
         }
@@ -490,7 +513,19 @@ where
             }
             HandlerAction::Forward(fwd) => {
                 let backend_start = chrono::Utc::now();
-                let fwd_body = body.take().expect("streaming op retains its body");
+                // `body` is consumed only here (streaming/forward ops). If the
+                // eager pre-read already took it, `op_needs_buffered_body`
+                // over-matched an op that dispatched to Forward — fail closed
+                // rather than panic on the missing body.
+                let Some(fwd_body) = body.take() else {
+                    return self.early_error(
+                        &ProxyError::Internal("request body already consumed".into()),
+                        req.path,
+                        &metadata.request_id,
+                        total_start,
+                        Some(dispatch_start),
+                    );
+                };
                 match self.backend.forward(fwd, fwd_body).await {
                     Ok(mut resp) => {
                         resp.headers = filter_response_headers(&resp.headers);
