@@ -241,8 +241,15 @@ pub struct RequestInfo<'a> {
     /// The original path as seen by the client, used for SigV4 signature
     /// verification when the proxy rewrites paths before dispatch.
     ///
+    /// This **must** be the raw, percent-**encoded** path exactly as the client
+    /// sent (and signed) it — e.g. `/bucket/my%20key`, not the decoded
+    /// `/bucket/my key`. The SigV4 canonical URI is the encoded path, so a
+    /// decoded path (such as one that has been through `percent_decode`) will
+    /// fail with `SignatureDoesNotMatch` for any key containing an escaped
+    /// character (space, `#`, non-ASCII, …).
+    ///
     /// When `None`, `path` is used for both operation parsing and signature
-    /// verification.
+    /// verification — so if `path` is decoded, set this explicitly.
     pub signing_path: Option<&'a str>,
     /// The original query string as seen by the client, used for SigV4
     /// signature verification when the proxy rewrites query parameters.
@@ -276,7 +283,9 @@ impl<'a> RequestInfo<'a> {
     /// Set the original client-facing path for SigV4 signature verification.
     ///
     /// Use this when the proxy rewrites paths (e.g. path-mapping) so that
-    /// signature verification uses the path the client actually signed.
+    /// signature verification uses the path the client actually signed. Pass the
+    /// raw, percent-**encoded** path (`/bucket/my%20key`), not the decoded form
+    /// — see [`RequestInfo::signing_path`] for why.
     pub fn with_signing_path(mut self, signing_path: &'a str) -> Self {
         self.signing_path = Some(signing_path);
         self

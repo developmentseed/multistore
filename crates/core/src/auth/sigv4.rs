@@ -144,6 +144,19 @@ pub fn verify_sigv4_signature(
             region = %auth.region,
             "SigV4 signature mismatch"
         );
+        // A literal space in the canonical URI is never valid — clients sign the
+        // percent-encoded path (`%20`). Its presence means a decoded path was
+        // handed to signing; point the integrator straight at the cause. This
+        // catches the common case only; other unencoded characters won't trip
+        // it, but the debug canonical_request below still shows them.
+        if uri_path.contains(' ') {
+            tracing::warn!(
+                "the signing path contains a literal space — SigV4 requires the \
+                 percent-encoded path (`%20`). A decoded path (e.g. \
+                 `RequestParts::path`) was likely used; pass the encoded \
+                 `signing_path` instead."
+            );
+        }
         tracing::debug!(
             canonical_request = %canonical_request,
             string_to_sign = %string_to_sign,
