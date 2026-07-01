@@ -93,7 +93,7 @@ The native server runtime (in `examples/server/`):
 
 The reusable Cloudflare Workers WASM runtime library (in `crates/cf-workers/`):
 - `WorkerBackend` implementing `ProxyBackend` with `web_sys::fetch`
-- `RequestParts` — extracts owned HTTP metadata from `web_sys::Request` and provides `as_request_info()` for gateway dispatch
+- `RequestParts` — extracts owned HTTP metadata from `web_sys::Request` and provides `as_request_info()` for gateway dispatch (exposes both the decoded `path` for routing and the raw encoded `signing_path` for SigV4, wiring the latter into the signing path automatically)
 - `GatewayResponseExt` — extension trait for converting `GatewayResponse` to `web_sys::Response` via `.into_web_sys()`
 - `JsBody` — zero-copy body wrapper around `web_sys::ReadableStream`
 - `WsHeaders` — newtype around `web_sys::Headers` with `From<&HeaderMap>` (works around orphan rules)

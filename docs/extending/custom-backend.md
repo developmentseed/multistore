@@ -156,7 +156,12 @@ let backend = MyBackend::new(http_client);
 let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
     .with_router(router);
 
-// In your request handler, use handle_request for a two-variant match:
+// In your request handler, use handle_request for a two-variant match.
+// `path` must be the raw, percent-encoded request path (the form the client
+// signed) — SigV4 verification canonicalizes over it. If you decode the path
+// for routing, pass the encoded path separately via `.with_signing_path()`,
+// or keys containing escaped characters (e.g. a space → `%20`) fail with
+// SignatureDoesNotMatch.
 let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => {
