@@ -89,10 +89,19 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
     /// Get credentials for a backend, using cached values when available.
     ///
     /// `exchange` describes how to trade the self-signed JWT for cloud
-    /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend for
-    /// caching purposes (e.g. the role ARN).
+    /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend (e.g.
+    /// the role ARN).
     ///
-    /// Concurrent calls for the same `cache_key` are single-flighted: only one
+    /// Credentials are cached per `(cache_key, subject, extra_claims)`, **not**
+    /// per `cache_key` alone. The backend's authorization gate (an AWS role trust
+    /// policy, an Azure/GCP equivalent) conditions on the *minted assertion* —
+    /// its `subject` and any `extra_claims` — and is evaluated at mint time. A
+    /// cache hit skips the mint, so it skips that gate; keying on `cache_key`
+    /// alone would let a credential minted for one subject be served to a
+    /// different subject that shares the backend but that the trust policy would
+    /// reject. So every input the gate sees is part of the key.
+    ///
+    /// Concurrent calls for the same effective key are single-flighted: only one
     /// JWT mint + exchange runs, and the rest await its result. A cached value
     /// is reused until it nears expiry, then proactively re-minted.
     pub async fn get_credentials<E: CredentialExchange<H>>(
@@ -102,8 +111,9 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
         subject: &str,
         extra_claims: &[(&str, &str)],
     ) -> Result<Arc<BackendCredentials>, OidcProviderError> {
+        let key = credential_cache_key(cache_key, subject, extra_claims);
         self.cache
-            .get_or_fetch(cache_key, || async {
+            .get_or_fetch(&key, || async {
                 // Cache miss (or due for refresh): mint a JWT and exchange it.
                 let token =
                     self.signer
@@ -118,6 +128,30 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
     pub fn signer(&self) -> &JwtSigner {
         &self.signer
     }
+}
+
+/// Build the effective credential-cache key from every input that changes the
+/// minted assertion the backend's trust policy evaluates: the backend
+/// `cache_key`, the `subject`, and each `extra_claims` pair.
+///
+/// Length-prefixed (`<len>:<value>`) rather than delimiter-joined so no crafted
+/// component value can collide with a different tuple — the key is a security
+/// boundary (share a credential across subjects and you bypass a per-subject
+/// trust-policy denial), so it must be unambiguous by construction.
+fn credential_cache_key(cache_key: &str, subject: &str, extra_claims: &[(&str, &str)]) -> String {
+    let mut key = String::new();
+    let mut push = |part: &str| {
+        key.push_str(&part.len().to_string());
+        key.push(':');
+        key.push_str(part);
+    };
+    push(cache_key);
+    push(subject);
+    for (k, v) in extra_claims {
+        push(k);
+        push(v);
+    }
+    key
 }
 
 /// Errors produced by this crate.
@@ -333,6 +367,58 @@ mod tests {
             .unwrap();
 
         assert_eq!(http.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn same_backend_different_subject_makes_separate_calls() {
+        // Security boundary: two subjects sharing a role must NOT share a cached
+        // credential — the role's trust policy conditions on the subject at mint
+        // time, and a cache hit would bypass a denial for the second subject.
+        let http = MockHttp::new();
+        let provider = OidcCredentialProvider::new(
+            test_signer(),
+            http.clone(),
+            "https://issuer.example.com".into(),
+            "sts.amazonaws.com".into(),
+        );
+        let exchange = exchange::aws::AwsExchange::new("arn:aws:iam::123:role/Test".into());
+
+        provider
+            .get_credentials("role-a", &exchange, "scv1:conn:A", &[])
+            .await
+            .unwrap();
+        provider
+            .get_credentials("role-a", &exchange, "scv1:conn:B", &[])
+            .await
+            .unwrap();
+
+        assert_eq!(http.calls(), 2, "distinct subjects must each mint");
+    }
+
+    #[test]
+    fn credential_cache_key_is_unambiguous() {
+        // Length-prefix framing must not let a crafted value forge another
+        // tuple's key: (role="a:b", sub="c") and (role="a", sub="b:c") share the
+        // naive `a:b\x1fc` vs `a\x1fb:c` hazard under a plain delimiter, but must
+        // differ here.
+        assert_ne!(
+            credential_cache_key("a:b", "c", &[]),
+            credential_cache_key("a", "b:c", &[]),
+        );
+        // Subject is part of the key; claims are too.
+        assert_ne!(
+            credential_cache_key("role", "subA", &[]),
+            credential_cache_key("role", "subB", &[]),
+        );
+        assert_ne!(
+            credential_cache_key("role", "sub", &[]),
+            credential_cache_key("role", "sub", &[("x", "1")]),
+        );
+        // Same inputs → same key (cache actually hits).
+        assert_eq!(
+            credential_cache_key("role", "sub", &[("x", "1")]),
+            credential_cache_key("role", "sub", &[("x", "1")]),
+        );
     }
 
     #[test]
