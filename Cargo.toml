@@ -58,7 +58,7 @@ object_store = { version = "0.13.1", default-features = false, features = ["aws"
 futures = "0.3"
 
 # XML
-quick-xml = { version = "0.37", features = ["serialize"] }
+quick-xml = { version = "0.41", features = ["serialize"] }
 
 # Auth
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
