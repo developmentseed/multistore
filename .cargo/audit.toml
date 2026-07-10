@@ -1,4 +1,11 @@
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071", # Marvin Attack on rsa crate - no fix available; used for JWT signing/verification, not decryption
+    # quick-xml DoS advisories (fixed in 0.41). Our own quick-xml — which parses
+    # client-supplied XML (CompleteMultipartUpload/DeleteObjects bodies) — is on
+    # 0.41. These entries cover only object_store's internal quick-xml (0.38.x;
+    # even object_store 0.14 requires ^0.40.1), which parses backend LIST
+    # responses, not client input. Remove when object_store ships quick-xml >=0.41.
+    "RUSTSEC-2026-0194", # quadratic runtime checking duplicate attribute names
+    "RUSTSEC-2026-0195", # unbounded namespace-declaration allocation in NsReader
 ]
