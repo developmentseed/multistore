@@ -340,7 +340,8 @@ class TestMultipartUploads:
             # object_store's PathPart INVALID set (`*`, `%`, `~`, `#`, ...)
             # are excluded: the presigned CRUD path rewrites those in the
             # logical key (`*` → `%2A`), so a byte-faithful multipart write
-            # can't be read back — a separate pre-existing limitation.
+            # can't be read back through it — a separate limitation of the
+            # presigned path.
             "specials !('):@+,;$&/part=2",
         ],
     )

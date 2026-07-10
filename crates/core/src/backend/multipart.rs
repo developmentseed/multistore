@@ -20,8 +20,8 @@ use url::Url;
 /// decoded request path, and `url::Url` leaves `=` and friends literal in
 /// paths — so the key must be encoded with this exact set before it is
 /// spliced into the URL, or the backend signature won't match
-/// (`SignatureDoesNotMatch`). Matches `object_store`'s presigned-path
-/// encoding, which is why plain PUT/GET on such keys already work.
+/// (`SignatureDoesNotMatch`). This is the same strict set `object_store`
+/// applies when building presigned URLs for the CRUD operations.
 const S3_PATH_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
