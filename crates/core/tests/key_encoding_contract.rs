@@ -107,23 +107,14 @@ fn all_builders_agree_byte_for_byte() {
 }
 
 /// Every wire path must percent-decode back to exactly the logical key —
-/// that decode is what the backend uses to pick the object.
+/// that decode is what the backend uses to pick the object. One builder
+/// suffices: `all_builders_agree_byte_for_byte` pins the others to it.
 #[test]
 fn wire_paths_decode_to_the_logical_key() {
-    for with_creds in [true, false] {
-        let config = bucket_config(with_creds);
-        for key in KEYS {
-            for (builder, path) in [
-                ("presigned", presigned_path(&config, key)),
-                ("raw-signed", raw_signed_path(&config, key)),
-            ] {
-                let decoded = percent_decode_str(&path).decode_utf8().unwrap();
-                assert_eq!(
-                    decoded,
-                    format!("/backend-bucket/{key}"),
-                    "{builder} (creds={with_creds}) for key {key:?}"
-                );
-            }
-        }
+    let config = bucket_config(true);
+    for key in KEYS {
+        let path = presigned_path(&config, key);
+        let decoded = percent_decode_str(&path).decode_utf8().unwrap();
+        assert_eq!(decoded, format!("/backend-bucket/{key}"), "key {key:?}");
     }
 }

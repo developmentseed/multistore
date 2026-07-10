@@ -336,12 +336,11 @@ class TestMultipartUploads:
             # Hive-style partition path — data.source.coop#180.
             "by_country/country_iso=ETH/ETH",
             # The other chars the url crate leaves literal in paths but AWS
-            # strict-encodes when reconstructing the canonical URI. Chars in
-            # object_store's PathPart INVALID set (`*`, `%`, `~`, `#`, ...)
-            # are excluded: the presigned CRUD path rewrites those in the
-            # logical key (`*` → `%2A`), so a byte-faithful multipart write
-            # can't be read back through it — a separate limitation of the
-            # presigned path.
+            # strict-encodes when reconstructing the canonical URI. The
+            # object_store PathPart INVALID set (`*`, `%`, `~`, `#`, ...) is
+            # covered by the cross-path contract test
+            # (crates/core/tests/key_encoding_contract.rs) and by
+            # TestByteFaithfulKeys.
             "specials !('):@+,;$&/part=2",
         ],
     )

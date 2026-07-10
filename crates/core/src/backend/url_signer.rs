@@ -90,7 +90,6 @@ impl Signer for UnsignedUrlSigner {
             super::multipart::S3_PATH_ENCODE_SET,
         )
         .to_string();
-        let key = key.as_str();
         let url_str = if self.bucket.is_empty() {
             if key.is_empty() {
                 format!("{}/", self.endpoint)
