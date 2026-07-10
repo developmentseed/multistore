@@ -330,6 +330,46 @@ class TestMultipartUploads:
 
         client.delete_object(Bucket="private-uploads", Key=key)
 
+    @pytest.mark.parametrize(
+        "key_stem",
+        [
+            # Hive-style partition path — data.source.coop#180.
+            "by_country/country_iso=ETH/ETH",
+            # The other chars the url crate leaves literal in paths but AWS
+            # strict-encodes when reconstructing the canonical URI. Chars in
+            # object_store's PathPart INVALID set (`*`, `%`, `~`, `#`, ...)
+            # are excluded: the presigned CRUD path rewrites those in the
+            # logical key (`*` → `%2A`), so a byte-faithful multipart write
+            # can't be read back — a separate pre-existing limitation.
+            "specials !('):@+,;$&/part=2",
+        ],
+    )
+    def test_multipart_special_char_key_roundtrip(self, key_stem):
+        """Multipart to a key with chars outside the RFC 3986 unreserved set.
+
+        The raw-signed backend URL must percent-encode these or the backend
+        (AWS/MinIO) re-encodes them server-side and rejects the signature with
+        SignatureDoesNotMatch at CreateMultipartUpload.
+        """
+        client = static_client()
+        key = f"{key_stem}-{uuid.uuid4()}.bin"
+        body = b"special-key-payload!" * (6 * MIB // 20 + 1)
+        body = body[: 6 * MIB]  # 6 MiB → two parts, forces multipart
+        config = TransferConfig(
+            multipart_threshold=5 * MIB,
+            multipart_chunksize=5 * MIB,
+            max_concurrency=1,
+            use_threads=False,
+        )
+
+        client.upload_fileobj(BytesIO(body), "private-uploads", key, Config=config)
+        # Reading back through the presigned GET path proves both paths agree
+        # on what the key is.
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == body
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
     def test_multipart_low_level_explicit(self):
         """Drive Create/UploadPart/Complete directly and verify the round-trip."""
         client = static_client()
