@@ -93,15 +93,33 @@ jobs:
       - name: Wait for deployment to be live
         run: |
           URL="${{ steps.url.outputs.deploy_url }}"
-          for i in $(seq 1 30); do
-            if curl -sf -o /dev/null -w "%{http_code}" "$URL" 2>/dev/null; then
-              echo "Deployment is live"
-              exit 0
+          # A first-ever workers.dev name and freshly-put secrets both
+          # propagate eventually: a single 200 can come from a not-yet-
+          # consistent edge or a pre-secrets worker version, letting the
+          # smoke tests start too early (bare 404s / secretless 500s).
+          # OIDC discovery only mounts once OIDC_PROVIDER_KEY is loaded,
+          # so it proves the post-secrets version is serving; require
+          # consecutive successes so a flapping edge doesn't pass.
+          if [ "${{ inputs.set_secrets }}" = "true" ]; then
+            PROBE="$URL/.well-known/openid-configuration"
+          else
+            PROBE="$URL/"
+          fi
+          ok=0
+          for i in $(seq 1 90); do
+            if curl -sf -o /dev/null "$PROBE" 2>/dev/null; then
+              ok=$((ok+1))
+              if [ "$ok" -ge 3 ]; then
+                echo "Deployment is live (3 consecutive successful probes)"
+                exit 0
+              fi
+            else
+              ok=0
             fi
-            echo "Attempt $i: waiting for deployment..."
+            echo "Attempt $i: waiting for deployment (consecutive OKs: $ok)..."
             sleep 2
           done
-          echo "Deployment did not become live in time"
+          echo "Deployment did not become live in time (probe: $PROBE)"
           exit 1
 
   smoke-test:
