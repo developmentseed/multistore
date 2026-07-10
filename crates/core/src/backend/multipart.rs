@@ -22,12 +22,13 @@ use url::Url;
 /// spliced into the URL, or the backend signature won't match
 /// (`SignatureDoesNotMatch`). This is the same strict set `object_store`
 /// applies when building presigned URLs for the CRUD operations.
-const S3_PATH_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~')
-    .remove(b'/');
+pub(crate) const S3_PATH_ENCODE_SET: &percent_encoding::AsciiSet =
+    &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~')
+        .remove(b'/');
 
 /// Build the backend URL for an S3 operation.
 ///
