@@ -1556,9 +1556,10 @@ fn error_response(err: &ProxyError, resource: &str, request_id: &str, debug: boo
 ///
 /// `Path::parse` rejects keys with empty (`a//b`) or relative (`.`, `..`)
 /// segments; surface those as `InvalidRequest` (400) rather than silently
-/// collapsing them to a different key as `Path::from` did. It still strips
-/// one leading and one trailing `/` (same as `Path::from`), so directory
-/// markers like `dir/` silently address `dir` — a known residual gap.
+/// collapsing them to a different key as `Path::from` did. This is a
+/// backstop: `validate_key` already rejects that class — plus leading and
+/// trailing slashes, which `Path::parse` would silently strip — for every
+/// keyed operation at parse time.
 fn build_object_path(
     config: &BucketConfig,
     key: &str,

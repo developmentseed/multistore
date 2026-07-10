@@ -51,6 +51,12 @@ pub fn build_backend_url(
         });
     }
 
+    // Backstop: keys are validated at operation-parse time
+    // (`build_s3_operation`); enforce here too so a hand-built operation can
+    // never splice a degenerate key (`a//b`, `..`) into a URL that
+    // normalizes to a different — possibly cross-bucket — target.
+    crate::api::request::validate_key(operation.key())?;
+
     let mut key = String::new();
     if let Some(prefix) = &config.backend_prefix {
         key.push_str(prefix.trim_end_matches('/'));
@@ -156,6 +162,21 @@ mod tests {
             anonymous_access: false,
             allowed_roles: vec![],
             backend_options,
+        }
+    }
+
+    #[test]
+    fn degenerate_keys_are_rejected_before_url_build() {
+        let config = test_bucket_config();
+        for key in ["a//b.txt", "a/../b.txt"] {
+            let op = S3Operation::CreateMultipartUpload {
+                bucket: "test".into(),
+                key: key.into(),
+            };
+            assert!(
+                build_backend_url(&config, &op).is_err(),
+                "hand-built op with key {key:?} must not reach the URL"
+            );
         }
     }
 

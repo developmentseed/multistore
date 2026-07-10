@@ -515,14 +515,24 @@ class TestByteFaithfulKeys:
 
         client.delete_object(Bucket="private-uploads", Key=key)
 
-    def test_degenerate_key_segments_rejected(self):
-        # `Path::from` silently collapsed `a//b` to `a/b` (a different key);
-        # empty segments must now be loud 400s instead of silent rewrites.
+    def test_degenerate_keys_rejected_on_every_path(self):
+        # `Path::from` silently collapsed `a//b` to `a/b` and `dir/` to `dir`
+        # (different keys); the shared validator makes these loud 400s on
+        # every keyed operation — including the raw-signed multipart path,
+        # which would otherwise accept keys the presigned path can't address.
+        # Real S3 accepts such keys; the proxy is deliberately stricter.
         # (`..` segments are collapsed by WHATWG URL parsing at the edge
-        # before the proxy sees them, so only the unit test covers those.)
+        # before the proxy sees them, so only the unit tests cover those.)
         client = static_client()
+        for key in ("faithful/a//b.txt", "faithful/dir/"):
+            with pytest.raises(ClientError) as exc_info:
+                client.put_object(Bucket="private-uploads", Key=key, Body=b"x")
+            assert exc_info.value.response["Error"]["Code"] == "InvalidRequest"
+
         with pytest.raises(ClientError) as exc_info:
-            client.put_object(Bucket="private-uploads", Key="faithful/a//b.txt", Body=b"x")
+            client.create_multipart_upload(
+                Bucket="private-uploads", Key="faithful/a//b.txt"
+            )
         assert exc_info.value.response["Error"]["Code"] == "InvalidRequest"
 
 
