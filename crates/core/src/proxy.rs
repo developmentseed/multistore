@@ -1059,7 +1059,7 @@ where
         request_id: &str,
     ) -> Result<ForwardRequest, ProxyError> {
         let signer = self.backend.create_signer(config)?;
-        let path = build_object_path(config, key);
+        let path = build_object_path(config, key)?;
 
         let url = signer
             .signed_url(method.clone(), &path, PRESIGNED_URL_TTL)
@@ -1545,8 +1545,27 @@ fn error_response(err: &ProxyError, resource: &str, request_id: &str, debug: boo
 }
 
 /// Build an object_store Path from a bucket config and client-visible key.
-fn build_object_path(config: &BucketConfig, key: &str) -> object_store::path::Path {
-    object_store::path::Path::from(apply_backend_prefix(config, key))
+///
+/// Uses `Path::parse` (byte-faithful) rather than `Path::from`: `Path::from`
+/// percent-encodes characters object_store considers unsafe (`*`, `%`, `~`,
+/// `#`, ...) into the *logical* path, silently renaming the backend object
+/// (`a*.bin` is stored as `a%2A.bin`) and splitting the key namespace from
+/// the raw-signed multipart path, which stores keys byte-faithfully. With
+/// `Path::parse` the raw path is the key itself, and object_store's URL
+/// builder percent-encodes it exactly once at the wire boundary.
+///
+/// `Path::parse` rejects keys with empty (`a//b`) or relative (`.`, `..`)
+/// segments; surface those as `InvalidRequest` (400) rather than silently
+/// collapsing them to a different key as `Path::from` did. This is a
+/// backstop: `validate_key` already rejects that class — plus leading and
+/// trailing slashes, which `Path::parse` would silently strip — for every
+/// keyed operation at parse time.
+fn build_object_path(
+    config: &BucketConfig,
+    key: &str,
+) -> Result<object_store::path::Path, ProxyError> {
+    object_store::path::Path::parse(apply_backend_prefix(config, key))
+        .map_err(|e| ProxyError::InvalidRequest(format!("invalid object key: {e}")))
 }
 
 /// Parse the declared `Content-Length` header as a byte count, if present and valid.
@@ -2667,5 +2686,31 @@ mod tests {
                 "checksum headers missing from SignedHeaders: {auth}"
             );
         });
+    }
+
+    #[test]
+    fn object_path_is_byte_faithful() {
+        let config = test_bucket_config("test");
+        for key in ["report*.pdf", "100%.txt", "a~b#c.bin", "dir/%3D-lit.txt"] {
+            let path = build_object_path(&config, key).unwrap();
+            assert_eq!(path.as_ref(), key, "logical key must not be rewritten");
+        }
+    }
+
+    #[test]
+    fn object_path_applies_backend_prefix_byte_faithfully() {
+        let mut config = test_bucket_config("test");
+        config.backend_prefix = Some("data/".into());
+        let path = build_object_path(&config, "report*.pdf").unwrap();
+        assert_eq!(path.as_ref(), "data/report*.pdf");
+    }
+
+    #[test]
+    fn object_path_rejects_degenerate_segments() {
+        let config = test_bucket_config("test");
+        for key in ["a//b.txt", "a/./b.txt", "a/../b.txt"] {
+            let err = build_object_path(&config, key).unwrap_err();
+            assert_eq!(err.status_code(), 400, "key {key:?} must be a 400");
+        }
     }
 }

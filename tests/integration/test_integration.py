@@ -336,12 +336,11 @@ class TestMultipartUploads:
             # Hive-style partition path — data.source.coop#180.
             "by_country/country_iso=ETH/ETH",
             # The other chars the url crate leaves literal in paths but AWS
-            # strict-encodes when reconstructing the canonical URI. Chars in
-            # object_store's PathPart INVALID set (`*`, `%`, `~`, `#`, ...)
-            # are excluded: the presigned CRUD path rewrites those in the
-            # logical key (`*` → `%2A`), so a byte-faithful multipart write
-            # can't be read back through it — a separate limitation of the
-            # presigned path.
+            # strict-encodes when reconstructing the canonical URI. The
+            # object_store PathPart INVALID set (`*`, `%`, `~`, `#`, ...) is
+            # covered by the cross-path contract test
+            # (crates/core/tests/key_encoding_contract.rs) and by
+            # TestByteFaithfulKeys.
             "specials !('):@+,;$&/part=2",
         ],
     )
@@ -432,6 +431,109 @@ class TestMultipartUploads:
                 UploadId=upload_id,
                 MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": "x"}]},
             )
+
+
+# ---------------------------------------------------------------------------
+# Byte-faithful keys
+# ---------------------------------------------------------------------------
+
+class TestByteFaithfulKeys:
+    """Keys with chars object_store's `Path::from` rewrites (`*`, `%`, `~`, ...)
+    must round-trip byte-faithfully through every path: the backend object
+    carries the exact requested key, and the presigned CRUD path and the
+    raw-signed multipart path agree on what that key is.
+    """
+
+    @staticmethod
+    def _backend_client():
+        """Direct MinIO client, bypassing the proxy, to inspect stored keys."""
+        return boto3.client(
+            "s3",
+            endpoint_url="http://localhost:9000",
+            aws_access_key_id="minioadmin",
+            aws_secret_access_key="minioadmin",
+            region_name="us-east-1",
+        )
+
+    def test_star_key_stored_byte_faithfully(self):
+        client = static_client()
+        prefix = f"faithful-{uuid.uuid4()}"
+        key = f"{prefix}/report*.pdf"
+
+        client.put_object(Bucket="private-uploads", Key=key, Body=b"star")
+
+        backend_keys = [
+            o["Key"]
+            for o in self._backend_client()
+            .list_objects_v2(Bucket="private-uploads", Prefix=prefix)
+            .get("Contents", [])
+        ]
+        assert backend_keys == [key], "backend object must carry the exact key"
+
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"star"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+        assert (
+            client.list_objects_v2(Bucket="private-uploads", Prefix=prefix).get(
+                "KeyCount", 0
+            )
+            == 0
+        )
+
+    def test_percent_keys_are_distinct_objects(self):
+        # `100%.txt` and `100%25.txt` must never alias to one backend object.
+        client = static_client()
+        prefix = f"faithful-{uuid.uuid4()}"
+        k1, k2 = f"{prefix}/100%.txt", f"{prefix}/100%25.txt"
+
+        client.put_object(Bucket="private-uploads", Key=k1, Body=b"A")
+        client.put_object(Bucket="private-uploads", Key=k2, Body=b"B")
+
+        assert client.get_object(Bucket="private-uploads", Key=k1)["Body"].read() == b"A"
+        assert client.get_object(Bucket="private-uploads", Key=k2)["Body"].read() == b"B"
+
+        for k in (k1, k2):
+            client.delete_object(Bucket="private-uploads", Key=k)
+
+    def test_multipart_write_presigned_read_agree(self):
+        # Multipart (raw-signed) writes byte-faithfully; GET (presigned) must
+        # address the same backend key.
+        client = static_client()
+        key = f"faithful-{uuid.uuid4()}/mp*.bin"
+        body = b"y" * (6 * MIB)
+        config = TransferConfig(
+            multipart_threshold=5 * MIB,
+            multipart_chunksize=5 * MIB,
+            max_concurrency=1,
+            use_threads=False,
+        )
+
+        client.upload_fileobj(BytesIO(body), "private-uploads", key, Config=config)
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == body
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_degenerate_keys_rejected_on_every_path(self):
+        # `Path::from` silently collapsed `a//b` to `a/b` and `dir/` to `dir`
+        # (different keys); the shared validator makes these loud 400s on
+        # every keyed operation — including the raw-signed multipart path,
+        # which would otherwise accept keys the presigned path can't address.
+        # Real S3 accepts such keys; the proxy is deliberately stricter.
+        # (`..` segments are collapsed by WHATWG URL parsing at the edge
+        # before the proxy sees them, so only the unit tests cover those.)
+        client = static_client()
+        for key in ("faithful/a//b.txt", "faithful/dir/"):
+            with pytest.raises(ClientError) as exc_info:
+                client.put_object(Bucket="private-uploads", Key=key, Body=b"x")
+            assert exc_info.value.response["Error"]["Code"] == "InvalidRequest"
+
+        with pytest.raises(ClientError) as exc_info:
+            client.create_multipart_upload(
+                Bucket="private-uploads", Key="faithful/a//b.txt"
+            )
+        assert exc_info.value.response["Error"]["Code"] == "InvalidRequest"
 
 
 # ---------------------------------------------------------------------------

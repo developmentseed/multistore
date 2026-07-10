@@ -55,6 +55,8 @@ Handled by OIDC discovery closures (registered on the `Router` via `OidcRouterEx
 > - **Server-side copy is not supported** — A `PUT` carrying `x-amz-copy-source` (CopyObject / UploadPartCopy) is rejected with `501 NotImplemented` rather than silently overwriting the destination.
 > - **`x-amz-*` write headers are dropped** — Object metadata, storage class, tagging, ACLs, SSE, and checksum headers on writes are not forwarded (see "Writes and request headers" above).
 > - **Versioned/MFA delete is not handled** — A `?versionId=` on a delete is ignored; the current object version is deleted.
+> - **Degenerate object keys are rejected** — Keys containing empty, `.`, or `..` path segments (including leading/trailing slashes, e.g. `dir/` folder markers), or ASCII control characters, return `400 InvalidRequest` on every keyed operation. Real S3 accepts such keys; the proxy is deliberately stricter because they cannot be addressed consistently across its presigned and raw-signed backend paths. Batch-delete body keys are exempt, as the remediation route for legacy keys already stored under such names.
+> - **Keys are otherwise byte-faithful** — All other keys (including `*`, `%`, `~`, `#`, unicode) are stored on the backend exactly as sent. Objects written through versions **before 0.6.4** via single presigned PUT with characters in object_store's rewrite set (`*`, `%`, `~`, `#`, `?`, `[`, `]`, ...) were silently stored under percent-encoded names (`a*.bin` as `a%2A.bin`); they remain addressable only by that literal mangled name and need a one-time rename to recover their logical keys.
 
 ### Upload size on the Cloudflare Workers runtime
 
