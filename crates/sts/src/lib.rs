@@ -43,18 +43,25 @@ pub use responses::{build_sts_error_response, build_sts_response};
 pub use sealed_token::TokenKey;
 
 /// Try to handle an STS request. Returns `Some((status, xml))` if the query
-/// contained an STS action, or `None` if it wasn't an STS request.
+/// string or form-encoded body contained an STS action, or `None` if it
+/// wasn't an STS request.
+///
+/// AWS STS accepts `AssumeRoleWithWebIdentity` parameters either in the query
+/// string or as an `application/x-www-form-urlencoded` `POST` body — SDKs send
+/// the latter — so both are checked, query first. Parameters are read from
+/// exactly one source, never merged across the two.
 ///
 /// Requires a `TokenKey` — minted credentials are encrypted into the session
 /// token itself, so no server-side storage is needed. If `token_key` is `None`
 /// and an STS request arrives, an error response is returned.
 pub async fn try_handle_sts<C: CredentialRegistry>(
     query: Option<&str>,
+    form_body: Option<&str>,
     config: &C,
     jwks_cache: &JwksCache,
     token_key: Option<&TokenKey>,
 ) -> Option<(u16, String)> {
-    let sts_result = try_parse_sts_request(query)?;
+    let sts_result = try_parse_sts_request(query).or_else(|| try_parse_sts_request(form_body))?;
     let (status, xml) = match sts_result {
         Ok(sts_request) => {
             let Some(key) = token_key else {

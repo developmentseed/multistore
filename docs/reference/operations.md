@@ -36,7 +36,7 @@ Handled by an STS closure (registered on the `Router` via `StsRouterExt`).
 
 | Operation | HTTP Method | Description |
 |-----------|------------|-------------|
-| AssumeRoleWithWebIdentity | `POST /?Action=AssumeRoleWithWebIdentity&...` | Exchange OIDC JWT for temporary credentials |
+| AssumeRoleWithWebIdentity | `POST /?Action=AssumeRoleWithWebIdentity&...` (params in the query string or a form-encoded body, as AWS SDKs send them) | Exchange OIDC JWT for temporary credentials |
 
 ## OIDC Discovery Endpoints
 

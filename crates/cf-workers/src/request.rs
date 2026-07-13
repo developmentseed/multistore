@@ -46,6 +46,12 @@ pub struct RequestParts {
     pub query: Option<String>,
     /// The HTTP request headers.
     pub headers: HeaderMap,
+    /// The collected form-encoded body of an
+    /// `application/x-www-form-urlencoded` `POST`, populated by
+    /// [`absorb_form_body`](Self::absorb_form_body). AWS SDKs send
+    /// query-protocol operations (STS `AssumeRoleWithWebIdentity`) this way,
+    /// so without it the STS route handler never sees SDK requests.
+    pub form_body: Option<String>,
 }
 
 impl RequestParts {
@@ -81,9 +87,33 @@ impl RequestParts {
                 signing_path,
                 query,
                 headers,
+                form_body: None,
             },
             body,
         ))
+    }
+
+    /// Collect a form-encoded `POST` body into [`form_body`](Self::form_body),
+    /// returning the (now empty) body to pass on to the gateway.
+    ///
+    /// A no-op passthrough for every other request shape, so integrators can
+    /// call it unconditionally between [`from_web_sys`](Self::from_web_sys)
+    /// and dispatch:
+    ///
+    /// ```rust,ignore
+    /// let (mut parts, mut body) = RequestParts::from_web_sys(&req)?;
+    /// body = parts.absorb_form_body(body).await?;
+    /// ```
+    ///
+    /// Form-encoded `POST`s are not part of the S3 protocol, so consuming the
+    /// stream here never steals a payload the forwarding path needs.
+    pub async fn absorb_form_body(&mut self, body: JsBody) -> Result<JsBody, String> {
+        if !self.as_request_info().is_form_urlencoded_post() {
+            return Ok(body);
+        }
+        let bytes = crate::body::collect_js_body(body).await?;
+        self.form_body = Some(String::from_utf8_lossy(&bytes).into_owned());
+        Ok(JsBody::new(None))
     }
 
     /// Borrow this struct as a [`RequestInfo`] for gateway dispatch.
@@ -102,5 +132,6 @@ impl RequestParts {
             None,
         )
         .with_signing_path(&self.signing_path)
+        .with_form_body(self.form_body.as_deref())
     }
 }

@@ -257,6 +257,19 @@ pub struct RequestInfo<'a> {
     /// When `None`, `query` is used for both operation parsing and signature
     /// verification.
     pub signing_query: Option<&'a str>,
+    /// The form-encoded request body, for handlers that accept parameters in
+    /// the body as well as the query string.
+    ///
+    /// AWS query-protocol operations (STS `AssumeRoleWithWebIdentity` in
+    /// particular) are sent by AWS SDKs as `POST` requests with an
+    /// `application/x-www-form-urlencoded` body instead of a query string, so
+    /// a body-blind dispatch can never serve unmodified SDK clients. Runtimes
+    /// that want SDK compatibility should collect the body of such requests
+    /// (see [`is_form_urlencoded_post`](Self::is_form_urlencoded_post)) and
+    /// attach it here via
+    /// [`with_form_body`](Self::with_form_body); the S3 data path never uses
+    /// form-encoded bodies, so this is `None` for every other request shape.
+    pub form_body: Option<&'a str>,
 }
 
 impl<'a> RequestInfo<'a> {
@@ -277,7 +290,41 @@ impl<'a> RequestInfo<'a> {
             params: Params::default(),
             signing_path: None,
             signing_query: None,
+            form_body: None,
         }
+    }
+
+    /// Attach a form-encoded request body for handlers that accept parameters
+    /// in the body (AWS query-protocol operations like STS). See
+    /// [`RequestInfo::form_body`].
+    pub fn with_form_body(mut self, form_body: Option<&'a str>) -> Self {
+        self.form_body = form_body;
+        self
+    }
+
+    /// Whether this request is a `POST` with an
+    /// `application/x-www-form-urlencoded` body — the shape AWS SDKs use for
+    /// query-protocol operations like STS `AssumeRoleWithWebIdentity`.
+    ///
+    /// Runtimes use this to decide when to collect the body and attach it via
+    /// [`with_form_body`](Self::with_form_body). The check ignores any
+    /// `; charset=...` parameter on the content type. Form-encoded `POST`s are
+    /// not part of the S3 protocol, so collecting such a body never steals a
+    /// payload the data path needs.
+    pub fn is_form_urlencoded_post(&self) -> bool {
+        self.method == Method::POST
+            && self
+                .headers
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| {
+                    v.split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+                })
+                .unwrap_or(false)
     }
 
     /// Set the original client-facing path for SigV4 signature verification.
@@ -452,5 +499,39 @@ mod tests {
 
         let filtered = filter_response_headers(&headers);
         assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_is_form_urlencoded_post() {
+        let form = |ct: &str| {
+            let mut headers = http::HeaderMap::new();
+            headers.insert("content-type", ct.parse().unwrap());
+            headers
+        };
+
+        let headers = form("application/x-www-form-urlencoded");
+        assert!(
+            RequestInfo::new(&Method::POST, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+        // Charset parameter and casing are ignored.
+        let headers = form("Application/X-WWW-Form-Urlencoded; charset=UTF-8");
+        assert!(
+            RequestInfo::new(&Method::POST, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+        // Wrong method.
+        let headers = form("application/x-www-form-urlencoded");
+        assert!(
+            !RequestInfo::new(&Method::GET, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+        // Wrong content type (S3 batch delete is a POST with XML).
+        let headers = form("application/xml");
+        assert!(
+            !RequestInfo::new(&Method::POST, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+        // No content type at all.
+        let headers = http::HeaderMap::new();
+        assert!(
+            !RequestInfo::new(&Method::POST, "/", None, &headers, None).is_form_urlencoded_post()
+        );
     }
 }

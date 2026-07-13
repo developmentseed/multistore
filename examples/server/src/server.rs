@@ -147,7 +147,7 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
     State(state): State<Arc<AppState<R, C>>>,
     req: axum::extract::Request,
 ) -> Response {
-    let (parts, body) = req.into_parts();
+    let (parts, mut body) = req.into_parts();
     let method = parts.method;
     let uri = parts.uri;
     let path = uri.path().to_string();
@@ -160,7 +160,31 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
         "incoming request"
     );
 
-    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
+    // AWS SDKs send STS AssumeRoleWithWebIdentity as a form-encoded POST body
+    // rather than query parameters; collect it so the STS handler sees it.
+    // Form bodies carry a JWT and a few short params, so 64 KiB is generous.
+    const FORM_BODY_MAX_BYTES: usize = 64 * 1024;
+    let form_body = if RequestInfo::new(&method, &path, query.as_deref(), &headers, None)
+        .is_form_urlencoded_post()
+    {
+        match axum::body::to_bytes(body, FORM_BODY_MAX_BYTES).await {
+            Ok(bytes) => {
+                body = Body::empty();
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Err(_) => {
+                return Response::builder()
+                    .status(400)
+                    .body(Body::from("form body too large or unreadable"))
+                    .unwrap();
+            }
+        }
+    } else {
+        None
+    };
+
+    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None)
+        .with_form_body(form_body.as_deref());
 
     match state
         .handler

@@ -112,7 +112,7 @@ async fn main() -> Result<(), Error> {
 
 async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
     let state = STATE.get().expect("state not initialized");
-    let (parts, body) = req.into_parts();
+    let (parts, mut body) = req.into_parts();
     let method = parts.method;
     let uri = parts.uri;
     let path = uri.path().to_string();
@@ -121,7 +121,25 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
 
     tracing::debug!(method = %method, uri = %uri, "incoming request");
 
-    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
+    // AWS SDKs send STS AssumeRoleWithWebIdentity as a form-encoded POST body
+    // rather than query parameters; collect it so the STS handler sees it.
+    // Lambda bodies are already buffered, so this is a cheap move.
+    let form_body = if RequestInfo::new(&method, &path, query.as_deref(), &headers, None)
+        .is_form_urlencoded_post()
+    {
+        let text = match &body {
+            Body::Text(s) => s.clone(),
+            Body::Binary(b) => String::from_utf8_lossy(b).into_owned(),
+            Body::Empty => String::new(),
+        };
+        body = Body::Empty;
+        Some(text)
+    } else {
+        None
+    };
+
+    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None)
+        .with_form_body(form_body.as_deref());
 
     Ok(
         match state

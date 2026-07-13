@@ -1,6 +1,9 @@
 //! STS request parsing.
 //!
-//! Extracts `AssumeRoleWithWebIdentity` parameters from query strings.
+//! Extracts `AssumeRoleWithWebIdentity` parameters from a form-urlencoded
+//! parameter string — a query string, or the body of an
+//! `application/x-www-form-urlencoded` `POST` (the shape AWS SDKs send);
+//! `try_handle_sts` checks both.
 
 use multistore::error::ProxyError;
 
@@ -15,9 +18,11 @@ pub struct StsRequest {
     pub duration_seconds: Option<u64>,
 }
 
-/// Try to parse an STS request from the query string.
+/// Try to parse an STS request from a form-urlencoded parameter string — a
+/// query string, or a form-encoded `POST` body (the two places AWS STS accepts
+/// parameters).
 ///
-/// Returns `None` if the query does not contain `Action=AssumeRoleWithWebIdentity`
+/// Returns `None` if the string does not contain `Action=AssumeRoleWithWebIdentity`
 /// (i.e., this is not an STS request). Returns `Some(Ok(..))` on success or
 /// `Some(Err(..))` if it is an STS request but required parameters are missing.
 pub fn try_parse_sts_request(query: Option<&str>) -> Option<Result<StsRequest, ProxyError>> {
