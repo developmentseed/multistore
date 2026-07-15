@@ -116,8 +116,12 @@ fn sign_request(
     )
 }
 
-/// Build headers and auth for a simple GET request.
-fn make_signed_headers(access_key_id: &str, secret_access_key: &str) -> HeaderMap {
+/// Build headers with a valid SigV4 GET signature over `signing_path`.
+fn signed_get_headers(
+    signing_path: &str,
+    access_key_id: &str,
+    secret_access_key: &str,
+) -> HeaderMap {
     let date_stamp = "20240101";
     let amz_date = "20240101T000000Z";
     let region = "us-east-1";
@@ -130,7 +134,7 @@ fn make_signed_headers(access_key_id: &str, secret_access_key: &str) -> HeaderMa
 
     let auth = sign_request(
         &http::Method::GET,
-        "/test-bucket/key.txt",
+        signing_path,
         "",
         &headers,
         access_key_id,
@@ -143,6 +147,11 @@ fn make_signed_headers(access_key_id: &str, secret_access_key: &str) -> HeaderMa
     );
     headers.insert("authorization", auth.parse().unwrap());
     headers
+}
+
+/// Build headers and auth for a simple GET request.
+fn make_signed_headers(access_key_id: &str, secret_access_key: &str) -> HeaderMap {
+    signed_get_headers("/test-bucket/key.txt", access_key_id, secret_access_key)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
@@ -330,6 +339,63 @@ fn unknown_access_key_is_rejected() {
         .unwrap_err();
 
         assert!(matches!(err, ProxyError::AccessDenied));
+    });
+}
+
+#[test]
+fn encoded_signing_path_verifies() {
+    run(async {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let config = MockConfig::with_credential(secret);
+        // The client signs the percent-encoded path (a space → `%20`); verifying
+        // against that same encoded path succeeds.
+        let headers = signed_get_headers("/test-bucket/foo%20bar", "AKIAIOSFODNN7EXAMPLE", secret);
+
+        let identity = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/foo%20bar",
+            "",
+            &headers,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            identity,
+            crate::types::ResolvedIdentity::Authenticated(_)
+        ));
+    });
+}
+
+#[test]
+fn decoded_signing_path_is_rejected() {
+    // Regression: the client signs `/test-bucket/foo%20bar`, but verifying
+    // against the *decoded* `/test-bucket/foo bar` produces a different canonical
+    // URI, so it must fail — the exact shape of the bug that broke uploads of
+    // keys containing spaces (a decoded path reached signing).
+    run(async {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let config = MockConfig::with_credential(secret);
+        let headers = signed_get_headers("/test-bucket/foo%20bar", "AKIAIOSFODNN7EXAMPLE", secret);
+
+        let err = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/foo bar", // decoded — wrong for signing
+            "",
+            &headers,
+            &config,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, ProxyError::SignatureDoesNotMatch),
+            "decoded signing path must not verify, got: {:?}",
+            err
+        );
     });
 }
 

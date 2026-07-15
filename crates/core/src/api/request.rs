@@ -57,6 +57,7 @@ pub fn build_s3_operation(
     key: String,
     query: Option<&str>,
 ) -> Result<S3Operation, ProxyError> {
+    validate_key(&key)?;
     let query_params = parse_query_params(query);
 
     // Check for multipart upload query params
@@ -155,6 +156,35 @@ pub fn build_s3_operation(
     }
 }
 
+/// Validate a client-visible object key before any backend path is built.
+///
+/// Every backend URL builder must agree on what a key addresses. The
+/// presigned path's `Path::parse` rejects empty and `.`/`..` segments but
+/// silently strips a leading/trailing `/`; the raw-signed path
+/// (`build_backend_url`) would accept all of them — writing objects the
+/// presigned path can't address, breaking listings (object_store fails to
+/// parse listed keys with empty segments), and letting a literal `..` reach
+/// URL normalization. Reject the whole class loudly, once, for every keyed
+/// operation. Real S3 accepts these keys; the proxy is deliberately
+/// stricter. Batch-delete body keys are deliberately exempt — they never
+/// enter a URL path, and permissiveness there is the remediation route for
+/// legacy degenerate keys already on a backend.
+pub fn validate_key(key: &str) -> Result<(), ProxyError> {
+    if key.is_empty() {
+        return Ok(()); // bucket-level operation
+    }
+    let degenerate_segment = key
+        .split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..");
+    if degenerate_segment || key.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err(ProxyError::InvalidRequest(format!(
+            "invalid object key {key:?}: empty, `.`, or `..` path segments, \
+             leading/trailing slashes, and control characters are not allowed"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub enum HostStyle {
     /// Path-style: `/{bucket}/{key}`
@@ -240,5 +270,34 @@ mod tests {
     fn plain_put_still_parses_as_put_object() {
         let op = parse(Method::PUT, "/b/k.txt", None, &http::HeaderMap::new()).unwrap();
         assert!(matches!(op, S3Operation::PutObject { .. }));
+    }
+
+    #[test]
+    fn degenerate_keys_are_rejected_for_every_keyed_operation() {
+        let headers = http::HeaderMap::new();
+        for key in [
+            "a//b.txt",
+            "a/./b.txt",
+            "a/../b.txt",
+            "/a.txt",
+            "dir/",
+            "a\nb",
+        ] {
+            for (method, query) in [
+                (Method::GET, None),
+                (Method::PUT, None),
+                (Method::DELETE, None),
+                (Method::POST, Some("uploads")),
+            ] {
+                let err = build_s3_operation(&method, "b".into(), key.into(), query).unwrap_err();
+                assert!(
+                    matches!(err, ProxyError::InvalidRequest(_)),
+                    "{method} of key {key:?} must be InvalidRequest, got {err:?}"
+                );
+            }
+        }
+        // Bucket-level operations (empty key) are unaffected.
+        assert!(parse(Method::GET, "/b", None, &headers).is_ok());
+        assert!(parse(Method::POST, "/b", Some("delete"), &headers).is_ok());
     }
 }

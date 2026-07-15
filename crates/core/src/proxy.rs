@@ -91,6 +91,29 @@ const SIGNED_AWS_CHUNKED_UNSUPPORTED: &str =
 /// [`ProxyGateway::with_user_agent`] to include your application name.
 pub const DEFAULT_USER_AGENT: &str = concat!("multistore/", env!("CARGO_PKG_VERSION"));
 
+/// Headers forwarded (and signed) when streaming an `aws-chunked` upload:
+/// the de-chunk headers S3 needs to reconstruct the payload.
+const AWS_CHUNKED_FORWARD_HEADERS: &[&str] = &[
+    "content-type",
+    "content-encoding",
+    "x-amz-decoded-content-length",
+    "x-amz-trailer",
+];
+
+/// Headers forwarded (and signed) when streaming a *plain* (non-aws-chunked)
+/// `UploadPart` with `UNSIGNED-PAYLOAD`. The checksum headers are signed so S3
+/// still validates part integrity even though the payload itself is unsigned.
+const PLAIN_PART_FORWARD_HEADERS: &[&str] = &[
+    "content-type",
+    "content-md5",
+    "x-amz-sdk-checksum-algorithm",
+    "x-amz-checksum-crc32",
+    "x-amz-checksum-crc32c",
+    "x-amz-checksum-crc64nvme",
+    "x-amz-checksum-sha1",
+    "x-amz-checksum-sha256",
+];
+
 // Re-export types that were historically defined here for backwards compatibility.
 pub use crate::route_handler::{
     filter_response_headers, ForwardRequest, HandlerAction, PendingRequest, ProxyResult,
@@ -296,6 +319,40 @@ where
         Ok(())
     }
 
+    /// Whether this operation's body must be buffered before forwarding
+    /// (multipart control ops + batch delete, which parse the body to authorize
+    /// or re-sign it). Pure and synchronous — the classification comes straight
+    /// from the parsed S3 operation with no I/O — so `handle_request` can read
+    /// the body in the request's own I/O context ahead of any cross-request
+    /// await. PutObject and UploadPart stream zero-copy and are excluded; this
+    /// set must stay in sync with the `NeedsBody` arms of `dispatch_operation`.
+    fn op_needs_buffered_body(&self, req: &RequestInfo<'_>) -> bool {
+        let host_style = determine_host_style(req.headers, self.virtual_host_domain.as_deref());
+        matches!(
+            request::parse_s3_request(req.method, req.path, req.query, req.headers, host_style),
+            Ok(S3Operation::CreateMultipartUpload { .. }
+                | S3Operation::CompleteMultipartUpload { .. }
+                | S3Operation::AbortMultipartUpload { .. }
+                | S3Operation::DeleteObjects { .. })
+        )
+    }
+
+    /// Build an error [`GatewayResponse`] with its `Server-Timing` header
+    /// stamped. Used by the early returns in `handle_request` (body too large,
+    /// body read failure, body already consumed) that bail before dispatch.
+    fn early_error(
+        &self,
+        error: &ProxyError,
+        path: &str,
+        request_id: &str,
+        total_start: chrono::DateTime<chrono::Utc>,
+        dispatch_start: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> GatewayResponse<B::ResponseBody> {
+        let mut r = error_response(error, path, request_id, self.debug_errors);
+        self.maybe_inject_server_timing(&mut r.headers, total_start, dispatch_start, None);
+        GatewayResponse::Response(r)
+    }
+
     /// Inject a `Server-Timing` header into the response headers if enabled.
     fn maybe_inject_server_timing(
         &self,
@@ -400,6 +457,40 @@ where
             };
         }
 
+        // Buffered-body operations (multipart control ops + batch delete) must
+        // have their body read in THIS request's I/O context, before
+        // resolution's cross-request awaits (bucket lookup, STS exchange). On
+        // Cloudflare Workers the wasm-bindgen futures queue is shared across
+        // concurrent requests, so a body read deferred past an await can resume
+        // under a different request's I/O context and fail with "Cannot perform
+        // I/O on behalf of a different request". PutObject/UploadPart stream
+        // zero-copy and are excluded by the classifier.
+        let mut body = Some(body);
+        let mut prebuffered: Option<Bytes> = None;
+        if self.op_needs_buffered_body(req) {
+            // Bound the declared body size before reading it. This eager read is
+            // ahead of dispatch's own `check_upload_size`, so without this guard
+            // an oversized buffered op (e.g. a batch `DeleteObjects`) would be
+            // fully materialized into memory before being rejected. Header-only,
+            // no I/O.
+            if let Err(e) = self.check_upload_size(req.headers) {
+                return self.early_error(&e, req.path, "", total_start, None);
+            }
+            match collect_body(body.take().expect("body present")).await {
+                Ok(bytes) => prebuffered = Some(bytes),
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to read request body");
+                    return self.early_error(
+                        &ProxyError::Internal("failed to read request body".into()),
+                        req.path,
+                        "",
+                        total_start,
+                        None,
+                    );
+                }
+            }
+        }
+
         // Resolve via proxy pipeline (with metadata for after_dispatch)
         let dispatch_start = chrono::Utc::now();
         let (action, metadata) = self.resolve_request_with_metadata(req).await;
@@ -422,7 +513,20 @@ where
             }
             HandlerAction::Forward(fwd) => {
                 let backend_start = chrono::Utc::now();
-                match self.backend.forward(fwd, body).await {
+                // `body` is consumed only here (streaming/forward ops). If the
+                // eager pre-read already took it, `op_needs_buffered_body`
+                // over-matched an op that dispatched to Forward — fail closed
+                // rather than panic on the missing body.
+                let Some(fwd_body) = body.take() else {
+                    return self.early_error(
+                        &ProxyError::Internal("request body already consumed".into()),
+                        req.path,
+                        &metadata.request_id,
+                        total_start,
+                        Some(dispatch_start),
+                    );
+                };
+                match self.backend.forward(fwd, fwd_body).await {
                     Ok(mut resp) => {
                         resp.headers = filter_response_headers(&resp.headers);
                         let s = resp.status;
@@ -451,8 +555,12 @@ where
             }
             HandlerAction::NeedsBody(pending) => {
                 let backend_start = chrono::Utc::now();
-                match collect_body(body).await {
-                    Ok(bytes) => {
+                // The body was pre-read above: op_needs_buffered_body covers
+                // every NeedsBody op. A miss means the classifier drifted from
+                // dispatch_operation's NeedsBody arms — fail closed rather than
+                // re-read late (which would re-expose the cross-request hazard).
+                match prebuffered.take() {
+                    Some(bytes) => {
                         let result = self.handle_with_body(pending, bytes).await;
                         let s = result.status;
                         let rb = response_body_bytes(&result.body);
@@ -464,11 +572,14 @@ where
                             Some(backend_start),
                         )
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to read request body");
+                    None => {
+                        tracing::error!(
+                            operation = ?metadata.operation,
+                            "NeedsBody operation was not pre-buffered (classifier drift)"
+                        );
                         let err_resp = error_response(
-                            &ProxyError::Internal("failed to read request body".into()),
-                            "",
+                            &ProxyError::Internal("request body unavailable".into()),
+                            req.path,
                             &metadata.request_id,
                             self.debug_errors,
                         );
@@ -882,9 +993,11 @@ where
                     .await?;
                 Ok(HandlerAction::Response(result))
             }
-            // UploadPart carries the part body, which modern clients also send
-            // as aws-chunked — same streaming re-sign / reject handling as
-            // PutObject. A plain part still buffers via the raw-signed path.
+            // UploadPart carries the part body. aws-chunked parts re-sign and
+            // stream; a plain part streams too, via UNSIGNED-PAYLOAD header
+            // signing — never buffered. Buffering a part would materialize it
+            // into memory and, on Workers, defer the body read past the
+            // resolution awaits into another request's I/O context.
             S3Operation::UploadPart { .. } => {
                 Self::require_s3_backend(bucket_config)?;
                 self.check_upload_size(original_headers)?;
@@ -894,7 +1007,20 @@ where
                 {
                     return Ok(HandlerAction::Forward(fwd));
                 }
-                Ok(HandlerAction::NeedsBody(pending()))
+                // Plain (non-aws-chunked) part: stream it with UNSIGNED-PAYLOAD,
+                // forwarding+signing the checksum headers so S3 still validates
+                // part integrity. Mirrors PutObject's streaming write.
+                let fwd = self
+                    .build_streaming_forward(
+                        bucket_config,
+                        operation,
+                        UNSIGNED_PAYLOAD,
+                        PLAIN_PART_FORWARD_HEADERS,
+                        original_headers,
+                        request_id,
+                    )
+                    .await?;
+                Ok(HandlerAction::Forward(fwd))
             }
             // Multipart control operations carry only a small (XML or empty)
             // body, which is buffered and re-signed.
@@ -933,7 +1059,7 @@ where
         request_id: &str,
     ) -> Result<ForwardRequest, ProxyError> {
         let signer = self.backend.create_signer(config)?;
-        let path = build_object_path(config, key);
+        let path = build_object_path(config, key)?;
 
         let url = signer
             .signed_url(method.clone(), &path, PRESIGNED_URL_TTL)
@@ -985,6 +1111,7 @@ where
                         config,
                         operation,
                         sentinel,
+                        AWS_CHUNKED_FORWARD_HEADERS,
                         original_headers,
                         request_id,
                     )
@@ -1010,42 +1137,38 @@ where
         }
     }
 
-    /// Build a header-signed streaming PUT for an `aws-chunked`
-    /// *unsigned-payload* upload (PutObject or UploadPart).
+    /// Build a header-signed streaming PUT, re-signing only the request seed
+    /// with the backend credentials and letting the runtime stream the body
+    /// through untouched. Zero-copy, no buffering. Two callers:
     ///
-    /// These can't be presigned (a presigned URL signs `UNSIGNED-PAYLOAD`, which
-    /// S3 won't de-chunk) and shouldn't be buffered (memory). Instead we re-sign
-    /// only the request seed with the backend credentials — reusing the client's
-    /// `STREAMING-…` `x-amz-content-sha256` and the de-chunk headers — and let
-    /// the runtime stream the chunk framing through untouched for S3 to
-    /// de-chunk. Zero-copy, no buffering.
+    /// - aws-chunked uploads (`payload_hash` = the client's `STREAMING-…`
+    ///   sentinel, `forward_header_names` = the de-chunk headers): can't be
+    ///   presigned (a presigned URL signs `UNSIGNED-PAYLOAD`, which S3 won't
+    ///   de-chunk), so S3 reconstructs the payload from the chunk framing.
+    /// - plain `UploadPart` (`payload_hash` = `UNSIGNED-PAYLOAD`,
+    ///   `forward_header_names` = the checksum headers): streams a raw part
+    ///   instead of materializing it; the signed checksum headers let S3 still
+    ///   validate part integrity.
     ///
-    /// Only headers that are stable through the runtime's streaming fetch are
-    /// signed. `Content-Length` is forwarded but left *unsigned*: the transfer
-    /// framing is the runtime's to manage, so signing it risks a mismatch — S3
-    /// sizes the payload from `x-amz-decoded-content-length` and the chunk
-    /// framing regardless.
+    /// Only headers stable through the runtime's streaming fetch are signed.
+    /// `Content-Length` is forwarded but left *unsigned*: the transfer framing
+    /// is the runtime's to manage, so signing it risks a mismatch.
     async fn build_streaming_forward(
         &self,
         config: &BucketConfig,
         operation: &S3Operation,
         payload_hash: &str,
+        forward_header_names: &[&'static str],
         original_headers: &HeaderMap,
         request_id: &str,
     ) -> Result<ForwardRequest, ProxyError> {
-        // Caller (`try_streaming_forward`) has already gated on an S3 backend;
-        // this path hardcodes S3 SigV4 seed signing (`build_backend_url` +
-        // `sign_s3_request`).
+        // Caller has already gated on an S3 backend; this path hardcodes S3
+        // SigV4 seed signing (`build_backend_url` + `sign_s3_request`).
         let url = url::Url::parse(&build_backend_url(config, operation)?)
             .map_err(|e| ProxyError::Internal(format!("invalid backend URL: {e}")))?;
 
         let mut headers = HeaderMap::new();
-        for name in &[
-            "content-type",
-            "content-encoding",
-            "x-amz-decoded-content-length",
-            "x-amz-trailer",
-        ] {
+        for name in forward_header_names {
             if let Some(v) = original_headers.get(*name) {
                 headers.insert(*name, v.clone());
             }
@@ -1068,7 +1191,11 @@ where
         }
         headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
 
-        tracing::debug!(path = url.path(), "aws-chunked write via streaming re-sign");
+        tracing::debug!(
+            path = url.path(),
+            payload_hash,
+            "streaming write via backend re-sign"
+        );
         Ok(ForwardRequest {
             method: Method::PUT,
             url,
@@ -1418,8 +1545,27 @@ fn error_response(err: &ProxyError, resource: &str, request_id: &str, debug: boo
 }
 
 /// Build an object_store Path from a bucket config and client-visible key.
-fn build_object_path(config: &BucketConfig, key: &str) -> object_store::path::Path {
-    object_store::path::Path::from(apply_backend_prefix(config, key))
+///
+/// Uses `Path::parse` (byte-faithful) rather than `Path::from`: `Path::from`
+/// percent-encodes characters object_store considers unsafe (`*`, `%`, `~`,
+/// `#`, ...) into the *logical* path, silently renaming the backend object
+/// (`a*.bin` is stored as `a%2A.bin`) and splitting the key namespace from
+/// the raw-signed multipart path, which stores keys byte-faithfully. With
+/// `Path::parse` the raw path is the key itself, and object_store's URL
+/// builder percent-encodes it exactly once at the wire boundary.
+///
+/// `Path::parse` rejects keys with empty (`a//b`) or relative (`.`, `..`)
+/// segments; surface those as `InvalidRequest` (400) rather than silently
+/// collapsing them to a different key as `Path::from` did. This is a
+/// backstop: `validate_key` already rejects that class — plus leading and
+/// trailing slashes, which `Path::parse` would silently strip — for every
+/// keyed operation at parse time.
+fn build_object_path(
+    config: &BucketConfig,
+    key: &str,
+) -> Result<object_store::path::Path, ProxyError> {
+    object_store::path::Path::parse(apply_backend_prefix(config, key))
+        .map_err(|e| ProxyError::InvalidRequest(format!("invalid object key: {e}")))
 }
 
 /// Parse the declared `Content-Length` header as a byte count, if present and valid.
@@ -1987,6 +2133,84 @@ mod tests {
         });
     }
 
+    /// A plain (non-aws-chunked) part streams through with UNSIGNED-PAYLOAD
+    /// header signing instead of being buffered, carrying the part query and
+    /// preserving the client's checksum header so S3 still validates integrity.
+    #[test]
+    fn upload_part_plain_streams_unsigned_preserving_checksum() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("content-length", "7".parse().unwrap());
+            headers.insert("x-amz-checksum-crc32", "AAAAAA==".parse().unwrap());
+            let action = gw
+                .resolve_request(
+                    Method::PUT,
+                    "/test-bucket/key.bin",
+                    Some("partNumber=2&uploadId=xyz"),
+                    &headers,
+                    None,
+                )
+                .await;
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    let q = fwd.url.query().unwrap_or("");
+                    assert!(
+                        q.contains("partNumber=2") && q.contains("uploadId=xyz"),
+                        "plain UploadPart must carry partNumber/uploadId, got {q:?}"
+                    );
+                    // Streamed, not buffered: the seed is signed UNSIGNED-PAYLOAD.
+                    assert_eq!(
+                        fwd.headers.get("x-amz-content-sha256").unwrap(),
+                        "UNSIGNED-PAYLOAD"
+                    );
+                    // Checksum forwarded (and signed) so S3 validates the part.
+                    assert_eq!(fwd.headers.get("x-amz-checksum-crc32").unwrap(), "AAAAAA==");
+                }
+                other => panic!(
+                    "expected Forward (stream, not buffer), got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
+    /// The eager-collect classifier must match exactly the operations that
+    /// resolve to `NeedsBody` — multipart control ops and batch delete — and
+    /// must exclude the zero-copy streaming/read ops.
+    #[test]
+    fn op_needs_buffered_body_matches_needsbody_ops() {
+        let gw = gateway();
+        let h = HeaderMap::new();
+        let buffered = |m: &Method, path: &'static str, q: Option<&'static str>| {
+            gw.op_needs_buffered_body(&RequestInfo::new(m, path, q, &h, None))
+        };
+
+        // Multipart control ops + batch delete buffer their (small) body.
+        assert!(buffered(&Method::POST, "/test-bucket/key", Some("uploads")));
+        assert!(buffered(
+            &Method::POST,
+            "/test-bucket/key",
+            Some("uploadId=abc")
+        ));
+        assert!(buffered(
+            &Method::DELETE,
+            "/test-bucket/key",
+            Some("uploadId=abc")
+        ));
+        assert!(buffered(&Method::POST, "/test-bucket", Some("delete")));
+
+        // Streamed / read ops never buffer.
+        assert!(!buffered(&Method::PUT, "/test-bucket/key", None));
+        assert!(!buffered(
+            &Method::PUT,
+            "/test-bucket/key",
+            Some("partNumber=1&uploadId=abc")
+        ));
+        assert!(!buffered(&Method::GET, "/test-bucket/key", None));
+        assert!(!buffered(&Method::GET, "/test-bucket", None));
+    }
+
     // -- Middleware test types -----------------------------------------------
 
     struct BlockMiddleware;
@@ -2462,5 +2686,31 @@ mod tests {
                 "checksum headers missing from SignedHeaders: {auth}"
             );
         });
+    }
+
+    #[test]
+    fn object_path_is_byte_faithful() {
+        let config = test_bucket_config("test");
+        for key in ["report*.pdf", "100%.txt", "a~b#c.bin", "dir/%3D-lit.txt"] {
+            let path = build_object_path(&config, key).unwrap();
+            assert_eq!(path.as_ref(), key, "logical key must not be rewritten");
+        }
+    }
+
+    #[test]
+    fn object_path_applies_backend_prefix_byte_faithfully() {
+        let mut config = test_bucket_config("test");
+        config.backend_prefix = Some("data/".into());
+        let path = build_object_path(&config, "report*.pdf").unwrap();
+        assert_eq!(path.as_ref(), "data/report*.pdf");
+    }
+
+    #[test]
+    fn object_path_rejects_degenerate_segments() {
+        let config = test_bucket_config("test");
+        for key in ["a//b.txt", "a/./b.txt", "a/../b.txt"] {
+            let err = build_object_path(&config, key).unwrap_err();
+            assert_eq!(err.status_code(), 400, "key {key:?} must be a 400");
+        }
     }
 }

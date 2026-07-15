@@ -13,6 +13,23 @@ use crate::types::{BucketConfig, S3Operation};
 use http::{HeaderMap, Method};
 use url::Url;
 
+/// SigV4 canonical path encoding: everything but RFC 3986 unreserved
+/// characters is percent-encoded; `/` stays raw as the segment separator.
+///
+/// AWS (and MinIO) reconstruct the canonical URI by strict-encoding the
+/// decoded request path, and `url::Url` leaves `=` and friends literal in
+/// paths — so the key must be encoded with this exact set before it is
+/// spliced into the URL, or the backend signature won't match
+/// (`SignatureDoesNotMatch`). This is the same strict set `object_store`
+/// applies when building presigned URLs for the CRUD operations.
+pub(crate) const S3_PATH_ENCODE_SET: &percent_encoding::AsciiSet =
+    &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~')
+        .remove(b'/');
+
 /// Build the backend URL for an S3 operation.
 ///
 /// Used for multipart operations that go through raw signed HTTP.
@@ -34,12 +51,19 @@ pub fn build_backend_url(
         });
     }
 
+    // Backstop: keys are validated at operation-parse time
+    // (`build_s3_operation`); enforce here too so a hand-built operation can
+    // never splice a degenerate key (`a//b`, `..`) into a URL that
+    // normalizes to a different — possibly cross-bucket — target.
+    crate::api::request::validate_key(operation.key())?;
+
     let mut key = String::new();
     if let Some(prefix) = &config.backend_prefix {
         key.push_str(prefix.trim_end_matches('/'));
         key.push('/');
     }
     key.push_str(operation.key());
+    let key = percent_encoding::utf8_percent_encode(&key, S3_PATH_ENCODE_SET).to_string();
 
     let mut url = if bucket_is_empty {
         format!("{}/{}", base, key)
@@ -142,6 +166,21 @@ mod tests {
     }
 
     #[test]
+    fn degenerate_keys_are_rejected_before_url_build() {
+        let config = test_bucket_config();
+        for key in ["a//b.txt", "a/../b.txt"] {
+            let op = S3Operation::CreateMultipartUpload {
+                bucket: "test".into(),
+                key: key.into(),
+            };
+            assert!(
+                build_backend_url(&config, &op).is_err(),
+                "hand-built op with key {key:?} must not reach the URL"
+            );
+        }
+    }
+
+    #[test]
     fn upload_id_with_special_chars_is_encoded() {
         let config = test_bucket_config();
         let malicious_upload_id = "abc&x-amz-acl=public-read&foo=bar";
@@ -189,6 +228,67 @@ mod tests {
             !url.contains("injected=true"),
             "upload_id was not encoded: {}",
             url
+        );
+    }
+
+    #[test]
+    fn key_special_chars_percent_encoded_in_backend_path() {
+        let config = test_bucket_config();
+        let op = S3Operation::CreateMultipartUpload {
+            bucket: "test".into(),
+            key: "by_country/country_iso=ETH/ETH file.pmtiles".into(),
+        };
+
+        let url = build_backend_url(&config, &op).unwrap();
+
+        // `=` and space are outside the AWS strict set and must be encoded;
+        // `/` stays raw as the segment separator.
+        assert_eq!(
+            url,
+            "https://s3.us-east-1.amazonaws.com/my-backend-bucket/by_country/country_iso%3DETH/ETH%20file.pmtiles?uploads"
+        );
+        // Url::parse must not re-encode the result: what sign_request signs
+        // (`url.path()`) is byte-identical to the wire path.
+        assert_eq!(
+            Url::parse(&url).unwrap().path(),
+            "/my-backend-bucket/by_country/country_iso%3DETH/ETH%20file.pmtiles"
+        );
+    }
+
+    #[test]
+    fn key_aws_special_chars_encoded_slash_preserved() {
+        let config = test_bucket_config();
+        let op = S3Operation::UploadPart {
+            bucket: "test".into(),
+            key: "p!('*'):@+,;$&/f.bin".into(),
+            upload_id: "uid".into(),
+            part_number: 1,
+        };
+
+        let url = build_backend_url(&config, &op).unwrap();
+
+        let path = url.split_once('?').unwrap().0;
+        assert_eq!(
+            path,
+            "https://s3.us-east-1.amazonaws.com/my-backend-bucket/p%21%28%27%2A%27%29%3A%40%2B%2C%3B%24%26/f.bin"
+        );
+    }
+
+    #[test]
+    fn key_with_literal_percent_triplet_is_double_encoded() {
+        // A key that literally contains `%3D` (already decoded upstream) must
+        // go out as `%253D`, not be mistaken for an encoded `=`.
+        let config = test_bucket_config();
+        let op = S3Operation::CreateMultipartUpload {
+            bucket: "test".into(),
+            key: "weird/%3D-literal.txt".into(),
+        };
+
+        let url = build_backend_url(&config, &op).unwrap();
+
+        assert_eq!(
+            url,
+            "https://s3.us-east-1.amazonaws.com/my-backend-bucket/weird/%253D-literal.txt?uploads"
         );
     }
 

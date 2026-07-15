@@ -80,7 +80,16 @@ impl Signer for UnsignedUrlSigner {
         path: &object_store::path::Path,
         _expires_in: std::time::Duration,
     ) -> object_store::Result<url::Url> {
-        let key = path.as_ref();
+        // Percent-encode the key with the same strict set as the signed
+        // builders: `url::Url` leaves `%` (and `=`, `*`, ...) literal in
+        // paths, so an unencoded splice puts raw key bytes on the wire and
+        // the backend's decode addresses a different object (a key holding
+        // a literal `%3D` decodes to `=`).
+        let key = percent_encoding::utf8_percent_encode(
+            path.as_ref(),
+            super::multipart::S3_PATH_ENCODE_SET,
+        )
+        .to_string();
         let url_str = if self.bucket.is_empty() {
             if key.is_empty() {
                 format!("{}/", self.endpoint)

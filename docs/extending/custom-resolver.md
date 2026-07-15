@@ -102,7 +102,10 @@ let registry = MyRegistry::new(api_client);
 let cred_registry = MyCredentialRegistry::new(/* ... */);
 let gateway = ProxyGateway::new(backend, registry, cred_registry, domain);
 
-// In your request handler:
+// In your request handler. `path` must be the raw, percent-encoded request
+// path (the form the client signed); if you decode it for routing, pass the
+// encoded path separately via `.with_signing_path()` — otherwise keys with
+// escaped characters (e.g. a space → `%20`) fail with SignatureDoesNotMatch.
 let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
 match gateway.handle_request(&req_info, body, |b| to_bytes(b)).await {
     GatewayResponse::Response(result) => { /* return response */ }

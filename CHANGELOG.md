@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.6.4](https://github.com/developmentseed/multistore/compare/v0.6.3...v0.6.4) (2026-07-10)
+
+
+### Bug Fixes
+
+* **ci:** gate smoke tests on a secrets-dependent readiness probe ([#107](https://github.com/developmentseed/multistore/issues/107)) ([7f8823a](https://github.com/developmentseed/multistore/commit/7f8823a7905d57ffe41025cc732c0e1897dc526c))
+* **core:** byte-faithful, consistently validated object keys across all backend paths ([#108](https://github.com/developmentseed/multistore/issues/108)) ([094f64c](https://github.com/developmentseed/multistore/commit/094f64c72c181078c84d02e26cd36029025c1fc7))
+* **core:** percent-encode object keys in raw-signed backend URLs ([#105](https://github.com/developmentseed/multistore/issues/105)) ([c03d7a4](https://github.com/developmentseed/multistore/commit/c03d7a49358cd2d463d09c036588d1ab3c3505b4))
+* **deps:** upgrade quick-xml to 0.41 for RUSTSEC-2026-0194/0195 ([#106](https://github.com/developmentseed/multistore/issues/106)) ([5beb307](https://github.com/developmentseed/multistore/commit/5beb30788f23bb59ffe62bc5ebd0391a3f235388))
+
+## [0.6.3](https://github.com/developmentseed/multistore/compare/v0.6.2...v0.6.3) (2026-07-01)
+
+
+### Bug Fixes
+
+* bound buffered-op body size and fail closed on classifier over-match ([#102](https://github.com/developmentseed/multistore/issues/102)) ([06ac75b](https://github.com/developmentseed/multistore/commit/06ac75b49c8429ec738fc2f48314a81cd9a8d402))
+* **cf-workers:** sign the encoded request path; harden the signing-path contract ([#103](https://github.com/developmentseed/multistore/issues/103)) ([43a1781](https://github.com/developmentseed/multistore/commit/43a1781caca6f4997b9595cd4604d8971d398c45))
+* eliminate cross-request body I/O on multipart & batch-delete writes ([#100](https://github.com/developmentseed/multistore/issues/100)) ([60b4278](https://github.com/developmentseed/multistore/commit/60b4278f07bd2745e0be19c23c9260f9366a6c9c))
+
+## [0.6.2](https://github.com/developmentseed/multistore/compare/v0.6.1...v0.6.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* **cf-workers:** bypass Cloudflare cache for HEAD subrequests ([#95](https://github.com/developmentseed/multistore/issues/95)) ([973bff7](https://github.com/developmentseed/multistore/commit/973bff70b2ffb59fc7bf825a267359e660b66ad1))
+
 ## [0.6.1](https://github.com/developmentseed/multistore/compare/v0.6.0...v0.6.1) (2026-06-26)
 
 
