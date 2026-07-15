@@ -9,7 +9,7 @@ use axum::Router;
 use multistore::backend::ForwardResponse;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::registry::{BucketRegistry, CredentialRegistry};
-use multistore::route_handler::RequestInfo;
+use multistore::route_handler::{RequestInfo, FORM_BODY_MAX_BYTES};
 use multistore::router::Router as ProxyRouter;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
@@ -162,14 +162,17 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
 
     // AWS SDKs send STS AssumeRoleWithWebIdentity as a form-encoded POST body
     // rather than query parameters; collect it so the STS handler sees it.
-    // Form bodies carry a JWT and a few short params, so 64 KiB is generous.
-    const FORM_BODY_MAX_BYTES: usize = 64 * 1024;
+    // Content-Type is client-controlled, so rebuild the body from the same
+    // bytes — a mislabeled non-STS POST falls through with its payload intact.
+    // should_collect_form_body bounds the declared Content-Length at 64 KiB;
+    // the to_bytes cap backstops it against a lying stream.
     let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
-    let form_body = if req_info.is_form_urlencoded_post() {
+    let form_body = if req_info.should_collect_form_body() {
         match axum::body::to_bytes(body, FORM_BODY_MAX_BYTES).await {
             Ok(bytes) => {
-                body = Body::empty();
-                Some(String::from_utf8_lossy(&bytes).into_owned())
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                body = Body::from(bytes);
+                Some(text)
             }
             Err(_) => {
                 return Response::builder()

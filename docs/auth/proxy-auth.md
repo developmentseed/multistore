@@ -96,7 +96,9 @@ Parameters are accepted either in the query string or as an
 send them, so unmodified SDK STS clients (e.g. a client constructed with a
 custom `endpoint_url`, or the SDK's built-in web-identity credential provider)
 work against the proxy. Parameters are read from exactly one source: the query
-string wins if it contains an STS `Action`.
+string wins if it contains an STS `Action`. Form bodies are only collected
+when the declared `Content-Length` is at most 64 KiB (generous for a JWT plus
+a few parameters); larger or length-less bodies are passed through untouched.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|

@@ -9,21 +9,6 @@ use crate::response::headermap_from_js;
 use http::{HeaderMap, Method, Uri};
 use multistore::route_handler::RequestInfo;
 
-/// Maximum collected form body size. STS `AssumeRoleWithWebIdentity` bodies
-/// are a JWT plus a few short parameters, so 64 KiB is generous.
-pub const FORM_BODY_MAX_BYTES: usize = 64 * 1024;
-
-/// Whether the declared `Content-Length` permits collecting the body into
-/// WASM memory. Absent or unparseable lengths are rejected — the body could
-/// be arbitrarily large.
-fn form_body_within_limit(headers: &HeaderMap) -> bool {
-    headers
-        .get(http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok())
-        .is_some_and(|len| len <= FORM_BODY_MAX_BYTES)
-}
-
 /// Owned HTTP request metadata extracted from a `web_sys::Request`.
 ///
 /// Workers passes a `web_sys::Request` with borrowed JS strings and a
@@ -109,7 +94,7 @@ impl RequestParts {
     }
 
     /// Collect a form-encoded `POST` body into [`form_body`](Self::form_body),
-    /// returning the (now empty) body to pass on to the gateway.
+    /// returning an equivalent body to pass on to the gateway.
     ///
     /// A no-op passthrough for every other request shape, so integrators can
     /// call it unconditionally between [`from_web_sys`](Self::from_web_sys)
@@ -120,26 +105,26 @@ impl RequestParts {
     /// body = parts.absorb_form_body(body).await?;
     /// ```
     ///
-    /// Form-encoded `POST`s are not part of the S3 protocol, so consuming the
-    /// stream here never steals a payload the forwarding path needs.
+    /// `Content-Type` is client-controlled, so a form-labeled `POST` is not
+    /// necessarily STS — it could be a mislabeled S3 write
+    /// (`CompleteMultipartUpload`, `DeleteObjects`). The returned body is
+    /// therefore rebuilt from the collected bytes, so a request that falls
+    /// through to the S3 pipeline sees its payload unchanged.
     ///
-    /// # Errors
-    ///
-    /// Collecting materializes the body into WASM memory, so it is bounded
-    /// *before* reading: a form `POST` whose `Content-Length` is missing,
-    /// unparseable, or above [`FORM_BODY_MAX_BYTES`] is rejected. SDK STS
-    /// clients always send an accurate `Content-Length`; a chunked body with
-    /// no declared length could be arbitrarily large.
+    /// Collection is gated on
+    /// [`RequestInfo::should_collect_form_body`](multistore::route_handler::RequestInfo::should_collect_form_body):
+    /// a form `POST` with a missing or oversized declared `Content-Length` is
+    /// passed through untouched rather than buffered into WASM memory. The
+    /// declared length bounds the actual bytes read because Cloudflare's edge
+    /// terminates HTTP — the request stream is derived from message framing,
+    /// which cannot deliver more bytes than the declared `Content-Length`.
     pub async fn absorb_form_body(&mut self, body: JsBody) -> Result<JsBody, String> {
-        if !self.as_request_info().is_form_urlencoded_post() {
+        if !self.as_request_info().should_collect_form_body() {
             return Ok(body);
-        }
-        if !form_body_within_limit(&self.headers) {
-            return Err("form body too large or missing Content-Length".into());
         }
         let bytes = crate::body::collect_js_body(body).await?;
         self.form_body = Some(String::from_utf8_lossy(&bytes).into_owned());
-        Ok(JsBody::new(None))
+        JsBody::from_bytes(&bytes)
     }
 
     /// Borrow this struct as a [`RequestInfo`] for gateway dispatch.
@@ -159,37 +144,5 @@ impl RequestParts {
         )
         .with_signing_path(&self.signing_path)
         .with_form_body(self.form_body.as_deref())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn headers_with_len(len: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(http::header::CONTENT_LENGTH, len.parse().unwrap());
-        h
-    }
-
-    #[test]
-    fn form_body_limit_accepts_small_declared_length() {
-        assert!(form_body_within_limit(&headers_with_len("1024")));
-        assert!(form_body_within_limit(&headers_with_len(
-            &FORM_BODY_MAX_BYTES.to_string()
-        )));
-    }
-
-    #[test]
-    fn form_body_limit_rejects_oversized_declared_length() {
-        assert!(!form_body_within_limit(&headers_with_len(
-            &(FORM_BODY_MAX_BYTES + 1).to_string()
-        )));
-    }
-
-    #[test]
-    fn form_body_limit_rejects_missing_or_bad_content_length() {
-        assert!(!form_body_within_limit(&HeaderMap::new()));
-        assert!(!form_body_within_limit(&headers_with_len("not-a-number")));
     }
 }

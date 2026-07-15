@@ -110,6 +110,8 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
 
     // AWS SDKs send STS AssumeRoleWithWebIdentity as a form-encoded POST body
     // rather than query parameters; collect it so the STS handler sees it.
+    // Bounded at 64 KiB, and the returned body carries the same bytes, so a
+    // mislabeled non-STS POST falls through with its payload intact.
     js_body = parts
         .absorb_form_body(js_body)
         .await
