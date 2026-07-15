@@ -54,14 +54,17 @@ rsa = "0.9"
 aes-gcm = "0.10"
 
 # Object store
-object_store = { version = "0.13.1", default-features = false, features = ["aws"] }
+# `aws-base` + `reqwest` + `ring` instead of `aws`: the `aws` feature hard-wires
+# the `aws-lc-rs` crypto provider, which doesn't build on wasm32. `ring` provides
+# signing on all targets; native TLS comes from `reqwest/rustls` in consumers.
+object_store = { version = "0.14.0", default-features = false, features = ["aws-base", "reqwest", "ring"] }
 futures = "0.3"
 
 # XML
 quick-xml = { version = "0.41", features = ["serialize"] }
 
 # Auth
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json"] }
 
 # HTTP body
 http-body = "1"
@@ -80,10 +83,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Cloudflare Workers
-# Pinned to 0.7.4: worker 0.7.5 bumped wasm-streams 0.4→0.5, which conflicts
-# with reqwest 0.12 (via object_store) still on wasm-streams 0.4. Track:
-# https://github.com/apache/arrow-rs-object-store/pull/707 (object_store → reqwest 0.13)
-worker = "=0.7.4"
+# worker 0.7.5+ requires wasm-streams 0.5, which needs reqwest 0.13.2+ (via object_store 0.14)
+worker = "0.7.5"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"

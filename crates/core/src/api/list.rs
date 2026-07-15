@@ -380,6 +380,7 @@ mod tests {
                 })
                 .collect(),
             common_prefixes: common_prefixes.iter().map(|p| Path::from(*p)).collect(),
+            extensions: Default::default(),
         }
     }
 
@@ -724,6 +725,7 @@ mod tests {
                 })
                 .collect(),
             common_prefixes: common_prefixes.iter().map(|p| Path::from(*p)).collect(),
+            extensions: Default::default(),
         }
     }
 
