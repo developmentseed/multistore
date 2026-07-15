@@ -164,9 +164,8 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
     // rather than query parameters; collect it so the STS handler sees it.
     // Form bodies carry a JWT and a few short params, so 64 KiB is generous.
     const FORM_BODY_MAX_BYTES: usize = 64 * 1024;
-    let form_body = if RequestInfo::new(&method, &path, query.as_deref(), &headers, None)
-        .is_form_urlencoded_post()
-    {
+    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
+    let form_body = if req_info.is_form_urlencoded_post() {
         match axum::body::to_bytes(body, FORM_BODY_MAX_BYTES).await {
             Ok(bytes) => {
                 body = Body::empty();
@@ -183,8 +182,7 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
         None
     };
 
-    let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None)
-        .with_form_body(form_body.as_deref());
+    let req_info = req_info.with_form_body(form_body.as_deref());
 
     match state
         .handler
