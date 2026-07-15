@@ -19,7 +19,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 toml.workspace = true
-reqwest = { workspace = true, features = ["stream"] }
+reqwest = { workspace = true, features = ["stream", "form"] }
 object_store.workspace = true
 futures.workspace = true
 http-body-util.workspace = true

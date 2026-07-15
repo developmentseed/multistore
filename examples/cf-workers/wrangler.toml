@@ -3,8 +3,8 @@ main = "build/worker/shim.mjs"
 name = "multistore"
 
 [build]
-# worker-build pinned to ^0.7 to match worker = "=0.7.4" in Cargo.toml.
-# See Cargo.toml for why worker is pinned.
+# worker-build ^0.7 to match worker 0.7.x in Cargo.toml.
+# worker-build 0.8+ requires worker 0.8+ (a separate upgrade).
 command = "cargo install worker-build --version '^0.7' && worker-build --release"
 
 [vars]

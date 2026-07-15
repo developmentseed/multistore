@@ -7,8 +7,8 @@ description = "Runtime-agnostic core library for the S3 proxy gateway"
 
 [features]
 default = []
-azure = ["object_store/azure"]
-gcp = ["object_store/gcp"]
+azure = ["object_store/azure-base"]
+gcp = ["object_store/gcp-base"]
 
 [dependencies]
 async-trait.workspace = true
@@ -29,5 +29,9 @@ md-5.workspace = true
 quick-xml.workspace = true
 tracing.workspace = true
 object_store.workspace = true
+# Not used directly: enables reqwest's `rustls` TLS for object_store's built-in
+# transport (object_store 0.14's `aws`/`azure`/`gcp` meta-features did this via
+# `reqwest/rustls`, but also hard-wire `aws-lc-rs`, which doesn't build on wasm32).
+reqwest.workspace = true
 futures.workspace = true
 matchit.workspace = true
