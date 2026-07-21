@@ -946,11 +946,17 @@ where
                         original_headers,
                         // Standard HTTP entity headers are safe to forward to a
                         // presigned URL: S3 applies them even though they are not
-                        // part of the (host-only) presigned signature. `x-amz-*`
-                        // write headers (metadata, SSE, tagging, storage-class,
-                        // checksums) are deliberately NOT forwarded here — S3
-                        // rejects unsigned `x-amz-*` headers on presigned
-                        // requests, so they need the header-signing path. See
+                        // part of the (host-only) presigned signature. This
+                        // includes the conditional-write preconditions
+                        // `if-match`/`if-none-match` — S3 evaluates them and
+                        // returns 412 on a mismatch (same as the GET/HEAD read
+                        // paths above), giving Icechunk the compare-and-swap it
+                        // needs. `x-amz-*` write headers (metadata, SSE, tagging,
+                        // storage-class, checksums, and the
+                        // `x-amz-copy-source-if-*` copy preconditions) are
+                        // deliberately NOT forwarded here — S3 rejects unsigned
+                        // `x-amz-*` headers on presigned requests, so they need
+                        // the header-signing path. See
                         // .plans/2026-06-23-data-edit-operations-design.md.
                         &[
                             "content-type",
@@ -961,6 +967,8 @@ where
                             "content-language",
                             "cache-control",
                             "expires",
+                            "if-match",
+                            "if-none-match",
                         ],
                         request_id,
                     )
@@ -1791,6 +1799,38 @@ mod tests {
                         fwd.headers.get("range").map(|v| v.to_str().unwrap()),
                         Some("bytes=0-1023"),
                         "HEAD forward should pass through the Range header"
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn put_forward_preserves_conditional_headers() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("if-match", "\"abc123\"".parse().unwrap());
+            headers.insert("if-none-match", "*".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    assert_eq!(fwd.method, Method::PUT);
+                    assert_eq!(
+                        fwd.headers.get("if-match").map(|v| v.to_str().unwrap()),
+                        Some("\"abc123\""),
+                        "PUT forward should pass through If-Match so the backend enforces the precondition (412)"
+                    );
+                    assert_eq!(
+                        fwd.headers
+                            .get("if-none-match")
+                            .map(|v| v.to_str().unwrap()),
+                        Some("*"),
+                        "PUT forward should pass through If-None-Match"
                     );
                 }
                 other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),

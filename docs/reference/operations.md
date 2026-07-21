@@ -28,7 +28,9 @@
 
 ### Writes and request headers
 
-`PutObject` forwards the request body plus standard HTTP entity headers (`Content-Type`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Cache-Control`, `Expires`, `Content-MD5`) to a presigned URL. `x-amz-*` headers (user metadata `x-amz-meta-*`, storage class, tagging, ACLs, SSE, and checksum headers such as `x-amz-checksum-*`) are **not** forwarded: S3 rejects unsigned `x-amz-*` headers on presigned requests, and the proxy presigns over `host` only. Supporting those headers requires a header-signing forward path — see the design note in `.plans/`.
+`PutObject` forwards the request body plus standard HTTP entity headers (`Content-Type`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Cache-Control`, `Expires`, `Content-MD5`) and the conditional-write preconditions (`If-Match`, `If-None-Match`) to a presigned URL. S3 applies all of these even though they are not part of the (host-only) presigned signature. `x-amz-*` headers (user metadata `x-amz-meta-*`, storage class, tagging, ACLs, SSE, checksum headers such as `x-amz-checksum-*`, and the `x-amz-copy-source-if-*` copy preconditions) are **not** forwarded: S3 rejects unsigned `x-amz-*` headers on presigned requests, and the proxy presigns over `host` only. Supporting those headers requires a header-signing forward path — see the design note in `.plans/`.
+
+**Conditional writes.** `If-Match` / `If-None-Match` on a `PutObject` are enforced by the backend: a write with a stale or wrong ETag fails with **412 Precondition Failed** (and `If-None-Match: *` fails when the object already exists) instead of silently clobbering. This is the compare-and-swap that native Zarr/Icechunk writers rely on to protect refs from concurrent commits. The backend's 412 passes through unchanged.
 
 ## STS Operations
 
