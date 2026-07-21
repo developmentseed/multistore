@@ -94,8 +94,8 @@ fn build_copy_object(
 fn parse_copy_source(raw: &str) -> Result<(String, String, Option<String>), ProxyError> {
     let s = raw.strip_prefix('/').unwrap_or(raw);
     let (path, version) = match s.split_once("?versionId=") {
-        Some((p, v)) if !v.is_empty() => (p, Some(v.to_string())),
-        _ => (s, None),
+        Some((p, v)) => (p, (!v.is_empty()).then(|| v.to_string())),
+        None => (s, None),
     };
     let (bucket, key_encoded) = path.split_once('/').ok_or_else(|| {
         ProxyError::InvalidRequest("x-amz-copy-source must be `bucket/key`".into())
@@ -367,6 +367,28 @@ mod tests {
                 // The encoded key is decoded to its client-visible form.
                 assert_eq!(src_key, "a b.txt");
                 assert_eq!(src_version.as_deref(), Some("v1"));
+            }
+            other => panic!("expected CopyObject, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copy_source_with_empty_version_id_parses_key_without_suffix() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "x-amz-copy-source",
+            "src-bucket/key?versionId=".parse().unwrap(),
+        );
+        let op = parse(Method::PUT, "/dst/k", None, &headers).unwrap();
+        match op {
+            S3Operation::CopyObject {
+                src_key,
+                src_version,
+                ..
+            } => {
+                // The `?versionId=` suffix must be stripped, not glued onto the key.
+                assert_eq!(src_key, "key");
+                assert_eq!(src_version, None);
             }
             other => panic!("expected CopyObject, got {other:?}"),
         }
