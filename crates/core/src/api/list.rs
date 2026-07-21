@@ -291,8 +291,25 @@ fn s3_encode(s: String, url_encode: bool) -> String {
     percent_encoding::utf8_percent_encode(&s, S3_ENCODE_SET).to_string()
 }
 
-/// Filter directory markers, rewrite keys/prefixes, and URL-encode the parts of
-/// a list response that don't depend on the list-type version.
+/// Whether a key or prefix has a path segment that makes it *unaddressable*
+/// through multistore's object path: an empty segment (a `//`), or a `.`/`..`
+/// segment. `object_store::path::Path` rejects these, and multistore's
+/// `validate_key` rejects them on GET/PUT/HEAD/DELETE — so a client that saw
+/// such a key in a listing could never fetch it. We skip them from listings
+/// (logging the raw key at `warn`) to keep LIST consistent with what's actually
+/// retrievable. See issue #116.
+///
+/// Callers pass object keys as-is and common prefixes with their trailing `/`
+/// already stripped (a normal prefix like `photos/` is addressable; only an
+/// *interior* or leading empty segment is degenerate).
+fn has_degenerate_segment(s: &str) -> bool {
+    s.split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+}
+
+/// Filter directory markers and unaddressable keys, rewrite keys/prefixes, and
+/// URL-encode the parts of a list response that don't depend on the list-type
+/// version.
 fn collect_list_entries(
     client_prefix: &str,
     encoding_type: &Option<String>,
@@ -347,29 +364,54 @@ fn collect_list_entries(
         .objects
         .iter()
         .filter(|obj| !is_directory_marker(obj))
-        .map(|obj| ListContents {
-            // Key preserved verbatim (empty path segments intact), then rewritten
-            // and encoded per the client's request.
-            key: s3_encode(
-                rewrite_key(&obj.key, &strip_prefix, list_rewrite),
-                url_encode,
-            ),
-            last_modified: obj.last_modified.clone(),
-            etag: obj.etag.clone(),
-            size: obj.size,
-            storage_class: "STANDARD",
+        .filter_map(|obj| {
+            // Skip keys that aren't retrievable through the object path (empty
+            // `//`, `.`/`..` segments). Listing them would only advertise
+            // objects a client then can't GET. Log the raw key so operators can
+            // find and remediate it.
+            if has_degenerate_segment(&obj.key) {
+                tracing::warn!(
+                    key = %obj.key,
+                    "skipping unaddressable object key from listing (empty, `.`, or `..` path segment)"
+                );
+                return None;
+            }
+            Some(ListContents {
+                key: s3_encode(
+                    rewrite_key(&obj.key, &strip_prefix, list_rewrite),
+                    url_encode,
+                ),
+                last_modified: obj.last_modified.clone(),
+                etag: obj.etag.clone(),
+                size: obj.size,
+                storage_class: "STANDARD",
+            })
         })
         .collect();
 
     let common_prefixes: Vec<ListCommonPrefix> = list_result
         .common_prefixes
         .iter()
-        .map(|raw_prefix| ListCommonPrefix {
-            // Backend common prefixes already carry their trailing `/`.
-            prefix: s3_encode(
-                rewrite_key(raw_prefix, &strip_prefix, list_rewrite),
-                url_encode,
-            ),
+        .filter_map(|raw_prefix| {
+            // Common prefixes always end in the delimiter `/`; strip exactly
+            // that one so a genuine prefix like `photos/` reads as clean while
+            // an interior empty segment survives — `raw//` -> `raw/` still has
+            // an empty segment, whereas `trim_end_matches` would wrongly yield
+            // `raw`.
+            if has_degenerate_segment(raw_prefix.strip_suffix('/').unwrap_or(raw_prefix)) {
+                tracing::warn!(
+                    prefix = %raw_prefix,
+                    "skipping unaddressable common prefix from listing"
+                );
+                return None;
+            }
+            Some(ListCommonPrefix {
+                // Backend common prefixes already carry their trailing `/`.
+                prefix: s3_encode(
+                    rewrite_key(raw_prefix, &strip_prefix, list_rewrite),
+                    url_encode,
+                ),
+            })
         })
         .collect();
 
@@ -1106,8 +1148,10 @@ mod tests {
 
     #[test]
     fn parse_backend_list_xml_preserves_empty_path_segments() {
-        // A legal S3 key with a `//` — object_store::Path would reject this and
-        // fail the whole page. We must keep it verbatim.
+        // The parser is lenient — object_store::Path would reject a `//` key and
+        // fail the whole page, so we keep every key verbatim here. Whether an
+        // individual key is then surfaced or skipped is decided later, in
+        // `collect_list_entries`.
         let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
             <ListBucketResult>
               <IsTruncated>false</IsTruncated>
@@ -1131,6 +1175,60 @@ mod tests {
         assert_eq!(result.objects[0].size, 42);
         assert_eq!(result.objects[1].key, "raw/valid.nc");
         assert!(!result.is_truncated);
+    }
+
+    #[test]
+    fn unaddressable_keys_and_prefixes_skipped_from_listing() {
+        // `//` (empty segment) and `.`/`..` keys aren't retrievable through the
+        // object path, so they're dropped from the listing while valid siblings
+        // and a normal common prefix remain.
+        let config = make_config(None);
+        let list_result = BackendListResult {
+            objects: vec![
+                BackendObject {
+                    key: "raw//b.e21.nc".into(), // empty segment
+                    last_modified: "2009-10-12T17:50:30.000Z".into(),
+                    etag: "\"a\"".into(),
+                    size: 42,
+                },
+                BackendObject {
+                    key: "raw/valid.nc".into(), // fine
+                    last_modified: "2009-10-12T17:50:30.000Z".into(),
+                    etag: "\"b\"".into(),
+                    size: 7,
+                },
+                BackendObject {
+                    key: "raw/../escape.nc".into(), // `..` segment
+                    last_modified: "2009-10-12T17:50:30.000Z".into(),
+                    etag: "\"c\"".into(),
+                    size: 9,
+                },
+            ],
+            common_prefixes: vec!["raw//".into(), "raw/good/".into()],
+            is_truncated: false,
+            next_continuation_token: None,
+        };
+
+        let params = ListXmlParams {
+            bucket_name: "b",
+            client_prefix: "raw/",
+            delimiter: "/",
+            max_keys: 1000,
+            is_truncated: false,
+            key_count: 0,
+            start_after: &None,
+            continuation_token: &None,
+            next_continuation_token: None,
+            encoding_type: &None,
+        };
+
+        let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
+        assert!(xml.contains("<Key>raw/valid.nc</Key>"), "{xml}");
+        assert!(xml.contains("<Prefix>raw/good/</Prefix>"), "{xml}");
+        assert!(!xml.contains("raw//b.e21.nc"), "empty-segment key: {xml}");
+        assert!(!xml.contains("escape.nc"), "`..` key: {xml}");
+        // The degenerate common prefix `raw//` is dropped (the good one stays).
+        assert!(!xml.contains("<Prefix>raw//</Prefix>"), "{xml}");
     }
 
     #[test]

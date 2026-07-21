@@ -2713,10 +2713,10 @@ mod tests {
     }
 
     /// A single stray `//` key must no longer 503 the whole prefix: the page
-    /// returns 200 with the offending key preserved verbatim alongside its
-    /// siblings.
+    /// returns 200 with valid siblings listed and the unaddressable `//` key
+    /// skipped (it isn't retrievable through the object path anyway).
     #[test]
-    fn list_preserves_empty_path_segment_key() {
+    fn list_skips_empty_path_segment_key() {
         run(async {
             let captured_url = Arc::new(std::sync::Mutex::new(None));
             let backend = ListMockBackend {
@@ -2751,11 +2751,12 @@ mod tests {
                 ProxyResponseBody::Bytes(b) => String::from_utf8(b.to_vec()).unwrap(),
                 ProxyResponseBody::Empty => panic!("expected a body"),
             };
-            assert!(
-                xml.contains("<Key>raw//b.e21.nc</Key>"),
-                "empty-segment key must survive: {xml}"
-            );
+            // The valid sibling is listed; the `//` key is skipped, not 503'd.
             assert!(xml.contains("<Key>raw/valid.nc</Key>"), "{xml}");
+            assert!(
+                !xml.contains("raw//b.e21.nc"),
+                "unaddressable // key must be skipped: {xml}"
+            );
 
             // The backend request carried list-type=2 and the mapped prefix.
             let url = captured_url.lock().unwrap().clone().unwrap();
