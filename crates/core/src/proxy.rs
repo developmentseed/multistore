@@ -92,12 +92,22 @@ const SIGNED_AWS_CHUNKED_UNSUPPORTED: &str =
 pub const DEFAULT_USER_AGENT: &str = concat!("multistore/", env!("CARGO_PKG_VERSION"));
 
 /// Headers forwarded (and signed) when streaming an `aws-chunked` upload:
-/// the de-chunk headers S3 needs to reconstruct the payload.
+/// the de-chunk headers S3 needs to reconstruct the payload, plus the
+/// conditional-write preconditions (`if-match`/`if-none-match`). AWS SDKs and
+/// the CLI send `PutObject` bodies as `aws-chunked` by default, so this — not
+/// the presigned path — is where an SDK client's precondition must be honored.
+/// Unlike the presigned path these headers *are* signed (`sign_s3_request`
+/// signs the whole map), so S3 evaluates them and returns 412 on a mismatch.
+/// `if-match`/`if-none-match` don't apply to `UploadPart`, but clients never
+/// send them there, so sharing this list with the part-streaming caller is a
+/// no-op for parts.
 const AWS_CHUNKED_FORWARD_HEADERS: &[&str] = &[
     "content-type",
     "content-encoding",
     "x-amz-decoded-content-length",
     "x-amz-trailer",
+    "if-match",
+    "if-none-match",
 ];
 
 /// Headers forwarded (and signed) when streaming a *plain* (non-aws-chunked)
