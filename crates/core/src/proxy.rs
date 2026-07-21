@@ -1609,7 +1609,6 @@ mod tests {
     use crate::backend::RawResponse;
     use crate::registry::{BucketRegistry, CredentialRegistry, ResolvedBucket};
     use crate::types::{ResolvedIdentity, RoleConfig, StoredCredential};
-    use object_store::list::PaginatedListStore;
     use object_store::signer::Signer;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1629,13 +1628,6 @@ mod tests {
             _body: (),
         ) -> Result<ForwardResponse<()>, ProxyError> {
             unimplemented!("not needed for resolve_request tests")
-        }
-
-        fn create_paginated_store(
-            &self,
-            _config: &BucketConfig,
-        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-            unimplemented!("not needed for forward tests")
         }
 
         fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
@@ -2294,13 +2286,6 @@ mod tests {
             })
         }
 
-        fn create_paginated_store(
-            &self,
-            _config: &BucketConfig,
-        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-            unimplemented!()
-        }
-
         fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
             crate::backend::build_signer(config)
         }
@@ -2413,13 +2398,6 @@ mod tests {
             _request: ForwardRequest,
             _body: (),
         ) -> Result<ForwardResponse<()>, ProxyError> {
-            unimplemented!()
-        }
-
-        fn create_paginated_store(
-            &self,
-            _config: &BucketConfig,
-        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
             unimplemented!()
         }
 
@@ -2568,13 +2546,6 @@ mod tests {
             unimplemented!()
         }
 
-        fn create_paginated_store(
-            &self,
-            _config: &BucketConfig,
-        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-            unimplemented!()
-        }
-
         fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
             crate::backend::build_signer(config)
         }
@@ -2718,13 +2689,6 @@ mod tests {
             _request: ForwardRequest,
             _body: (),
         ) -> Result<ForwardResponse<()>, ProxyError> {
-            unimplemented!()
-        }
-
-        fn create_paginated_store(
-            &self,
-            _config: &BucketConfig,
-        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
             unimplemented!()
         }
 

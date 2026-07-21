@@ -97,7 +97,6 @@ The reusable Cloudflare Workers WASM runtime library (in `crates/cf-workers/`):
 - `GatewayResponseExt` — extension trait for converting `GatewayResponse` to `web_sys::Response` via `.into_web_sys()`
 - `JsBody` — zero-copy body wrapper around `web_sys::ReadableStream`
 - `WsHeaders` — newtype around `web_sys::Headers` with `From<&HeaderMap>` (works around orphan rules)
-- `FetchConnector` bridging `object_store` HTTP to Workers Fetch API
 
 > [!WARNING]
 > This crate is excluded from the workspace `default-members` because WASM types are `!Send` and won't compile on native targets. Always build with `--target wasm32-unknown-unknown`.

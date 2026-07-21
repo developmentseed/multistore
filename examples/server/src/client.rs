@@ -5,19 +5,18 @@ use futures::TryStreamExt;
 use http::HeaderMap;
 use http_body_util::BodyStream;
 use multistore::backend::ForwardResponse;
-use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse};
+use multistore::backend::{build_signer, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
 use multistore::route_handler::ForwardRequest;
 use multistore::types::BucketConfig;
 use multistore_oidc_provider::{HttpExchange, OidcProviderError};
-use object_store::list::PaginatedListStore;
 use object_store::signer::Signer;
 use std::sync::Arc;
 
 /// Backend for the Tokio/Hyper server runtime.
 ///
-/// Uses reqwest for raw HTTP (multipart operations) and the default
-/// object_store HTTP connector for high-level operations.
+/// Uses reqwest for raw signed HTTP (multipart, batch delete, and LIST).
+/// Presigned URLs are built offline via the object_store signer.
 #[derive(Clone)]
 pub struct ServerBackend {
     client: reqwest::Client,
@@ -86,13 +85,6 @@ impl ProxyBackend for ServerBackend {
             body: backend_resp,
             content_length,
         })
-    }
-
-    fn create_paginated_store(
-        &self,
-        config: &BucketConfig,
-    ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        create_builder(config)?.build()
     }
 
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {

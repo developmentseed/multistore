@@ -139,7 +139,7 @@ The handler generates a presigned URL using the backend's `Signer`, then the cor
 
 Used for: **LIST, errors, synthetic responses**
 
-For LIST operations, the handler calls `list_paginated()` via the backend's `PaginatedListStore`, builds S3 XML from the results, and returns it as a complete response. Both ListObjectsV1 and ListObjectsV2 are supported — the proxy detects the version from the `list-type` query parameter and produces the appropriate XML format. If a `ListRewrite` is configured, key prefixes are transformed in the XML.
+For LIST operations, the handler fetches one page from the backend via a raw signed HTTP request (`send_raw()`), parses the S3 XML itself, builds the client-facing S3 XML, and returns it as a complete response. Parsing the backend response directly — rather than through `object_store::Path` — keeps keys byte-faithful, so keys with empty path segments (`//`) that `Path` rejects still list (see issue #116). Both ListObjectsV1 and ListObjectsV2 are supported — the proxy detects the version from the `list-type` query parameter and produces the appropriate XML format. If a `ListRewrite` is configured, key prefixes are transformed in the XML.
 
 LIST supports backend-side pagination. V2 uses `continuation-token` and `start-after`; V1 uses `marker`. Both versions support `max-keys`, fetching only one page per request.
 
