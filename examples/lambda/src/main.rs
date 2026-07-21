@@ -121,7 +121,23 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
 
     tracing::debug!(method = %method, uri = %uri, "incoming request");
 
+    // AWS SDKs send STS AssumeRoleWithWebIdentity as a form-encoded POST body
+    // rather than query parameters; collect a copy so the STS handler sees it.
+    // Content-Type is client-controlled, so leave `body` untouched — a
+    // mislabeled non-STS POST falls through with its payload intact.
+    // should_collect_form_body bounds the copy at 64 KiB.
     let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
+    let form_body = if req_info.should_collect_form_body() {
+        Some(match &body {
+            Body::Text(s) => s.clone(),
+            Body::Binary(b) => String::from_utf8_lossy(b).into_owned(),
+            Body::Empty => String::new(),
+        })
+    } else {
+        None
+    };
+
+    let req_info = req_info.with_form_body(form_body.as_deref());
 
     Ok(
         match state

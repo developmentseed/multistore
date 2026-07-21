@@ -9,7 +9,7 @@ use axum::Router;
 use multistore::backend::ForwardResponse;
 use multistore::proxy::{GatewayResponse, ProxyGateway};
 use multistore::registry::{BucketRegistry, CredentialRegistry};
-use multistore::route_handler::RequestInfo;
+use multistore::route_handler::{RequestInfo, FORM_BODY_MAX_BYTES};
 use multistore::router::Router as ProxyRouter;
 use multistore_oidc_provider::backend_auth::MaybeOidcAuth;
 use multistore_oidc_provider::jwt::JwtSigner;
@@ -147,7 +147,7 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
     State(state): State<Arc<AppState<R, C>>>,
     req: axum::extract::Request,
 ) -> Response {
-    let (parts, body) = req.into_parts();
+    let (parts, mut body) = req.into_parts();
     let method = parts.method;
     let uri = parts.uri;
     let path = uri.path().to_string();
@@ -160,7 +160,32 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
         "incoming request"
     );
 
+    // AWS SDKs send STS AssumeRoleWithWebIdentity as a form-encoded POST body
+    // rather than query parameters; collect it so the STS handler sees it.
+    // Content-Type is client-controlled, so rebuild the body from the same
+    // bytes — a mislabeled non-STS POST falls through with its payload intact.
+    // should_collect_form_body bounds the declared Content-Length at 64 KiB;
+    // the to_bytes cap backstops it against a lying stream.
     let req_info = RequestInfo::new(&method, &path, query.as_deref(), &headers, None);
+    let form_body = if req_info.should_collect_form_body() {
+        match axum::body::to_bytes(body, FORM_BODY_MAX_BYTES).await {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                body = Body::from(bytes);
+                Some(text)
+            }
+            Err(_) => {
+                return Response::builder()
+                    .status(400)
+                    .body(Body::from("form body too large or unreadable"))
+                    .unwrap();
+            }
+        }
+    } else {
+        None
+    };
+
+    let req_info = req_info.with_form_body(form_body.as_deref());
 
     match state
         .handler

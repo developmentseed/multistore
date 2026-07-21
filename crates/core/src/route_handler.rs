@@ -217,6 +217,11 @@ impl Params {
     }
 }
 
+/// Maximum form body size a runtime should collect into
+/// [`RequestInfo::form_body`]. STS `AssumeRoleWithWebIdentity` bodies are a
+/// JWT plus a few short parameters, so 64 KiB is generous.
+pub const FORM_BODY_MAX_BYTES: usize = 64 * 1024;
+
 /// Parsed request metadata passed to route handlers.
 pub struct RequestInfo<'a> {
     /// The HTTP method (GET, PUT, HEAD, etc.).
@@ -257,6 +262,24 @@ pub struct RequestInfo<'a> {
     /// When `None`, `query` is used for both operation parsing and signature
     /// verification.
     pub signing_query: Option<&'a str>,
+    /// The form-encoded request body, for handlers that accept parameters in
+    /// the body as well as the query string.
+    ///
+    /// AWS query-protocol operations (STS `AssumeRoleWithWebIdentity` in
+    /// particular) are sent by AWS SDKs as `POST` requests with an
+    /// `application/x-www-form-urlencoded` body instead of a query string, so
+    /// a body-blind dispatch can never serve unmodified SDK clients. Runtimes
+    /// that want SDK compatibility should collect the body of such requests
+    /// (see [`should_collect_form_body`](Self::should_collect_form_body)) and
+    /// attach it here via [`with_form_body`](Self::with_form_body).
+    ///
+    /// `Content-Type` is client-controlled, so a request carrying a form
+    /// content type is not necessarily an STS request — an S3 `POST`
+    /// (`CompleteMultipartUpload`, `DeleteObjects`) could be mislabeled.
+    /// Collecting the body must therefore never *consume* it: the runtime
+    /// must pass the same bytes downstream so a request that falls through
+    /// to the S3 pipeline is unaffected.
+    pub form_body: Option<&'a str>,
 }
 
 impl<'a> RequestInfo<'a> {
@@ -277,7 +300,63 @@ impl<'a> RequestInfo<'a> {
             params: Params::default(),
             signing_path: None,
             signing_query: None,
+            form_body: None,
         }
+    }
+
+    /// Attach a form-encoded request body for handlers that accept parameters
+    /// in the body (AWS query-protocol operations like STS). See
+    /// [`RequestInfo::form_body`].
+    pub fn with_form_body(mut self, form_body: Option<&'a str>) -> Self {
+        self.form_body = form_body;
+        self
+    }
+
+    /// Whether a runtime should collect this request's body into
+    /// [`form_body`](Self::form_body): a form-urlencoded `POST` (see
+    /// [`is_form_urlencoded_post`](Self::is_form_urlencoded_post)) whose
+    /// declared `Content-Length` is present, parseable, and within
+    /// [`FORM_BODY_MAX_BYTES`].
+    ///
+    /// The length gate bounds how much body a runtime buffers into memory on
+    /// an unauthenticated pre-dispatch path. A request with a missing or
+    /// oversized declared length cannot be a legitimate SDK STS request
+    /// (those always declare a small `Content-Length`), so runtimes leave its
+    /// body untouched and let it fall through rather than rejecting it.
+    pub fn should_collect_form_body(&self) -> bool {
+        self.is_form_urlencoded_post()
+            && self
+                .headers
+                .get(http::header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<usize>().ok())
+                .is_some_and(|len| len <= FORM_BODY_MAX_BYTES)
+    }
+
+    /// Whether this request is a `POST` with an
+    /// `application/x-www-form-urlencoded` body — the shape AWS SDKs use for
+    /// query-protocol operations like STS `AssumeRoleWithWebIdentity`.
+    ///
+    /// The check ignores any `; charset=...` parameter on the content type.
+    /// `Content-Type` is client-controlled, so this does **not** prove the
+    /// request is STS — see [`form_body`](Self::form_body) for why collection
+    /// must not consume the body. Runtimes should gate collection on
+    /// [`should_collect_form_body`](Self::should_collect_form_body), which
+    /// also bounds the body size.
+    pub fn is_form_urlencoded_post(&self) -> bool {
+        self.method == Method::POST
+            && self
+                .headers
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| {
+                    v.split(';')
+                        .next()
+                        .unwrap_or("")
+                        .trim()
+                        .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+                })
+                .unwrap_or(false)
     }
 
     /// Set the original client-facing path for SigV4 signature verification.
@@ -452,5 +531,74 @@ mod tests {
 
         let filtered = filter_response_headers(&headers);
         assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn test_is_form_urlencoded_post() {
+        let form = |ct: &str| {
+            let mut headers = http::HeaderMap::new();
+            headers.insert("content-type", ct.parse().unwrap());
+            headers
+        };
+
+        let headers = form("application/x-www-form-urlencoded");
+        assert!(
+            RequestInfo::new(&Method::POST, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+        // Charset parameter and casing are ignored.
+        let headers = form("Application/X-WWW-Form-Urlencoded; charset=UTF-8");
+        assert!(
+            RequestInfo::new(&Method::POST, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+        // Wrong method.
+        let headers = form("application/x-www-form-urlencoded");
+        assert!(
+            !RequestInfo::new(&Method::GET, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+        // Wrong content type (S3 batch delete is a POST with XML).
+        let headers = form("application/xml");
+        assert!(
+            !RequestInfo::new(&Method::POST, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+        // No content type at all.
+        let headers = http::HeaderMap::new();
+        assert!(
+            !RequestInfo::new(&Method::POST, "/", None, &headers, None).is_form_urlencoded_post()
+        );
+    }
+
+    #[test]
+    fn test_should_collect_form_body() {
+        let form_headers = |content_length: Option<&str>| {
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                "content-type",
+                "application/x-www-form-urlencoded".parse().unwrap(),
+            );
+            if let Some(len) = content_length {
+                headers.insert("content-length", len.parse().unwrap());
+            }
+            headers
+        };
+        let collect = |headers: &http::HeaderMap| {
+            RequestInfo::new(&Method::POST, "/", None, headers, None).should_collect_form_body()
+        };
+
+        // Small and boundary declared lengths are collected.
+        assert!(collect(&form_headers(Some("1024"))));
+        assert!(collect(&form_headers(Some(
+            &FORM_BODY_MAX_BYTES.to_string()
+        ))));
+        // Oversized, missing, or unparseable Content-Length: leave the body
+        // alone — it cannot be a legitimate SDK STS request.
+        assert!(!collect(&form_headers(Some(
+            &(FORM_BODY_MAX_BYTES + 1).to_string()
+        ))));
+        assert!(!collect(&form_headers(None)));
+        assert!(!collect(&form_headers(Some("not-a-number"))));
+        // Not a form post at all.
+        let mut headers = form_headers(Some("1024"));
+        headers.insert("content-type", "application/xml".parse().unwrap());
+        assert!(!collect(&headers));
     }
 }
