@@ -4,6 +4,8 @@
 
 use std::collections::HashSet;
 
+use serde::Deserialize;
+
 use crate::api::list_rewrite::ListRewrite;
 use crate::api::response::{ListBucketResult, ListBucketResultV1, ListCommonPrefix, ListContents};
 use crate::error::ProxyError;
@@ -106,6 +108,162 @@ pub(crate) fn build_list_prefix(config: &BucketConfig, client_prefix: &str) -> S
     }
 }
 
+/// A ListObjects response parsed leniently from the backend's XML.
+///
+/// Unlike `object_store::ListResult`, keys are kept as raw byte-preserving
+/// `String`s. `object_store::path::Path` **rejects** — and cannot even
+/// represent — keys with empty path segments (a `//`), which are perfectly
+/// legal opaque S3 keys. Routing list responses through it makes an entire
+/// prefix unlistable if a single such key exists (issue #116): S3 serves the
+/// key, but the gateway 503s the whole page. We parse the backend XML ourselves
+/// and pass keys through untouched so anything listable in S3 stays listable
+/// through multistore.
+pub(crate) struct BackendListResult {
+    /// Object entries, keys exactly as the backend returned them.
+    pub objects: Vec<BackendObject>,
+    /// Common prefixes (delimiter grouping), with their trailing `/` intact.
+    pub common_prefixes: Vec<String>,
+    /// Whether more pages are available.
+    pub is_truncated: bool,
+    /// Opaque token for the next page (V2), echoed straight from the backend.
+    pub next_continuation_token: Option<String>,
+}
+
+/// A single object entry from a backend list response, key preserved verbatim.
+pub(crate) struct BackendObject {
+    pub key: String,
+    pub last_modified: String,
+    pub etag: String,
+    pub size: u64,
+}
+
+/// Parse a backend `ListBucketResult` (V1 or V2) XML body without normalizing
+/// keys, preserving empty path segments that `object_store::Path` would reject.
+pub(crate) fn parse_backend_list_xml(xml: &[u8]) -> Result<BackendListResult, ProxyError> {
+    #[derive(Deserialize)]
+    #[serde(rename = "ListBucketResult")]
+    struct Raw {
+        #[serde(default, rename = "Contents")]
+        contents: Vec<RawContents>,
+        #[serde(default, rename = "CommonPrefixes")]
+        common_prefixes: Vec<RawPrefix>,
+        #[serde(default, rename = "IsTruncated")]
+        is_truncated: bool,
+        #[serde(default, rename = "NextContinuationToken")]
+        next_continuation_token: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct RawContents {
+        #[serde(rename = "Key")]
+        key: String,
+        #[serde(default, rename = "LastModified")]
+        last_modified: String,
+        #[serde(default, rename = "ETag")]
+        etag: String,
+        #[serde(default, rename = "Size")]
+        size: u64,
+    }
+    #[derive(Deserialize)]
+    struct RawPrefix {
+        #[serde(rename = "Prefix")]
+        prefix: String,
+    }
+
+    let raw: Raw = quick_xml::de::from_reader(xml).map_err(|e| {
+        ProxyError::BackendError(format!("invalid list response from backend: {e}"))
+    })?;
+
+    // S3 omits NextContinuationToken when the page isn't truncated; some
+    // backends emit an empty element. Normalize empty to None.
+    let next_continuation_token = raw.next_continuation_token.filter(|t| !t.is_empty());
+
+    Ok(BackendListResult {
+        objects: raw
+            .contents
+            .into_iter()
+            .map(|c| BackendObject {
+                key: c.key,
+                last_modified: c.last_modified,
+                // S3 always returns a quoted ETag; fall back to `""` (matching
+                // the empty-ETag placeholder the response builder emits).
+                etag: if c.etag.is_empty() {
+                    "\"\"".to_string()
+                } else {
+                    c.etag
+                },
+                size: c.size,
+            })
+            .collect(),
+        common_prefixes: raw.common_prefixes.into_iter().map(|p| p.prefix).collect(),
+        is_truncated: raw.is_truncated,
+        next_continuation_token,
+    })
+}
+
+/// Build the backend URL (endpoint + query) for a ListObjects request.
+///
+/// The client's `prefix`, `start-after`, and `marker` are mapped into the
+/// backend key space (backend prefix prepended). `encoding-type` is
+/// deliberately **not** forwarded: we request raw keys from the backend and
+/// apply the client's requested encoding ourselves, avoiding a double-encode.
+/// Query values are percent-encoded with the SigV4-canonical set (space →
+/// `%20`) so [`sign_s3_request`](crate::backend::multipart::sign_s3_request)
+/// signs exactly what we send.
+pub(crate) fn build_backend_list_url(config: &BucketConfig, params: &ListQueryParams) -> String {
+    // Unreserved per RFC 3986; everything else (including `/`) is encoded.
+    const QUERY_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    let enc = |s: &str| percent_encoding::utf8_percent_encode(s, QUERY_SET).to_string();
+
+    let base = config
+        .option("endpoint")
+        .unwrap_or("")
+        .trim_end_matches('/');
+    let bucket = config.option("bucket_name").unwrap_or("");
+    let mut url = if bucket.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}/{bucket}")
+    };
+
+    let mut pairs: Vec<String> = Vec::new();
+    if params.is_v2 {
+        pairs.push("list-type=2".to_string());
+    }
+    let full_prefix = build_list_prefix(config, &params.prefix);
+    if !full_prefix.is_empty() {
+        pairs.push(format!("prefix={}", enc(&full_prefix)));
+    }
+    if !params.delimiter.is_empty() {
+        pairs.push(format!("delimiter={}", enc(&params.delimiter)));
+    }
+    pairs.push(format!("max-keys={}", params.max_keys));
+    if let Some(token) = &params.continuation_token {
+        pairs.push(format!("continuation-token={}", enc(token)));
+    }
+    if let Some(sa) = &params.start_after {
+        pairs.push(format!(
+            "start-after={}",
+            enc(&build_list_prefix(config, sa))
+        ));
+    }
+    if let Some(marker) = &params.marker {
+        pairs.push(format!(
+            "marker={}",
+            enc(&build_list_prefix(config, marker))
+        ));
+    }
+
+    if !pairs.is_empty() {
+        url.push('?');
+        url.push_str(&pairs.join("&"));
+    }
+    url
+}
+
 /// Version-agnostic parts of an S3 list response, shared by the V1 and V2
 /// builders (which differ only in their pagination fields). Keys and prefixes
 /// are already rewritten and URL-encoded; `prefix_value` is the raw echoed
@@ -138,7 +296,7 @@ fn s3_encode(s: String, url_encode: bool) -> String {
 fn collect_list_entries(
     client_prefix: &str,
     encoding_type: &Option<String>,
-    list_result: &object_store::ListResult,
+    list_result: &BackendListResult,
     config: &BucketConfig,
     list_rewrite: Option<&ListRewrite>,
 ) -> ListEntries {
@@ -154,30 +312,33 @@ fn collect_list_entries(
     };
 
     // Filter out S3 directory marker objects — 0-byte objects created by the
-    // S3 console (or similar tools) to represent "folders". These have a
-    // trailing `/` in their key which `object_store::Path` strips, causing
-    // them to leak into results. We detect them in three ways:
+    // S3 console (or similar tools) to represent "folders". Their key has a
+    // trailing `/` that would otherwise leak into results as a phantom file.
+    // We compare on the slash-trimmed key and detect them in three ways:
     //
-    // 1. The marker's path matches a common prefix (e.g. key `photos/` →
-    //    Path("photos") collides with CommonPrefix "photos").
-    // 2. The marker's path equals the backend prefix itself (e.g. the root
-    //    directory marker for the entire backend prefix).
-    // 3. The marker's path equals the full listing prefix
-    //    (backend_prefix + client_prefix, minus trailing `/`). This is the
-    //    most common real-world case: listing "harvard-lil/staging-gov-data/"
-    //    returns a 0-byte key "harvard-lil/staging-gov-data/" which
-    //    object_store converts to Path("harvard-lil/staging-gov-data").
-    let common_prefix_set: HashSet<&object_store::path::Path> =
-        list_result.common_prefixes.iter().collect();
+    // 1. The marker matches a common prefix (e.g. key `photos/` collides with
+    //    CommonPrefix `photos/`).
+    // 2. The marker equals the backend prefix itself (the root directory marker
+    //    for the entire backend prefix).
+    // 3. The marker equals the full listing prefix (backend_prefix +
+    //    client_prefix, minus trailing `/`). This is the most common real-world
+    //    case: listing "harvard-lil/staging-gov-data/" returns a 0-byte key
+    //    "harvard-lil/staging-gov-data/".
+    let common_prefix_set: HashSet<&str> = list_result
+        .common_prefixes
+        .iter()
+        .map(|p| p.trim_end_matches('/'))
+        .collect();
 
     let full_list_prefix = format!("{}{}", strip_prefix, client_prefix);
     let list_prefix_trimmed = full_list_prefix.trim_end_matches('/');
 
-    let is_directory_marker = |obj: &object_store::ObjectMeta| -> bool {
+    let is_directory_marker = |obj: &BackendObject| -> bool {
+        let loc = obj.key.trim_end_matches('/');
         obj.size == 0
-            && (common_prefix_set.contains(&obj.location)
-                || obj.location.as_ref() == backend_prefix
-                || obj.location.as_ref() == list_prefix_trimmed)
+            && (common_prefix_set.contains(loc)
+                || loc == backend_prefix
+                || loc == list_prefix_trimmed)
     };
 
     let url_encode = matches!(encoding_type, Some(t) if t == "url");
@@ -186,35 +347,29 @@ fn collect_list_entries(
         .objects
         .iter()
         .filter(|obj| !is_directory_marker(obj))
-        .map(|obj| {
-            let raw_key = obj.location.to_string();
-            ListContents {
-                key: s3_encode(
-                    rewrite_key(&raw_key, &strip_prefix, list_rewrite),
-                    url_encode,
-                ),
-                last_modified: obj
-                    .last_modified
-                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                    .to_string(),
-                etag: obj.e_tag.as_deref().unwrap_or("\"\"").to_string(),
-                size: obj.size,
-                storage_class: "STANDARD",
-            }
+        .map(|obj| ListContents {
+            // Key preserved verbatim (empty path segments intact), then rewritten
+            // and encoded per the client's request.
+            key: s3_encode(
+                rewrite_key(&obj.key, &strip_prefix, list_rewrite),
+                url_encode,
+            ),
+            last_modified: obj.last_modified.clone(),
+            etag: obj.etag.clone(),
+            size: obj.size,
+            storage_class: "STANDARD",
         })
         .collect();
 
     let common_prefixes: Vec<ListCommonPrefix> = list_result
         .common_prefixes
         .iter()
-        .map(|p| {
-            let raw_prefix = format!("{}/", p);
-            ListCommonPrefix {
-                prefix: s3_encode(
-                    rewrite_key(&raw_prefix, &strip_prefix, list_rewrite),
-                    url_encode,
-                ),
-            }
+        .map(|raw_prefix| ListCommonPrefix {
+            // Backend common prefixes already carry their trailing `/`.
+            prefix: s3_encode(
+                rewrite_key(raw_prefix, &strip_prefix, list_rewrite),
+                url_encode,
+            ),
         })
         .collect();
 
@@ -239,7 +394,7 @@ fn collect_list_entries(
 /// `next_continuation_token` are passed through from the backend's response.
 pub(crate) fn build_list_xml(
     params: &ListXmlParams<'_>,
-    list_result: &object_store::ListResult,
+    list_result: &BackendListResult,
     config: &BucketConfig,
     list_rewrite: Option<&ListRewrite>,
 ) -> Result<String, ProxyError> {
@@ -292,7 +447,7 @@ pub(crate) struct ListXmlParamsV1<'a> {
 /// Build S3 ListObjectsV1 XML from an object_store ListResult.
 pub(crate) fn build_list_xml_v1(
     params: &ListXmlParamsV1<'_>,
-    list_result: &object_store::ListResult,
+    list_result: &BackendListResult,
     config: &BucketConfig,
     list_rewrite: Option<&ListRewrite>,
 ) -> Result<String, ProxyError> {
@@ -364,23 +519,24 @@ fn rewrite_key(raw: &str, strip_prefix: &str, list_rewrite: Option<&ListRewrite>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
-    use object_store::{path::Path, ListResult, ObjectMeta};
 
-    fn make_list_result(keys: &[&str], common_prefixes: &[&str]) -> ListResult {
-        ListResult {
+    /// Build a `BackendListResult`. `common_prefixes` are given without their
+    /// trailing `/` for brevity; a real backend returns them slash-terminated,
+    /// so we append it here to match.
+    fn make_list_result(keys: &[&str], common_prefixes: &[&str]) -> BackendListResult {
+        BackendListResult {
             objects: keys
                 .iter()
-                .map(|k| ObjectMeta {
-                    location: Path::from(*k),
-                    last_modified: Utc::now(),
+                .map(|k| BackendObject {
+                    key: k.to_string(),
+                    last_modified: "2009-10-12T17:50:30.000Z".to_string(),
+                    etag: "\"abc\"".to_string(),
                     size: 100,
-                    e_tag: Some("\"abc\"".to_string()),
-                    version: None,
                 })
                 .collect(),
-            common_prefixes: common_prefixes.iter().map(|p| Path::from(*p)).collect(),
-            extensions: Default::default(),
+            common_prefixes: common_prefixes.iter().map(|p| format!("{p}/")).collect(),
+            is_truncated: false,
+            next_continuation_token: None,
         }
     }
 
@@ -707,36 +863,37 @@ mod tests {
         assert!(xml.contains("<Marker></Marker>") || xml.contains("<Marker/>"));
     }
 
-    /// Create a ListResult with objects that have explicit sizes, for testing
-    /// directory marker filtering.
+    /// Create a `BackendListResult` with objects that have explicit sizes and
+    /// raw keys, for testing directory marker filtering. Keys are passed exactly
+    /// as the backend would return them (directory markers keep their trailing
+    /// `/`); common prefixes get a trailing `/` appended.
     fn make_list_result_with_sizes(
         objects: &[(&str, u64)],
         common_prefixes: &[&str],
-    ) -> ListResult {
-        ListResult {
+    ) -> BackendListResult {
+        BackendListResult {
             objects: objects
                 .iter()
-                .map(|(k, size)| ObjectMeta {
-                    location: Path::from(*k),
-                    last_modified: Utc::now(),
+                .map(|(k, size)| BackendObject {
+                    key: k.to_string(),
+                    last_modified: "2009-10-12T17:50:30.000Z".to_string(),
+                    etag: "\"abc\"".to_string(),
                     size: *size,
-                    e_tag: Some("\"abc\"".to_string()),
-                    version: None,
                 })
                 .collect(),
-            common_prefixes: common_prefixes.iter().map(|p| Path::from(*p)).collect(),
-            extensions: Default::default(),
+            common_prefixes: common_prefixes.iter().map(|p| format!("{p}/")).collect(),
+            is_truncated: false,
+            next_continuation_token: None,
         }
     }
 
     #[test]
     fn test_directory_markers_filtered_from_v2_contents() {
         let config = make_config(None);
-        // Simulate what object_store returns: a 0-byte "photos" object
-        // (from S3 key "photos/") alongside the "photos" common prefix,
-        // plus a real file.
+        // A 0-byte marker key "photos/" (the backend returns it slash-terminated)
+        // alongside the "photos" common prefix, plus a real file.
         let list_result =
-            make_list_result_with_sizes(&[("photos", 0), ("readme.txt", 42)], &["photos"]);
+            make_list_result_with_sizes(&[("photos/", 0), ("readme.txt", 42)], &["photos"]);
 
         let params = ListXmlParams {
             bucket_name: "my-bucket",
@@ -755,7 +912,7 @@ mod tests {
 
         // The directory marker should NOT appear in Contents
         assert!(
-            !xml.contains("<Key>photos</Key>"),
+            !xml.contains("<Key>photos/</Key>") && !xml.contains("<Key>photos</Key>"),
             "Directory marker should be filtered out: {xml}"
         );
         // The real file should still be present
@@ -801,7 +958,7 @@ mod tests {
     fn test_directory_markers_filtered_from_v1_contents() {
         let config = make_config(None);
         let list_result =
-            make_list_result_with_sizes(&[("photos", 0), ("readme.txt", 42)], &["photos"]);
+            make_list_result_with_sizes(&[("photos/", 0), ("readme.txt", 42)], &["photos"]);
 
         let params = ListXmlParamsV1 {
             bucket_name: "my-bucket",
@@ -817,7 +974,7 @@ mod tests {
         let xml = build_list_xml_v1(&params, &list_result, &config, None).unwrap();
 
         assert!(
-            !xml.contains("<Key>photos</Key>"),
+            !xml.contains("<Key>photos/</Key>") && !xml.contains("<Key>photos</Key>"),
             "Directory marker should be filtered out in V1: {xml}"
         );
         assert!(
@@ -836,14 +993,13 @@ mod tests {
         // Full S3 prefix sent: "harvard-lil/staging-gov-data/"
         //
         // S3 returns a 0-byte key "harvard-lil/staging-gov-data/" in Contents
-        // (the directory marker). object_store::Path strips the trailing slash,
-        // giving location "harvard-lil/staging-gov-data". After strip_prefix
-        // ("harvard-lil/"), this becomes "staging-gov-data" — a phantom file
-        // that should not appear in the listing.
+        // (the directory marker). After strip_prefix ("harvard-lil/"), this
+        // would become "staging-gov-data/" — a phantom file that should not
+        // appear in the listing.
         let config = make_config(Some("harvard-lil"));
         let list_result = make_list_result_with_sizes(
             &[
-                ("harvard-lil/staging-gov-data", 0),
+                ("harvard-lil/staging-gov-data/", 0),
                 ("harvard-lil/staging-gov-data/data/file.parquet", 1000),
             ],
             &["harvard-lil/staging-gov-data/data"],
@@ -866,7 +1022,8 @@ mod tests {
 
         // The directory marker should NOT appear in Contents
         assert!(
-            !xml.contains("<Key>staging-gov-data</Key>"),
+            !xml.contains("<Key>staging-gov-data/</Key>")
+                && !xml.contains("<Key>staging-gov-data</Key>"),
             "Directory marker at list prefix should be filtered out: {xml}"
         );
         // The real file should still appear (with prefix stripped)
@@ -887,7 +1044,7 @@ mod tests {
         let config = make_config(Some("harvard-lil"));
         let list_result = make_list_result_with_sizes(
             &[
-                ("harvard-lil/staging-gov-data", 0),
+                ("harvard-lil/staging-gov-data/", 0),
                 ("harvard-lil/staging-gov-data/data/file.parquet", 1000),
             ],
             &["harvard-lil/staging-gov-data/data"],
@@ -907,7 +1064,8 @@ mod tests {
         let xml = build_list_xml_v1(&params, &list_result, &config, None).unwrap();
 
         assert!(
-            !xml.contains("<Key>staging-gov-data</Key>"),
+            !xml.contains("<Key>staging-gov-data/</Key>")
+                && !xml.contains("<Key>staging-gov-data</Key>"),
             "Directory marker at list prefix should be filtered out in V1: {xml}"
         );
         assert!(
@@ -942,5 +1100,66 @@ mod tests {
             xml.contains("<Key>photos</Key>"),
             "Non-zero-byte object should not be filtered: {xml}"
         );
+    }
+
+    // -- Empty path segments (issue #116) ------------------------------------
+
+    #[test]
+    fn parse_backend_list_xml_preserves_empty_path_segments() {
+        // A legal S3 key with a `//` — object_store::Path would reject this and
+        // fail the whole page. We must keep it verbatim.
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult>
+              <IsTruncated>false</IsTruncated>
+              <Contents>
+                <Key>raw//b.e21.nc</Key>
+                <LastModified>2009-10-12T17:50:30.000Z</LastModified>
+                <ETag>"abc"</ETag>
+                <Size>42</Size>
+              </Contents>
+              <Contents>
+                <Key>raw/valid.nc</Key>
+                <LastModified>2009-10-12T17:50:30.000Z</LastModified>
+                <ETag>"def"</ETag>
+                <Size>7</Size>
+              </Contents>
+            </ListBucketResult>"#;
+
+        let result = parse_backend_list_xml(xml).unwrap();
+        assert_eq!(result.objects.len(), 2);
+        assert_eq!(result.objects[0].key, "raw//b.e21.nc");
+        assert_eq!(result.objects[0].size, 42);
+        assert_eq!(result.objects[1].key, "raw/valid.nc");
+        assert!(!result.is_truncated);
+    }
+
+    #[test]
+    fn build_backend_list_url_maps_prefix_and_encodes() {
+        let mut config = make_config(Some("harvard-lil"));
+        config
+            .backend_options
+            .insert("endpoint".into(), "https://s3.example.com".into());
+        config
+            .backend_options
+            .insert("bucket_name".into(), "backend-bucket".into());
+        let params = parse_list_query_params(Some(
+            "list-type=2&prefix=staging gov/&delimiter=/&max-keys=50&encoding-type=url",
+        ));
+        let url = build_backend_list_url(&config, &params);
+
+        // Backend prefix is prepended, space is %20 (not `+`) for SigV4, `/`
+        // encoded in values, and encoding-type is NOT forwarded.
+        assert!(
+            url.starts_with("https://s3.example.com/backend-bucket?"),
+            "{url}"
+        );
+        assert!(url.contains("list-type=2"), "{url}");
+        assert!(
+            url.contains("prefix=harvard-lil%2Fstaging%20gov%2F"),
+            "{url}"
+        );
+        assert!(url.contains("delimiter=%2F"), "{url}");
+        assert!(url.contains("max-keys=50"), "{url}");
+        assert!(!url.contains("encoding-type"), "{url}");
     }
 }

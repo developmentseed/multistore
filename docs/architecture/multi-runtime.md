@@ -10,7 +10,7 @@ The proxy runs on two runtimes — a native Tokio/Hyper server for container dep
 | **Target** | `x86_64` / `aarch64` | `wasm32-unknown-unknown` |
 | **HTTP client** | reqwest | `web_sys::fetch` |
 | **Streaming** | hyper `Incoming` / reqwest `bytes_stream()` | JS `ReadableStream` passthrough |
-| **Object store connector** | Default (reqwest-based) | `FetchConnector` |
+| **Raw signed HTTP** | reqwest | `web_sys::fetch` |
 | **Backend support** | S3, Azure, GCS | S3, Azure, GCS via cargo features (example ships S3 only) |
 | **Config loading** | TOML file | Env var (JSON or JS object) |
 | **Threading** | Multi-threaded (`Send + Sync` required) | Single-threaded (`!Send` types allowed) |
@@ -53,20 +53,14 @@ This avoids `#[async_trait]`'s `Box<dyn Future + Send>` requirement, which won't
 The server runtime (`examples/server/`) uses Tokio and Hyper:
 
 - **Forward actions**: reqwest sends the presigned URL request. For GET, the response body is streamed via `bytes_stream()`. For PUT, the client's hyper `Incoming` body is streamed directly to reqwest.
-- **`ServerBackend`**: Creates `object_store` instances with the default HTTP connector (reqwest) and uses reqwest for `send_raw()` (multipart).
+- **`ServerBackend`**: Uses reqwest for `send_raw()` (multipart, batch delete, and LIST) and builds presigned URLs offline via the `object_store` signer.
 
 ## Cloudflare Workers Runtime
 
 The CF Workers runtime (`examples/cf-workers/`) uses `worker-rs`, `wasm-bindgen`, and `web_sys`:
 
 - **Forward actions**: JS `ReadableStream` bodies pass through without touching Rust. The Workers Fetch API handles streaming natively.
-- **`WorkerBackend`**: Creates `object_store` instances with `FetchConnector` injected for HTTP transport.
-
-### FetchConnector
-
-`FetchConnector` bridges `object_store`'s `HttpConnector` trait to the Workers Fetch API. Since `worker::Fetch::send()` is `!Send`, each call is wrapped in `spawn_local` with a oneshot channel to bridge back to the `Send` context that `object_store` expects.
-
-This is only used for LIST operations — presigned URL operations bypass `object_store` entirely.
+- **`WorkerBackend`**: Uses `web_sys::fetch` for `send_raw()` (multipart, batch delete, and LIST) and builds presigned URLs offline via the `object_store` signer. No `object_store` HTTP client is used, so LIST responses never touch `object_store::Path`.
 
 ### WASM Limitations
 

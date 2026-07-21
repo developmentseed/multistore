@@ -26,14 +26,10 @@ pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
         body: Self::Body,
     ) -> impl Future<Output = Result<ForwardResponse<Self::ResponseBody>, ProxyError>> + MaybeSend;
 
-    /// Create a PaginatedListStore for LIST operations
-    fn create_paginated_store(&self, config: &BucketConfig)
-        -> Result<Box<dyn PaginatedListStore>, ProxyError>;
-
     /// Create a Signer for presigned URL generation (GET/HEAD/PUT/DELETE)
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError>;
 
-    /// Send a pre-signed HTTP request (multipart operations)
+    /// Send a pre-signed HTTP request (multipart, batch delete, and LIST)
     fn send_raw(
         &self,
         method: http::Method,
@@ -44,7 +40,7 @@ pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
 }
 ```
 
-## Four Responsibilities
+## Three Responsibilities
 
 ### `forward()`
 
@@ -79,22 +75,6 @@ async fn forward(
 
 ## Other Responsibilities
 
-### `create_paginated_store()`
-
-Returns a `Box<dyn PaginatedListStore>` used for LIST operations with backend-side pagination. The runtime may need to inject a custom HTTP connector:
-
-```rust
-fn create_paginated_store(&self, config: &BucketConfig)
-    -> Result<Box<dyn PaginatedListStore>, ProxyError>
-{
-    let builder = match create_builder(config)? {
-        StoreBuilder::S3(s) => StoreBuilder::S3(s.with_http_connector(MyConnector)),
-        other => other,
-    };
-    builder.build()
-}
-```
-
 ### `create_signer()`
 
 Returns an `Arc<dyn Signer>` for generating presigned URLs. Signing is pure computation — no HTTP connector needed:
@@ -107,7 +87,7 @@ fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyE
 
 ### `send_raw()`
 
-Executes a pre-signed HTTP request for multipart operations. Use your platform's HTTP client:
+Executes a pre-signed HTTP request for operations not served by a presigned URL: multipart uploads, batch delete, and LIST (whose S3 XML the gateway parses itself so keys pass through byte-faithfully). Use your platform's HTTP client:
 
 ```rust
 async fn send_raw(

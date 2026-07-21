@@ -5,27 +5,25 @@
 //! `web_sys::Response` streams.
 
 use crate::body::JsBody;
-use crate::fetch_connector::FetchConnector;
 use crate::headers::WsHeaders;
 use crate::response::headermap_from_js;
 use bytes::Bytes;
 use http::HeaderMap;
 use multistore::backend::ForwardResponse;
-use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse, StoreBuilder};
+use multistore::backend::{build_signer, ProxyBackend, RawResponse};
 use multistore::error::ProxyError;
 use multistore::route_handler::ForwardRequest;
 use multistore::types::BucketConfig;
 
-use object_store::list::PaginatedListStore;
 use object_store::signer::Signer;
-use object_store::RetryConfig;
 use std::sync::Arc;
 use worker::Fetch;
 
 /// Backend for the Cloudflare Workers runtime.
 ///
-/// Uses `FetchConnector` for `object_store` HTTP requests and `web_sys::fetch`
-/// for raw multipart operations.
+/// Uses `web_sys::fetch` for forwarded requests and raw signed operations
+/// (multipart, batch delete, and LIST). Presigned URLs are built offline via
+/// the `object_store` signer.
 #[derive(Clone)]
 pub struct WorkerBackend;
 
@@ -145,33 +143,6 @@ impl ProxyBackend for WorkerBackend {
             body: backend_ws,
             content_length,
         })
-    }
-
-    fn create_paginated_store(
-        &self,
-        config: &BucketConfig,
-    ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
-        // Disable retries: object_store's retry logic uses `tokio::time::sleep`
-        // which panics on WASM (`std::time::Instant::now` is unsupported).
-        // See: https://github.com/apache/arrow-rs-object-store/issues/624
-        let no_retry = RetryConfig {
-            max_retries: 0,
-            ..Default::default()
-        };
-        let builder = match create_builder(config)? {
-            StoreBuilder::S3(s) => {
-                StoreBuilder::S3(s.with_http_connector(FetchConnector).with_retry(no_retry))
-            }
-            #[cfg(feature = "azure")]
-            StoreBuilder::Azure(a) => {
-                StoreBuilder::Azure(a.with_http_connector(FetchConnector).with_retry(no_retry))
-            }
-            #[cfg(feature = "gcp")]
-            StoreBuilder::Gcs(g) => {
-                StoreBuilder::Gcs(g.with_http_connector(FetchConnector).with_retry(no_retry))
-            }
-        };
-        builder.build()
     }
 
     fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
