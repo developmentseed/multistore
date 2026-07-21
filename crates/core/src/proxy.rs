@@ -46,8 +46,8 @@
 //! three-variant [`HandlerAction`] directly.
 
 use crate::api::list::{
-    build_list_prefix, build_list_xml, build_list_xml_v1, parse_list_query_params, ListXmlParams,
-    ListXmlParamsV1,
+    build_backend_list_url, build_list_xml, build_list_xml_v1, parse_backend_list_xml,
+    parse_list_query_params, ListXmlParams, ListXmlParamsV1,
 };
 use crate::api::list_rewrite::ListRewrite;
 use crate::api::request::{self, HostStyle};
@@ -68,7 +68,6 @@ use crate::router::Router;
 use crate::types::{Action, BucketConfig, ResolvedIdentity, S3Operation};
 use bytes::Bytes;
 use http::{HeaderMap, Method};
-use object_store::list::PaginatedListOptions;
 use std::borrow::Cow;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -1204,10 +1203,15 @@ where
         })
     }
 
-    /// LIST via object_store's `PaginatedListStore`.
+    /// LIST via raw signed HTTP against the backend.
     ///
-    /// Pagination is pushed to the backend — only one page of results is fetched
-    /// per request, avoiding loading all objects into memory.
+    /// We fetch one page from the backend and parse its S3 XML ourselves rather
+    /// than routing through `object_store`. `object_store::path::Path` rejects —
+    /// and cannot represent — keys with empty path segments (`//`), which are
+    /// legal opaque S3 keys; a single such key would otherwise 503 the entire
+    /// prefix (issue #116). Parsing the XML directly keeps every key that S3
+    /// serves listable through multistore. Pagination is pushed to the backend
+    /// via the continuation token, so only one page is fetched per request.
     async fn handle_list(
         &self,
         config: &BucketConfig,
@@ -1215,66 +1219,51 @@ where
         list_rewrite: Option<&ListRewrite>,
         display_name: Option<&str>,
     ) -> Result<ProxyResult, ProxyError> {
-        let store = self.backend.create_paginated_store(config)?;
-
         // Parse all query parameters in a single pass
         let list_params = parse_list_query_params(raw_query);
         let client_prefix = &list_params.prefix;
         let delimiter = &list_params.delimiter;
 
-        // Build the full prefix including backend_prefix
-        let full_prefix = build_list_prefix(config, client_prefix);
-
-        // Map start-after (V2) or marker (V1) to raw key space by prepending backend_prefix
-        let offset = if list_params.is_v2 {
-            list_params
-                .start_after
-                .as_ref()
-                .map(|sa| build_list_prefix(config, sa))
-        } else {
-            list_params
-                .marker
-                .as_ref()
-                .map(|m| build_list_prefix(config, m))
-        };
+        let backend_url = build_backend_list_url(config, &list_params);
 
         tracing::debug!(
-            full_prefix = %full_prefix,
-            delimiter = %delimiter,
+            backend_url = %backend_url,
             max_keys = list_params.max_keys,
             has_page_token = list_params.continuation_token.is_some(),
-            "LIST via PaginatedListStore"
+            "LIST via raw signed HTTP"
         );
 
-        let prefix = if full_prefix.is_empty() {
-            None
-        } else {
-            Some(full_prefix.as_str())
-        };
+        let mut headers = HeaderMap::new();
+        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+        let payload_hash = hash_payload(&[]);
+        sign_s3_request(
+            &Method::GET,
+            &backend_url,
+            &mut headers,
+            config,
+            &payload_hash,
+        )?;
 
-        let opts = PaginatedListOptions {
-            offset,
-            delimiter: if delimiter.is_empty() {
-                None
-            } else {
-                Some(Cow::Owned(delimiter.clone()))
-            },
-            max_keys: Some(list_params.max_keys),
-            page_token: list_params.continuation_token.clone(),
-            ..Default::default()
-        };
+        let raw_resp = self
+            .backend
+            .send_raw(Method::GET, backend_url, headers, Bytes::new())
+            .await?;
 
-        let paginated = store
-            .list_paginated(prefix, opts)
-            .await
-            .map_err(ProxyError::from_object_store_error)?;
+        if raw_resp.status >= 300 {
+            return Err(ProxyError::BackendError(format!(
+                "backend rejected list with status {}",
+                raw_resp.status
+            )));
+        }
 
-        // Build S3 XML response from paginated result
+        let result = parse_backend_list_xml(&raw_resp.body)?;
+
         let bucket_name = display_name.unwrap_or(&config.name);
-        let is_truncated = paginated.page_token.is_some();
+        let is_truncated = result.is_truncated;
 
         let xml = if list_params.is_v2 {
-            let key_count = paginated.result.objects.len() + paginated.result.common_prefixes.len();
+            let key_count = result.objects.len() + result.common_prefixes.len();
+            let next_continuation_token = result.next_continuation_token.clone();
             build_list_xml(
                 &ListXmlParams {
                     bucket_name,
@@ -1285,21 +1274,17 @@ where
                     key_count,
                     start_after: &list_params.start_after,
                     continuation_token: &list_params.continuation_token,
-                    next_continuation_token: paginated.page_token,
+                    next_continuation_token,
                     encoding_type: &list_params.encoding_type,
                 },
-                &paginated.result,
+                &result,
                 config,
                 list_rewrite,
             )?
         } else {
             // Derive NextMarker from the last returned key when truncated
             let next_marker = if is_truncated {
-                paginated
-                    .result
-                    .objects
-                    .last()
-                    .map(|obj| obj.location.to_string())
+                result.objects.last().map(|obj| obj.key.clone())
             } else {
                 None
             };
@@ -1314,7 +1299,7 @@ where
                     next_marker,
                     encoding_type: &list_params.encoding_type,
                 },
-                &paginated.result,
+                &result,
                 config,
                 list_rewrite,
             )?
@@ -2712,5 +2697,106 @@ mod tests {
             let err = build_object_path(&config, key).unwrap_err();
             assert_eq!(err.status_code(), 400, "key {key:?} must be a 400");
         }
+    }
+
+    // -- LIST with empty path segments (issue #116) --------------------------
+
+    /// Backend that serves a canned `ListBucketResult` XML page and records the
+    /// URL it was asked to fetch.
+    #[derive(Clone)]
+    struct ListMockBackend {
+        body: &'static [u8],
+        captured_url: Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    impl ProxyBackend for ListMockBackend {
+        type ResponseBody = ();
+        type Body = ();
+
+        async fn forward(
+            &self,
+            _request: ForwardRequest,
+            _body: (),
+        ) -> Result<ForwardResponse<()>, ProxyError> {
+            unimplemented!()
+        }
+
+        fn create_paginated_store(
+            &self,
+            _config: &BucketConfig,
+        ) -> Result<Box<dyn PaginatedListStore>, ProxyError> {
+            unimplemented!()
+        }
+
+        fn create_signer(&self, config: &BucketConfig) -> Result<Arc<dyn Signer>, ProxyError> {
+            crate::backend::build_signer(config)
+        }
+
+        async fn send_raw(
+            &self,
+            _method: http::Method,
+            url: String,
+            _headers: HeaderMap,
+            _body: Bytes,
+        ) -> Result<RawResponse, ProxyError> {
+            *self.captured_url.lock().unwrap() = Some(url);
+            Ok(RawResponse {
+                status: 200,
+                headers: HeaderMap::new(),
+                body: Bytes::from_static(self.body),
+            })
+        }
+    }
+
+    /// A single stray `//` key must no longer 503 the whole prefix: the page
+    /// returns 200 with the offending key preserved verbatim alongside its
+    /// siblings.
+    #[test]
+    fn list_preserves_empty_path_segment_key() {
+        run(async {
+            let captured_url = Arc::new(std::sync::Mutex::new(None));
+            let backend = ListMockBackend {
+                body: br#"<?xml version="1.0" encoding="UTF-8"?>
+                    <ListBucketResult>
+                      <IsTruncated>false</IsTruncated>
+                      <Contents>
+                        <Key>raw//b.e21.nc</Key>
+                        <LastModified>2009-10-12T17:50:30.000Z</LastModified>
+                        <ETag>"abc"</ETag>
+                        <Size>42</Size>
+                      </Contents>
+                      <Contents>
+                        <Key>raw/valid.nc</Key>
+                        <LastModified>2009-10-12T17:50:30.000Z</LastModified>
+                        <ETag>"def"</ETag>
+                        <Size>7</Size>
+                      </Contents>
+                    </ListBucketResult>"#,
+                captured_url: captured_url.clone(),
+            };
+            let gw = ProxyGateway::new(backend, MockRegistry, MockCreds, None);
+            let config = test_bucket_config("test-bucket");
+
+            let result = gw
+                .handle_list(&config, Some("list-type=2&prefix=raw/"), None, None)
+                .await
+                .expect("list must succeed, not 503");
+
+            assert_eq!(result.status, 200);
+            let xml = match result.body {
+                ProxyResponseBody::Bytes(b) => String::from_utf8(b.to_vec()).unwrap(),
+                ProxyResponseBody::Empty => panic!("expected a body"),
+            };
+            assert!(
+                xml.contains("<Key>raw//b.e21.nc</Key>"),
+                "empty-segment key must survive: {xml}"
+            );
+            assert!(xml.contains("<Key>raw/valid.nc</Key>"), "{xml}");
+
+            // The backend request carried list-type=2 and the mapped prefix.
+            let url = captured_url.lock().unwrap().clone().unwrap();
+            assert!(url.contains("list-type=2"), "{url}");
+            assert!(url.contains("prefix=raw%2F"), "{url}");
+        });
     }
 }
