@@ -48,7 +48,8 @@ pub enum HandlerAction {
     Forward(ForwardRequest),
     /// The handler needs the request body to continue (multipart operations).
     /// The runtime should materialize the body and call `handle_with_body`.
-    NeedsBody(PendingRequest),
+    /// Boxed: `PendingRequest` is far larger than the other variants.
+    NeedsBody(Box<PendingRequest>),
 }
 
 /// A presigned URL request for the runtime to execute.

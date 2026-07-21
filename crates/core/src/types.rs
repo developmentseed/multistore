@@ -380,6 +380,25 @@ pub enum S3Operation {
         bucket: String,
         key: String,
     },
+    /// Server-side copy (`PUT /{bucket}/{key}` carrying `x-amz-copy-source`).
+    ///
+    /// Carries both the destination (`bucket`/`key`) and the parsed source
+    /// (`src_bucket`/`src_key`/`src_version`). Unlike every other operation,
+    /// a copy touches two virtual buckets: the destination is authorized as a
+    /// write via [`action`](S3Operation::action) on the main pipeline, and the
+    /// source is authorized as a read separately when the copy is dispatched.
+    CopyObject {
+        /// Destination virtual bucket.
+        bucket: String,
+        /// Destination key.
+        key: String,
+        /// Source virtual bucket, from `x-amz-copy-source`.
+        src_bucket: String,
+        /// Source key (percent-decoded, client-visible), from `x-amz-copy-source`.
+        src_key: String,
+        /// Optional source `versionId` from `x-amz-copy-source`.
+        src_version: Option<String>,
+    },
     /// Batch delete (`POST /{bucket}?delete`). The keys to delete live in the
     /// request body, so this operation carries only the bucket — the body is
     /// parsed and each key authorized individually once it arrives.
@@ -405,7 +424,9 @@ impl S3Operation {
             | S3Operation::ListBucket { .. }
             | S3Operation::ListBuckets => http::Method::GET,
             S3Operation::HeadObject { .. } => http::Method::HEAD,
-            S3Operation::PutObject { .. } | S3Operation::UploadPart { .. } => http::Method::PUT,
+            S3Operation::PutObject { .. }
+            | S3Operation::UploadPart { .. }
+            | S3Operation::CopyObject { .. } => http::Method::PUT,
             S3Operation::DeleteObject { .. } | S3Operation::AbortMultipartUpload { .. } => {
                 http::Method::DELETE
             }
@@ -420,7 +441,9 @@ impl S3Operation {
         match self {
             S3Operation::GetObject { .. } => Action::GetObject,
             S3Operation::HeadObject { .. } => Action::HeadObject,
-            S3Operation::PutObject { .. } => Action::PutObject,
+            // A copy's destination is a write; the source read is authorized
+            // separately at dispatch (see `execute_copy`).
+            S3Operation::PutObject { .. } | S3Operation::CopyObject { .. } => Action::PutObject,
             S3Operation::ListBucket { .. } => Action::ListBucket,
             S3Operation::CreateMultipartUpload { .. } => Action::CreateMultipartUpload,
             S3Operation::UploadPart { .. } => Action::UploadPart,
@@ -446,6 +469,7 @@ impl S3Operation {
             | S3Operation::CompleteMultipartUpload { bucket, .. }
             | S3Operation::AbortMultipartUpload { bucket, .. }
             | S3Operation::DeleteObject { bucket, .. }
+            | S3Operation::CopyObject { bucket, .. }
             | S3Operation::DeleteObjects { bucket } => Some(bucket),
             S3Operation::ListBuckets => None,
         }
@@ -461,6 +485,7 @@ impl S3Operation {
             | S3Operation::UploadPart { key, .. }
             | S3Operation::CompleteMultipartUpload { key, .. }
             | S3Operation::AbortMultipartUpload { key, .. }
+            | S3Operation::CopyObject { key, .. }
             | S3Operation::DeleteObject { key, .. } => key,
             S3Operation::ListBucket { .. }
             | S3Operation::ListBuckets

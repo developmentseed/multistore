@@ -7,6 +7,7 @@
 | GetObject | `GET /{bucket}/{key}` | Forward | Download a file |
 | HeadObject | `HEAD /{bucket}/{key}` | Forward | Get file metadata |
 | PutObject | `PUT /{bucket}/{key}` | Forward | Upload a file |
+| CopyObject | `PUT /{bucket}/{key}` + `x-amz-copy-source` | Response | Server-side copy within one backing store |
 | DeleteObject | `DELETE /{bucket}/{key}` | Forward | Delete a file |
 | DeleteObjects | `POST /{bucket}?delete` | NeedsBody | Batch-delete up to 1000 keys (`aws s3 rm --recursive`, `delete_objects`) |
 | ListBucket | `GET /{bucket}` | Response | List objects in a bucket (ListObjectsV1 and V2) |
@@ -25,6 +26,12 @@
 ### Batch delete authorization
 
 `DeleteObjects` carries its keys in the request body, so authorization happens in two stages: the bucket-level check confirms the caller may delete *something* in the bucket, then **each key in the body is authorized individually** against the caller's allowed prefixes. Keys the caller is not permitted to delete are returned as per-key `AccessDenied` entries in the `DeleteResult` (S3's partial-result semantics) and are never forwarded to the backend; authorized keys are deleted regardless. Anonymous callers cannot batch-delete.
+
+### Server-side copy
+
+`CopyObject` is a `PUT /{bucket}/{key}` carrying an `x-amz-copy-source: /{src-bucket}/{src-key}[?versionId=…]` header. The proxy resolves and authorizes **both** ends — the source as a read (`GetObject`) and the destination as a write (`PutObject`) — then delegates the copy to the backend: a signed `PUT` to the destination key carries `x-amz-copy-source` rewritten into the source's backend bucket/key space. The backend's `CopyObjectResult` XML (and any error, including S3's "error embedded in a `200 OK`" case) is passed straight through. Copy-relevant client headers are forwarded and signed: `x-amz-metadata-directive`, `x-amz-tagging-directive`, `x-amz-tagging`, `x-amz-acl`, `x-amz-storage-class`, `x-amz-website-redirect-location`, `x-amz-meta-*`, `x-amz-server-side-encryption*`, and the `x-amz-copy-source-if-*` preconditions.
+
+**Same-store only.** A native S3 copy needs one endpoint that can read the source and write the destination, so source and destination must resolve to the same S3 backend — same endpoint, region, and credentials (the backend bucket names may differ, so cross-bucket copies within one account work). A cross-store copy, or a copy from a backend without a `bucket_name`, is rejected with `501 NotImplemented`. `UploadPartCopy` (a copy-source `PUT` with `uploadId`/`partNumber`) is likewise not supported.
 
 ### Writes and request headers
 
@@ -52,7 +59,7 @@ Handled by OIDC discovery closures (registered on the `Router` via `OidcRouterEx
 > [!WARNING]
 > - **Multipart and batch delete are S3 only** — Both use raw HTTP with `S3RequestSigner` and are gated to `backend_type = "s3"`. Non-S3 backends should use single PUT/DELETE requests.
 > - **DeleteObject does not return confirmation** — The proxy forwards the DELETE and returns the backend's response status.
-> - **Server-side copy is not supported** — A `PUT` carrying `x-amz-copy-source` (CopyObject / UploadPartCopy) is rejected with `501 NotImplemented` rather than silently overwriting the destination.
+> - **Server-side copy is same-store only** — `CopyObject` works when source and destination resolve to the same S3 backend (see "Server-side copy" above). A cross-store copy, or `UploadPartCopy`, is rejected with `501 NotImplemented`.
 > - **`x-amz-*` write headers are dropped** — Object metadata, storage class, tagging, ACLs, SSE, and checksum headers on writes are not forwarded (see "Writes and request headers" above).
 > - **Versioned/MFA delete is not handled** — A `?versionId=` on a delete is ignored; the current object version is deleted.
 > - **Degenerate object keys are rejected** — Keys containing empty, `.`, or `..` path segments (including leading/trailing slashes, e.g. `dir/` folder markers), or ASCII control characters, return `400 InvalidRequest` on every keyed operation. Real S3 accepts such keys; the proxy is deliberately stricter because they cannot be addressed consistently across its presigned and raw-signed backend paths. Batch-delete body keys are exempt, as the remediation route for legacy keys already stored under such names.
