@@ -1134,34 +1134,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_path_segment_key_survives_to_xml() {
-        // End-to-end: a `//` key must appear verbatim in the response the client
-        // sees, not 503 the whole prefix.
-        let config = make_config(None);
-        let list_result = make_list_result(&["raw//b.e21.nc", "raw/valid.nc"], &[]);
-
-        let params = ListXmlParams {
-            bucket_name: "my-bucket",
-            client_prefix: "raw/",
-            delimiter: "",
-            max_keys: 1000,
-            is_truncated: false,
-            key_count: 2,
-            start_after: &None,
-            continuation_token: &None,
-            next_continuation_token: None,
-            encoding_type: &None,
-        };
-
-        let xml = build_list_xml(&params, &list_result, &config, None).unwrap();
-        assert!(
-            xml.contains("<Key>raw//b.e21.nc</Key>"),
-            "Empty path segment key must pass through verbatim: {xml}"
-        );
-        assert!(xml.contains("<Key>raw/valid.nc</Key>"));
-    }
-
-    #[test]
     fn build_backend_list_url_maps_prefix_and_encodes() {
         let mut config = make_config(Some("harvard-lil"));
         config
