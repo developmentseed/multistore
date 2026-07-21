@@ -2937,4 +2937,149 @@ mod tests {
         let err = build_copy_source_header(&config, "k", None).unwrap_err();
         assert!(matches!(err, ProxyError::NotImplemented(_)));
     }
+
+    /// End-to-end same-store `CopyObject`: a `PUT` carrying `x-amz-copy-source`
+    /// drives a re-signed backend `PUT` with an empty body. Exercises the whole
+    /// path — parse → authorize destination (as `PutObject`) → authorize source
+    /// (as `GetObject`) → same-store check → build backend copy-source → sign →
+    /// `send_raw` — and pins the wire request the backend actually receives.
+    #[test]
+    fn copy_object_end_to_end_sends_resigned_backend_put() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let backend = CaptureHeadersBackend {
+                captured: captured.clone(),
+            };
+            let gw = ProxyGateway::new(backend, MockRegistry, MockCreds, None);
+
+            let mut headers = HeaderMap::new();
+            // Wire key is percent-encoded per the S3 spec (space → %20).
+            headers.insert(
+                "x-amz-copy-source",
+                "/src-bucket/src%20key.txt".parse().unwrap(),
+            );
+            // Copy-relevant client headers must be forwarded AND signed.
+            headers.insert("x-amz-metadata-directive", "REPLACE".parse().unwrap());
+            headers.insert("x-amz-meta-team", "platform".parse().unwrap());
+
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/dst-key.txt", None, &headers, None)
+                .await;
+
+            let status = match action {
+                HandlerAction::Response(resp) => resp.status,
+                other => panic!(
+                    "expected Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            };
+            assert_eq!(status, 200, "same-store copy returns the backend's status");
+
+            let sent = captured
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("backend was called");
+
+            // Copy-source is decoded, mapped into the source's backend bucket/key
+            // space, then re-encoded with S3's canonical path set.
+            assert_eq!(
+                sent.get("x-amz-copy-source").unwrap(),
+                "/backend-bucket/src%20key.txt"
+            );
+            // Copy-relevant client headers reached the backend.
+            assert_eq!(sent.get("x-amz-metadata-directive").unwrap(), "REPLACE");
+            assert_eq!(sent.get("x-amz-meta-team").unwrap(), "platform");
+            // Empty body: the signed payload hash is sha256("").
+            assert_eq!(
+                sent.get("x-amz-content-sha256").unwrap(),
+                hash_payload(&[]).as_str()
+            );
+            // The backend request carries a fresh proxy signature (the copy is
+            // re-signed with backend credentials, never the client's)...
+            let auth = sent.get("authorization").unwrap().to_str().unwrap();
+            assert!(
+                auth.starts_with("AWS4-HMAC-SHA256 Credential="),
+                "expected re-signed Authorization, got: {auth}"
+            );
+            // ...and the copy-relevant headers are part of SignedHeaders (else S3
+            // silently ignores the copy-source and the copy does nothing).
+            assert!(
+                auth.contains("x-amz-copy-source")
+                    && auth.contains("x-amz-metadata-directive")
+                    && auth.contains("x-amz-meta-team"),
+                "copy headers missing from SignedHeaders: {auth}"
+            );
+        });
+    }
+
+    /// A `versionId` on the copy-source rides through to the backend copy-source.
+    #[test]
+    fn copy_object_forwards_version_id_to_backend() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                MockRegistry,
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-amz-copy-source",
+                "/src-bucket/obj.txt?versionId=v42".parse().unwrap(),
+            );
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/dst.txt", None, &headers, None)
+                .await;
+            assert!(matches!(action, HandlerAction::Response(_)));
+            let sent = captured
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("backend was called");
+            assert_eq!(
+                sent.get("x-amz-copy-source").unwrap(),
+                "/backend-bucket/obj.txt?versionId=v42"
+            );
+        });
+    }
+
+    /// A cross-store copy (source resolves to a different backend) cannot be a
+    /// native S3 copy, so it is rejected with `501` and the backend is never
+    /// contacted — no bytes are streamed through the proxy.
+    #[test]
+    fn cross_store_copy_is_rejected_501() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                MockRegistry,
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            // `azure-*` names resolve to a non-S3 backend in the test registry,
+            // so source and destination are on different stores.
+            headers.insert("x-amz-copy-source", "/azure-src/obj.txt".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/dst.txt", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 501),
+                other => panic!(
+                    "expected 501 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+            assert!(
+                captured.lock().unwrap().is_none(),
+                "backend must not be contacted for a rejected cross-store copy"
+            );
+        });
+    }
 }
