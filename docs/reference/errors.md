@@ -24,7 +24,7 @@ The proxy returns S3-compatible error responses in XML format:
 | RoleNotFound | 403 | `AccessDenied` | Requested role doesn't exist in config |
 | InvalidRequest | 400 | `InvalidRequest` | Malformed S3 request |
 | MalformedXml | 400 | `MalformedXML` | Request body XML is malformed, empty, or exceeds limits (e.g. a batch delete naming no objects or more than 1000 keys) |
-| NotImplemented | 501 | `NotImplemented` | Recognized but unsupported operation (e.g. server-side copy via `x-amz-copy-source`) |
+| NotImplemented | 501 | `NotImplemented` | Recognized but unsupported operation (e.g. cross-store `CopyObject`, `UploadPartCopy`) |
 | EntityTooLarge | 400 | `EntityTooLarge` | Upload `Content-Length` exceeds the configured maximum body size |
 | BackendError | 503 | `ServiceUnavailable` | Backend object store is unreachable or returned an error |
 | PreconditionFailed | 412 | `PreconditionFailed` | Conditional request failed (If-Match, etc.) |

@@ -281,26 +281,46 @@ class TestStaticCredentialWrites:
 
         full.delete_object(Bucket="private-uploads", Key=denied_key)  # cleanup
 
-    def test_copy_object_rejected(self):
-        """Server-side copy (x-amz-copy-source) is rejected with 501
-        NotImplemented and does not create the destination."""
+    def test_copy_object_same_bucket(self):
+        """Server-side copy (x-amz-copy-source) within one bucket succeeds and
+        the destination has the source's content."""
         client = static_client()
         src = f"copy-src-{uuid.uuid4()}.txt"
         dst = f"copy-dst-{uuid.uuid4()}.txt"
-        client.put_object(Bucket="private-uploads", Key=src, Body=b"source")
-        with pytest.raises(ClientError) as exc:
-            client.copy_object(
-                Bucket="private-uploads",
-                Key=dst,
-                CopySource={"Bucket": "private-uploads", "Key": src},
-            )
-        assert exc.value.response["Error"]["Code"] == "NotImplemented", exc.value.response
-        assert exc.value.response["ResponseMetadata"]["HTTPStatusCode"] == 501
-        # The destination must not have been created.
-        with pytest.raises(ClientError):
-            client.head_object(Bucket="private-uploads", Key=dst)
+        client.put_object(Bucket="private-uploads", Key=src, Body=b"source-bytes")
+        resp = client.copy_object(
+            Bucket="private-uploads",
+            Key=dst,
+            CopySource={"Bucket": "private-uploads", "Key": src},
+        )
+        assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+        assert resp["CopyObjectResult"]["ETag"]
+        # The destination now exists with the copied bytes.
+        got = client.get_object(Bucket="private-uploads", Key=dst)
+        assert got["Body"].read() == b"source-bytes"
 
         client.delete_object(Bucket="private-uploads", Key=src)  # cleanup
+        client.delete_object(Bucket="private-uploads", Key=dst)
+
+    def test_copy_object_cross_bucket_same_store(self):
+        """A copy across two virtual buckets that resolve to the same backing
+        store (same endpoint/credentials) is a native same-store copy and
+        succeeds — the backend bucket names differing does not matter."""
+        client = static_client()
+        src = f"copy-src-{uuid.uuid4()}.txt"
+        dst = f"copy-dst-{uuid.uuid4()}.txt"
+        client.put_object(Bucket="public-data", Key=src, Body=b"cross-bucket")
+        resp = client.copy_object(
+            Bucket="private-uploads",
+            Key=dst,
+            CopySource={"Bucket": "public-data", "Key": src},
+        )
+        assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+        got = client.get_object(Bucket="private-uploads", Key=dst)
+        assert got["Body"].read() == b"cross-bucket"
+
+        client.delete_object(Bucket="public-data", Key=src)  # cleanup
+        client.delete_object(Bucket="private-uploads", Key=dst)
 
 
 # ---------------------------------------------------------------------------

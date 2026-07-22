@@ -54,7 +54,7 @@ use crate::api::request::{self, HostStyle};
 use crate::api::response::{BucketList, ErrorResponse, ListAllMyBucketsResult};
 use crate::auth;
 use crate::auth::TemporaryCredentialResolver;
-use crate::backend::multipart::{build_backend_url, sign_s3_request};
+use crate::backend::multipart::{build_backend_url, sign_s3_request, S3_PATH_ENCODE_SET};
 use crate::backend::request_signer::{hash_payload, UNSIGNED_PAYLOAD};
 use crate::backend::ForwardResponse;
 use crate::backend::ProxyBackend;
@@ -571,7 +571,7 @@ where
                 // re-read late (which would re-expose the cross-request hazard).
                 match prebuffered.take() {
                     Some(bytes) => {
-                        let result = self.handle_with_body(pending, bytes).await;
+                        let result = self.handle_with_body(*pending, bytes).await;
                         let s = result.status;
                         let rb = response_body_bytes(&result.body);
                         (
@@ -1046,7 +1046,7 @@ where
             | S3Operation::CompleteMultipartUpload { .. }
             | S3Operation::AbortMultipartUpload { .. } => {
                 Self::require_s3_backend(bucket_config)?;
-                Ok(HandlerAction::NeedsBody(pending()))
+                Ok(HandlerAction::NeedsBody(Box::new(pending())))
             }
             // Batch delete needs the body to read the key list and authorize
             // each key individually.
@@ -1060,7 +1060,38 @@ where
                 // The body is buffered whole; bound it like other uploads. The
                 // key count is additionally capped when the body is parsed.
                 self.check_upload_size(original_headers)?;
-                Ok(HandlerAction::NeedsBody(pending()))
+                Ok(HandlerAction::NeedsBody(Box::new(pending())))
+            }
+            S3Operation::CopyObject {
+                src_bucket,
+                src_key,
+                src_version,
+                ..
+            } => {
+                Self::require_s3_backend(bucket_config)?;
+                // Resolve + authorize the source as a read. Reusing get_bucket
+                // with a synthetic GetObject applies the exact authorization a
+                // real GET of the source object would — the copy's destination
+                // write was already authorized by the main pipeline.
+                let src_op = S3Operation::GetObject {
+                    bucket: src_bucket.clone(),
+                    key: src_key.clone(),
+                };
+                let src = self
+                    .bucket_registry
+                    .get_bucket(src_bucket, ctx.identity, &src_op)
+                    .await?;
+                let result = self
+                    .execute_copy(
+                        bucket_config,
+                        &src.config,
+                        operation,
+                        src_key,
+                        src_version.as_deref(),
+                        original_headers,
+                    )
+                    .await?;
+                Ok(HandlerAction::Response(result))
             }
             _ => Err(ProxyError::Internal("unexpected operation".into())),
         }
@@ -1143,13 +1174,13 @@ where
         }
     }
 
-    /// Reject multipart operations on non-S3 backends (an S3-only feature).
+    /// Reject S3-only operations (multipart, server-side copy) on non-S3 backends.
     fn require_s3_backend(config: &BucketConfig) -> Result<(), ProxyError> {
         if config.is_s3_backend() {
             Ok(())
         } else {
             Err(ProxyError::InvalidRequest(format!(
-                "multipart operations not supported for '{}' backends",
+                "operation not supported for '{}' backends",
                 config.backend_type
             )))
         }
@@ -1531,6 +1562,155 @@ where
             body: ProxyResponseBody::from_bytes(Bytes::from(xml)),
         })
     }
+
+    /// Execute a server-side copy (`CopyObject`) via raw signed HTTP.
+    ///
+    /// The copy is delegated to the backend S3: a signed `PUT` to the
+    /// destination key carries `x-amz-copy-source` pointing at the source's
+    /// backend bucket/key. Only same-store copies (source and destination on
+    /// the same S3 endpoint + credentials) are supported — a native S3 copy
+    /// cannot reach across two distinct backends.
+    ///
+    /// The backend's `CopyObjectResult` XML (and any 4xx/5xx, including the
+    /// "error embedded in a 200" case) is passed straight through: it carries
+    /// only an ETag + LastModified, neither of which needs rewriting.
+    async fn execute_copy(
+        &self,
+        dest_config: &BucketConfig,
+        src_config: &BucketConfig,
+        operation: &S3Operation,
+        src_key: &str,
+        src_version: Option<&str>,
+        original_headers: &HeaderMap,
+    ) -> Result<ProxyResult, ProxyError> {
+        // ponytail: cross-store copy rejected, not streamed. A native S3 copy
+        // needs one endpoint that can read the source and write the
+        // destination. Upgrade path: proxy-side read-then-write streaming
+        // (with >5 GB handling and 200-embedded-error detection) when a real
+        // cross-store use case appears.
+        if !same_backing_store(src_config, dest_config) {
+            return Err(ProxyError::NotImplemented(
+                "cross-store copy (source and destination on different backends) is not supported"
+                    .into(),
+            ));
+        }
+
+        let copy_source = build_copy_source_header(src_config, src_key, src_version)?;
+        let backend_url = build_backend_url(dest_config, operation)?;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-amz-copy-source",
+            copy_source.parse().map_err(|_| {
+                ProxyError::Internal("invalid x-amz-copy-source header value".into())
+            })?,
+        );
+        // Forward the copy-relevant client headers. Every header here is signed
+        // by `sign_s3_request`, so unlike the presigned PUT path, `x-amz-*`
+        // headers are safe to pass through.
+        for (name, val) in original_headers.iter() {
+            if is_copy_forward_header(name.as_str()) {
+                headers.insert(name.clone(), val.clone());
+            }
+        }
+        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+
+        // Empty request body: sign the hash of the empty payload.
+        let payload_hash = hash_payload(&[]);
+        sign_s3_request(
+            &Method::PUT,
+            &backend_url,
+            &mut headers,
+            dest_config,
+            &payload_hash,
+        )?;
+
+        let raw_resp = self
+            .backend
+            .send_raw(Method::PUT, backend_url, headers, Bytes::new())
+            .await?;
+
+        tracing::debug!(status = raw_resp.status, "copy backend response");
+
+        Ok(ProxyResult {
+            status: raw_resp.status,
+            headers: filter_response_headers(&raw_resp.headers),
+            body: ProxyResponseBody::from_bytes(raw_resp.body),
+        })
+    }
+}
+
+/// Whether two bucket configs point at the same S3 backing store, such that a
+/// native server-side copy from one to the other is possible.
+///
+/// Requires both to be S3 backends sharing the same endpoint, region, and
+/// credentials — then a `PUT` signed for the destination endpoint can name the
+/// source bucket in `x-amz-copy-source` and S3 performs the copy internally.
+/// The bucket names may differ (cross-bucket copy within one account). This is
+/// deliberately conservative: two configs that resolve to the same physical
+/// store via different credentials are treated as distinct.
+fn same_backing_store(a: &BucketConfig, b: &BucketConfig) -> bool {
+    a.is_s3_backend()
+        && b.is_s3_backend()
+        && a.option("endpoint") == b.option("endpoint")
+        && a.option("region") == b.option("region")
+        && a.option("access_key_id") == b.option("access_key_id")
+        && a.option("secret_access_key") == b.option("secret_access_key")
+        && a.option("token") == b.option("token")
+}
+
+/// Build the backend `x-amz-copy-source` header value for a same-store copy:
+/// `/{backend_bucket}/{encoded backend key}[?versionId=id]`.
+///
+/// The key is mapped into the source's backend key space (prefix applied) and
+/// percent-encoded with the same strict set S3 uses for canonical paths.
+fn build_copy_source_header(
+    src_config: &BucketConfig,
+    src_key: &str,
+    src_version: Option<&str>,
+) -> Result<String, ProxyError> {
+    let src_bucket = src_config.option("bucket_name").unwrap_or("");
+    if src_bucket.is_empty() {
+        return Err(ProxyError::NotImplemented(
+            "copy from a backend without a bucket name is not supported".into(),
+        ));
+    }
+    let backend_key = apply_backend_prefix(src_config, src_key);
+    let encoded_key =
+        percent_encoding::utf8_percent_encode(&backend_key, S3_PATH_ENCODE_SET).to_string();
+    let mut value = format!("/{src_bucket}/{encoded_key}");
+    if let Some(version) = src_version {
+        value.push_str("?versionId=");
+        value.push_str(version);
+    }
+    Ok(value)
+}
+
+/// Client request headers forwarded (and signed) onto a backend CopyObject PUT.
+/// The copy-source header itself and the client's own SigV4 headers
+/// (`authorization`, `x-amz-date`, `x-amz-content-sha256`, session token) are
+/// deliberately excluded — the request is re-signed for the backend.
+fn is_copy_forward_header(name: &str) -> bool {
+    matches!(
+        name,
+        "content-type"
+            | "content-disposition"
+            | "content-encoding"
+            | "content-language"
+            | "cache-control"
+            | "expires"
+            | "x-amz-metadata-directive"
+            | "x-amz-tagging-directive"
+            | "x-amz-tagging"
+            | "x-amz-acl"
+            | "x-amz-storage-class"
+            | "x-amz-website-redirect-location"
+            | "x-amz-copy-source-if-match"
+            | "x-amz-copy-source-if-none-match"
+            | "x-amz-copy-source-if-modified-since"
+            | "x-amz-copy-source-if-unmodified-since"
+    ) || name.starts_with("x-amz-meta-")
+        || name.starts_with("x-amz-server-side-encryption")
 }
 
 impl<B, R, C> Dispatch for ProxyGateway<B, R, C>
@@ -2771,5 +2951,194 @@ mod tests {
             let err = build_object_path(&config, key).unwrap_err();
             assert_eq!(err.status_code(), 400, "key {key:?} must be a 400");
         }
+    }
+
+    #[test]
+    fn same_backing_store_matches_shared_endpoint_and_creds() {
+        // Two virtual buckets on the same endpoint/creds but different backend
+        // buckets are the same store — a cross-bucket copy is native.
+        let mut a = test_bucket_config("src");
+        let mut b = test_bucket_config("dst");
+        b.backend_options
+            .insert("bucket_name".into(), "other-backend-bucket".into());
+        assert!(same_backing_store(&a, &b));
+
+        // Different endpoint → different store.
+        b.backend_options
+            .insert("endpoint".into(), "https://minio.example.com".into());
+        assert!(!same_backing_store(&a, &b));
+
+        // Different credentials → different store (conservative).
+        let mut c = test_bucket_config("dst2");
+        c.backend_options
+            .insert("access_key_id".into(), "AKIADIFFERENT".into());
+        assert!(!same_backing_store(&a, &c));
+
+        // A non-S3 backend is never a copy-compatible store.
+        a.backend_type = "azure".into();
+        let d = test_bucket_config("dst3");
+        assert!(!same_backing_store(&a, &d));
+    }
+
+    #[test]
+    fn copy_source_header_encodes_backend_key_and_version() {
+        let mut config = test_bucket_config("src");
+        config.backend_prefix = Some("data/".into());
+        let value = build_copy_source_header(&config, "a b/c=d.txt", Some("v9")).unwrap();
+        // Prefix applied, space and `=` percent-encoded, `/` preserved.
+        assert_eq!(value, "/backend-bucket/data/a%20b/c%3Dd.txt?versionId=v9");
+    }
+
+    #[test]
+    fn copy_source_header_without_bucket_name_is_rejected() {
+        let mut config = test_bucket_config("src");
+        config.backend_options.remove("bucket_name");
+        let err = build_copy_source_header(&config, "k", None).unwrap_err();
+        assert!(matches!(err, ProxyError::NotImplemented(_)));
+    }
+
+    /// End-to-end same-store `CopyObject`: a `PUT` carrying `x-amz-copy-source`
+    /// drives a re-signed backend `PUT` with an empty body. Exercises the whole
+    /// path — parse → authorize destination (as `PutObject`) → authorize source
+    /// (as `GetObject`) → same-store check → build backend copy-source → sign →
+    /// `send_raw` — and pins the wire request the backend actually receives.
+    #[test]
+    fn copy_object_end_to_end_sends_resigned_backend_put() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let backend = CaptureHeadersBackend {
+                captured: captured.clone(),
+            };
+            let gw = ProxyGateway::new(backend, MockRegistry, MockCreds, None);
+
+            let mut headers = HeaderMap::new();
+            // Wire key is percent-encoded per the S3 spec (space → %20).
+            headers.insert(
+                "x-amz-copy-source",
+                "/src-bucket/src%20key.txt".parse().unwrap(),
+            );
+            // Copy-relevant client headers must be forwarded AND signed.
+            headers.insert("x-amz-metadata-directive", "REPLACE".parse().unwrap());
+            headers.insert("x-amz-meta-team", "platform".parse().unwrap());
+
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/dst-key.txt", None, &headers, None)
+                .await;
+
+            let status = match action {
+                HandlerAction::Response(resp) => resp.status,
+                other => panic!(
+                    "expected Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            };
+            assert_eq!(status, 200, "same-store copy returns the backend's status");
+
+            let sent = captured
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("backend was called");
+
+            // Copy-source is decoded, mapped into the source's backend bucket/key
+            // space, then re-encoded with S3's canonical path set.
+            assert_eq!(
+                sent.get("x-amz-copy-source").unwrap(),
+                "/backend-bucket/src%20key.txt"
+            );
+            // Copy-relevant client headers reached the backend.
+            assert_eq!(sent.get("x-amz-metadata-directive").unwrap(), "REPLACE");
+            assert_eq!(sent.get("x-amz-meta-team").unwrap(), "platform");
+            // Empty body: the signed payload hash is sha256("").
+            assert_eq!(
+                sent.get("x-amz-content-sha256").unwrap(),
+                hash_payload(&[]).as_str()
+            );
+            // The backend request carries a fresh proxy signature (the copy is
+            // re-signed with backend credentials, never the client's)...
+            let auth = sent.get("authorization").unwrap().to_str().unwrap();
+            assert!(
+                auth.starts_with("AWS4-HMAC-SHA256 Credential="),
+                "expected re-signed Authorization, got: {auth}"
+            );
+            // ...and the copy-relevant headers are part of SignedHeaders (else S3
+            // silently ignores the copy-source and the copy does nothing).
+            assert!(
+                auth.contains("x-amz-copy-source")
+                    && auth.contains("x-amz-metadata-directive")
+                    && auth.contains("x-amz-meta-team"),
+                "copy headers missing from SignedHeaders: {auth}"
+            );
+        });
+    }
+
+    /// A `versionId` on the copy-source rides through to the backend copy-source.
+    #[test]
+    fn copy_object_forwards_version_id_to_backend() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                MockRegistry,
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-amz-copy-source",
+                "/src-bucket/obj.txt?versionId=v42".parse().unwrap(),
+            );
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/dst.txt", None, &headers, None)
+                .await;
+            assert!(matches!(action, HandlerAction::Response(_)));
+            let sent = captured
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("backend was called");
+            assert_eq!(
+                sent.get("x-amz-copy-source").unwrap(),
+                "/backend-bucket/obj.txt?versionId=v42"
+            );
+        });
+    }
+
+    /// A cross-store copy (source resolves to a different backend) cannot be a
+    /// native S3 copy, so it is rejected with `501` and the backend is never
+    /// contacted — no bytes are streamed through the proxy.
+    #[test]
+    fn cross_store_copy_is_rejected_501() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                MockRegistry,
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            // `azure-*` names resolve to a non-S3 backend in the test registry,
+            // so source and destination are on different stores.
+            headers.insert("x-amz-copy-source", "/azure-src/obj.txt".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/dst.txt", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 501),
+                other => panic!(
+                    "expected 501 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+            assert!(
+                captured.lock().unwrap().is_none(),
+                "backend must not be contacted for a rejected cross-store copy"
+            );
+        });
     }
 }
