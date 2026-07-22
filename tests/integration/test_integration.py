@@ -304,6 +304,99 @@ class TestStaticCredentialWrites:
 
 
 # ---------------------------------------------------------------------------
+# Conditional writes
+# ---------------------------------------------------------------------------
+
+class TestConditionalWrites:
+    """Conditional-write preconditions (`If-Match` / `If-None-Match`) on PutObject.
+
+    boto3's `put_object` streams the body as `aws-chunked`, so these exercise
+    the header-signed streaming forward path (the one AWS SDKs actually use)
+    end-to-end against MinIO, which enforces the precondition and returns 412.
+    This is the compare-and-swap native Zarr/Icechunk writers rely on to keep
+    concurrent commits from clobbering each other.
+    """
+
+    def test_if_none_match_star_blocks_overwrite(self):
+        """`If-None-Match: *` must fail with 412 when the object already exists,
+        and must NOT clobber the existing content (create-if-absent CAS)."""
+        client = static_client()
+        key = f"cond-inm-{uuid.uuid4()}.txt"
+        client.put_object(Bucket="private-uploads", Key=key, Body=b"original")
+
+        with pytest.raises(ClientError) as exc_info:
+            client.put_object(
+                Bucket="private-uploads",
+                Key=key,
+                Body=b"should-not-land",
+                IfNoneMatch="*",
+            )
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+        assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        # The precondition failure must have left the original object intact.
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"original"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_if_none_match_star_allows_create(self):
+        """`If-None-Match: *` must succeed when the object does not yet exist."""
+        client = static_client()
+        key = f"cond-inm-new-{uuid.uuid4()}.txt"
+        client.put_object(
+            Bucket="private-uploads",
+            Key=key,
+            Body=b"fresh",
+            IfNoneMatch="*",
+        )
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"fresh"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_if_match_wrong_etag_rejected(self):
+        """A PUT with a wrong `If-Match` must fail with 412 and not overwrite."""
+        client = static_client()
+        key = f"cond-ifm-{uuid.uuid4()}.txt"
+        client.put_object(Bucket="private-uploads", Key=key, Body=b"original")
+
+        with pytest.raises(ClientError) as exc_info:
+            client.put_object(
+                Bucket="private-uploads",
+                Key=key,
+                Body=b"should-not-land",
+                IfMatch='"0000000000000000deadbeef00000000"',
+            )
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+        assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"original"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_if_match_correct_etag_succeeds(self):
+        """A PUT whose `If-Match` equals the current ETag must succeed and
+        replace the object (the successful side of the compare-and-swap)."""
+        client = static_client()
+        key = f"cond-ifm-ok-{uuid.uuid4()}.txt"
+        put = client.put_object(Bucket="private-uploads", Key=key, Body=b"v1")
+        etag = put["ETag"]
+
+        client.put_object(
+            Bucket="private-uploads",
+            Key=key,
+            Body=b"v2",
+            IfMatch=etag,
+        )
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"v2"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+
+# ---------------------------------------------------------------------------
 # Multipart uploads
 # ---------------------------------------------------------------------------
 
