@@ -19,6 +19,23 @@ impl JsBody {
     pub fn stream(&self) -> Option<&web_sys::ReadableStream> {
         self.0.as_ref()
     }
+
+    /// Build a `JsBody` whose stream yields the given bytes.
+    ///
+    /// Used to hand an equivalent body back after collecting one (e.g.
+    /// [`RequestParts::absorb_form_body`](crate::request::RequestParts::absorb_form_body)),
+    /// so a request that falls through to the forwarding path still carries
+    /// its payload. Uses the same `web_sys::Response` trick as
+    /// [`collect_js_body`], in reverse.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.is_empty() {
+            return Ok(Self::new(None));
+        }
+        let mut buf = bytes.to_vec();
+        let resp = web_sys::Response::new_with_opt_u8_array(Some(&mut buf))
+            .map_err(|e| format!("Response::new failed: {:?}", e))?;
+        Ok(Self::new(resp.body()))
+    }
 }
 
 // SAFETY: Workers is single-threaded; these are required by Gateway's generic bounds.

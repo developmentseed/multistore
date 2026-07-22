@@ -22,12 +22,13 @@ use url::Url;
 /// spliced into the URL, or the backend signature won't match
 /// (`SignatureDoesNotMatch`). This is the same strict set `object_store`
 /// applies when building presigned URLs for the CRUD operations.
-const S3_PATH_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'.')
-    .remove(b'_')
-    .remove(b'~')
-    .remove(b'/');
+pub(crate) const S3_PATH_ENCODE_SET: &percent_encoding::AsciiSet =
+    &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~')
+        .remove(b'/');
 
 /// Build the backend URL for an S3 operation.
 ///
@@ -49,6 +50,12 @@ pub fn build_backend_url(
             format!("{base}/{bucket}?delete")
         });
     }
+
+    // Backstop: keys are validated at operation-parse time
+    // (`build_s3_operation`); enforce here too so a hand-built operation can
+    // never splice a degenerate key (`a//b`, `..`) into a URL that
+    // normalizes to a different — possibly cross-bucket — target.
+    crate::api::request::validate_key(operation.key())?;
 
     let mut key = String::new();
     if let Some(prefix) = &config.backend_prefix {
@@ -155,6 +162,21 @@ mod tests {
             anonymous_access: false,
             allowed_roles: vec![],
             backend_options,
+        }
+    }
+
+    #[test]
+    fn degenerate_keys_are_rejected_before_url_build() {
+        let config = test_bucket_config();
+        for key in ["a//b.txt", "a/../b.txt"] {
+            let op = S3Operation::CreateMultipartUpload {
+                bucket: "test".into(),
+                key: key.into(),
+            };
+            assert!(
+                build_backend_url(&config, &op).is_err(),
+                "hand-built op with key {key:?} must not reach the URL"
+            );
         }
     }
 

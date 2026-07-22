@@ -18,8 +18,14 @@ struct StsHandler<C> {
 impl<C: CredentialRegistry> RouteHandler for StsHandler<C> {
     fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
         Box::pin(async move {
-            let (status, xml) =
-                try_handle_sts(req.query, &self.config, &self.cache, self.key.as_ref()).await?;
+            let (status, xml) = try_handle_sts(
+                req.query,
+                req.form_body,
+                &self.config,
+                &self.cache,
+                self.key.as_ref(),
+            )
+            .await?;
             Some(ProxyResult::xml(status, xml))
         })
     }
@@ -29,9 +35,12 @@ impl<C: CredentialRegistry> RouteHandler for StsHandler<C> {
 pub trait StsRouterExt {
     /// Register the STS handler on the given `path`.
     ///
-    /// STS requests are identified by query parameters
-    /// (`Action=AssumeRoleWithWebIdentity`), not by path, so any path
-    /// can be used (e.g. `"/"` or `"/.sts"`).
+    /// STS requests are identified by their parameters
+    /// (`Action=AssumeRoleWithWebIdentity`) — in the query string or, as AWS
+    /// SDKs send them, in a form-encoded `POST` body surfaced via
+    /// [`RequestInfo::form_body`] — not by path, so any path can be used
+    /// (e.g. `"/"` or `"/.sts"`). Runtimes must populate `form_body` for
+    /// form-encoded `POST`s or SDK clients will fall through unhandled.
     fn with_sts<C: CredentialRegistry + 'static>(
         self,
         path: &str,
@@ -105,6 +114,34 @@ mod tests {
         assert!(
             router.dispatch(&req).await.is_none(),
             "non-STS request to / must fall through"
+        );
+    }
+
+    #[tokio::test]
+    async fn sts_form_body_post_is_handled() {
+        // AWS SDKs send AssumeRoleWithWebIdentity as a form-encoded POST body
+        // with no query string at all.
+        let router = test_router();
+        let headers = http::HeaderMap::new();
+        let req = RequestInfo::new(&http::Method::POST, "/", None, &headers, None)
+            .with_form_body(Some(
+            "Action=AssumeRoleWithWebIdentity&Version=2011-06-15&RoleArn=test&WebIdentityToken=tok",
+        ));
+        assert!(
+            router.dispatch(&req).await.is_some(),
+            "STS form-body POST must be intercepted by the router"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_sts_form_body_falls_through() {
+        let router = test_router();
+        let headers = http::HeaderMap::new();
+        let req = RequestInfo::new(&http::Method::POST, "/", None, &headers, None)
+            .with_form_body(Some("grant_type=client_credentials"));
+        assert!(
+            router.dispatch(&req).await.is_none(),
+            "non-STS form body must fall through"
         );
     }
 }

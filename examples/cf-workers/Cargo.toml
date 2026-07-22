@@ -22,7 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 url.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["form"] }
 
 # Cloudflare Workers SDK
 worker.workspace = true
@@ -37,4 +37,9 @@ features = ["js"]
 [dependencies.getrandom_v03]
 package = "getrandom"
 version = "0.3"
+features = ["wasm_js"]
+
+[dependencies.getrandom_v04]
+package = "getrandom"
+version = "0.4"
 features = ["wasm_js"]

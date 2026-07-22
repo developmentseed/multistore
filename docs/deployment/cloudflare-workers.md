@@ -26,7 +26,7 @@ main = "build/worker/shim.mjs"
 name = "multistore"
 
 [build]
-# worker-build is pinned to ^0.7 to match the pinned `worker` crate version.
+# worker-build ^0.7 to match the worker 0.7.x crate version.
 command = "cargo install worker-build --version '^0.7' && worker-build --release"
 
 [vars]

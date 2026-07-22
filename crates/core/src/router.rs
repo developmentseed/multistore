@@ -68,6 +68,7 @@ impl Router {
             source_ip: req.source_ip,
             signing_path: req.signing_path,
             signing_query: req.signing_query,
+            form_body: req.form_body,
         };
         matched
             .value

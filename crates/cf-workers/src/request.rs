@@ -46,6 +46,12 @@ pub struct RequestParts {
     pub query: Option<String>,
     /// The HTTP request headers.
     pub headers: HeaderMap,
+    /// The collected form-encoded body of an
+    /// `application/x-www-form-urlencoded` `POST`, populated by
+    /// [`absorb_form_body`](Self::absorb_form_body). AWS SDKs send
+    /// query-protocol operations (STS `AssumeRoleWithWebIdentity`) this way,
+    /// so without it the STS route handler never sees SDK requests.
+    pub form_body: Option<String>,
 }
 
 impl RequestParts {
@@ -81,9 +87,44 @@ impl RequestParts {
                 signing_path,
                 query,
                 headers,
+                form_body: None,
             },
             body,
         ))
+    }
+
+    /// Collect a form-encoded `POST` body into [`form_body`](Self::form_body),
+    /// returning an equivalent body to pass on to the gateway.
+    ///
+    /// A no-op passthrough for every other request shape, so integrators can
+    /// call it unconditionally between [`from_web_sys`](Self::from_web_sys)
+    /// and dispatch:
+    ///
+    /// ```rust,ignore
+    /// let (mut parts, mut body) = RequestParts::from_web_sys(&req)?;
+    /// body = parts.absorb_form_body(body).await?;
+    /// ```
+    ///
+    /// `Content-Type` is client-controlled, so a form-labeled `POST` is not
+    /// necessarily STS — it could be a mislabeled S3 write
+    /// (`CompleteMultipartUpload`, `DeleteObjects`). The returned body is
+    /// therefore rebuilt from the collected bytes, so a request that falls
+    /// through to the S3 pipeline sees its payload unchanged.
+    ///
+    /// Collection is gated on
+    /// [`RequestInfo::should_collect_form_body`](multistore::route_handler::RequestInfo::should_collect_form_body):
+    /// a form `POST` with a missing or oversized declared `Content-Length` is
+    /// passed through untouched rather than buffered into WASM memory. The
+    /// declared length bounds the actual bytes read because Cloudflare's edge
+    /// terminates HTTP — the request stream is derived from message framing,
+    /// which cannot deliver more bytes than the declared `Content-Length`.
+    pub async fn absorb_form_body(&mut self, body: JsBody) -> Result<JsBody, String> {
+        if !self.as_request_info().should_collect_form_body() {
+            return Ok(body);
+        }
+        let bytes = crate::body::collect_js_body(body).await?;
+        self.form_body = Some(String::from_utf8_lossy(&bytes).into_owned());
+        JsBody::from_bytes(&bytes)
     }
 
     /// Borrow this struct as a [`RequestInfo`] for gateway dispatch.
@@ -102,5 +143,6 @@ impl RequestParts {
             None,
         )
         .with_signing_path(&self.signing_path)
+        .with_form_body(self.form_body.as_deref())
     }
 }
