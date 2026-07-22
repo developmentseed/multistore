@@ -83,8 +83,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Cloudflare Workers
-# Unpinned so consumers can track the latest worker release. worker 0.7.5+ needs
-# wasm-streams 0.5, satisfied since object_store 0.14 / reqwest 0.13.2.
+# worker needs wasm-streams 0.5, provided via object_store 0.14 / reqwest 0.13.2.
 worker = "0.8"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
