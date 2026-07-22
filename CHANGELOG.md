@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.0](https://github.com/developmentseed/multistore/compare/v0.6.4...v0.7.0) (2026-07-22)
+
+
+### Features
+
+* enforce conditional-write preconditions on PutObject ([#122](https://github.com/developmentseed/multistore/issues/122)) ([f5ff9a8](https://github.com/developmentseed/multistore/commit/f5ff9a897268c0e44c327385410472b363351221))
+* implement same-store CopyObject (x-amz-copy-source) ([#121](https://github.com/developmentseed/multistore/issues/121)) ([02a79b0](https://github.com/developmentseed/multistore/commit/02a79b016fe8b7d4a91ea534846d2ecbb055b8f5))
+* **sts:** accept AssumeRoleWithWebIdentity params from form-encoded POST bodies ([#112](https://github.com/developmentseed/multistore/issues/112)) ([c135b95](https://github.com/developmentseed/multistore/commit/c135b9593fe35242e1876e3c2839250d03dfa34c))
+* upgrade object_store to 0.14, reqwest to 0.13, unpin worker ([#114](https://github.com/developmentseed/multistore/issues/114)) ([c5254b4](https://github.com/developmentseed/multistore/commit/c5254b4b17d02fb5c28f086ade2a444e4a247908))
+
 ## [0.6.4](https://github.com/developmentseed/multistore/compare/v0.6.3...v0.6.4) (2026-07-10)
 
 
