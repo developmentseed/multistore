@@ -397,7 +397,12 @@ class TestConditionalWrites:
 
     def _complete_multipart(self, client, key: str, body: bytes, **complete_kwargs):
         """Drive a low-level multipart upload, passing extra kwargs (e.g.
-        IfMatch/IfNoneMatch) to CompleteMultipartUpload."""
+        IfMatch/IfNoneMatch) to CompleteMultipartUpload.
+
+        If the completion fails (e.g. a 412 precondition), the MPU is left open
+        by the backend — abort it before propagating so repeated CI runs don't
+        accumulate stray incomplete uploads in the test bucket.
+        """
         create = client.create_multipart_upload(Bucket="private-uploads", Key=key)
         upload_id = create["UploadId"]
         parts = []
@@ -413,13 +418,19 @@ class TestConditionalWrites:
                 Body=chunk,
             )
             parts.append({"PartNumber": num, "ETag": up["ETag"]})
-        return client.complete_multipart_upload(
-            Bucket="private-uploads",
-            Key=key,
-            UploadId=upload_id,
-            MultipartUpload={"Parts": parts},
-            **complete_kwargs,
-        )
+        try:
+            return client.complete_multipart_upload(
+                Bucket="private-uploads",
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": parts},
+                **complete_kwargs,
+            )
+        except ClientError:
+            client.abort_multipart_upload(
+                Bucket="private-uploads", Key=key, UploadId=upload_id
+            )
+            raise
 
     def test_multipart_complete_if_none_match_star_blocks_overwrite(self):
         """`If-None-Match: *` on CompleteMultipartUpload must fail with 412 when
@@ -453,6 +464,36 @@ class TestConditionalWrites:
             )
         assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
         assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_upload_part_tolerates_leaked_precondition(self):
+        """`UploadPart` shares its `aws-chunked` forward list with the conditional
+        PutObject path. `If-Match`/`If-None-Match` don't apply to a part, and
+        boto3 can't even set them there, so the shared list is only safe if a
+        (hand-injected) precondition rides through the proxy's sign-and-forward
+        without breaking the upload — the backend ignores it.
+
+        Inject a *signed* `If-Match` on every UploadPart and assert the multipart
+        upload still completes intact. Locks in the shared-list assumption at the
+        proxy level (a regression here would surface as a signature/4xx failure).
+        """
+        client = static_client()
+        key = f"cond-part-leak-{uuid.uuid4()}.bin"
+
+        def inject_if_match(request, **kwargs):
+            # before-sign → the header is part of the client's SigV4 signature,
+            # mirroring a client that genuinely (if pointlessly) sent it.
+            request.headers["If-Match"] = '"0000000000000000deadbeef00000000"'
+
+        client.meta.events.register("before-sign.s3.UploadPart", inject_if_match)
+
+        # 6 MiB → two parts, forcing a real multipart upload.
+        self._complete_multipart(client, key, b"p" * (6 * MIB))
+        assert (
+            client.head_object(Bucket="private-uploads", Key=key)["ContentLength"]
+            == 6 * MIB
+        )
 
         client.delete_object(Bucket="private-uploads", Key=key)
 
