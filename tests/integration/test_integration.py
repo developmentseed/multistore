@@ -304,6 +304,201 @@ class TestStaticCredentialWrites:
 
 
 # ---------------------------------------------------------------------------
+# Conditional writes
+# ---------------------------------------------------------------------------
+
+class TestConditionalWrites:
+    """Conditional-write preconditions (`If-Match` / `If-None-Match`) on PutObject.
+
+    boto3's `put_object` streams the body as `aws-chunked`, so these exercise
+    the header-signed streaming forward path (the one AWS SDKs actually use)
+    end-to-end against MinIO, which enforces the precondition and returns 412.
+    This is the compare-and-swap native Zarr/Icechunk writers rely on to keep
+    concurrent commits from clobbering each other.
+    """
+
+    def test_if_none_match_star_blocks_overwrite(self):
+        """`If-None-Match: *` must fail with 412 when the object already exists,
+        and must NOT clobber the existing content (create-if-absent CAS)."""
+        client = static_client()
+        key = f"cond-inm-{uuid.uuid4()}.txt"
+        client.put_object(Bucket="private-uploads", Key=key, Body=b"original")
+
+        with pytest.raises(ClientError) as exc_info:
+            client.put_object(
+                Bucket="private-uploads",
+                Key=key,
+                Body=b"should-not-land",
+                IfNoneMatch="*",
+            )
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+        assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        # The precondition failure must have left the original object intact.
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"original"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_if_none_match_star_allows_create(self):
+        """`If-None-Match: *` must succeed when the object does not yet exist."""
+        client = static_client()
+        key = f"cond-inm-new-{uuid.uuid4()}.txt"
+        client.put_object(
+            Bucket="private-uploads",
+            Key=key,
+            Body=b"fresh",
+            IfNoneMatch="*",
+        )
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"fresh"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_if_match_wrong_etag_rejected(self):
+        """A PUT with a wrong `If-Match` must fail with 412 and not overwrite."""
+        client = static_client()
+        key = f"cond-ifm-{uuid.uuid4()}.txt"
+        client.put_object(Bucket="private-uploads", Key=key, Body=b"original")
+
+        with pytest.raises(ClientError) as exc_info:
+            client.put_object(
+                Bucket="private-uploads",
+                Key=key,
+                Body=b"should-not-land",
+                IfMatch='"0000000000000000deadbeef00000000"',
+            )
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+        assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"original"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_if_match_correct_etag_succeeds(self):
+        """A PUT whose `If-Match` equals the current ETag must succeed and
+        replace the object (the successful side of the compare-and-swap)."""
+        client = static_client()
+        key = f"cond-ifm-ok-{uuid.uuid4()}.txt"
+        put = client.put_object(Bucket="private-uploads", Key=key, Body=b"v1")
+        etag = put["ETag"]
+
+        client.put_object(
+            Bucket="private-uploads",
+            Key=key,
+            Body=b"v2",
+            IfMatch=etag,
+        )
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == b"v2"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def _complete_multipart(self, client, key: str, body: bytes, **complete_kwargs):
+        """Drive a low-level multipart upload, passing extra kwargs (e.g.
+        IfMatch/IfNoneMatch) to CompleteMultipartUpload.
+
+        If the completion fails (e.g. a 412 precondition), the MPU is left open
+        by the backend — abort it before propagating so repeated CI runs don't
+        accumulate stray incomplete uploads in the test bucket.
+        """
+        create = client.create_multipart_upload(Bucket="private-uploads", Key=key)
+        upload_id = create["UploadId"]
+        parts = []
+        # 5 MiB + remainder → at least two parts (S3 requires >=5 MiB per
+        # non-final part), forcing a real multipart completion.
+        chunks = [body[: 5 * MIB], body[5 * MIB :]]
+        for num, chunk in enumerate(chunks, start=1):
+            up = client.upload_part(
+                Bucket="private-uploads",
+                Key=key,
+                PartNumber=num,
+                UploadId=upload_id,
+                Body=chunk,
+            )
+            parts.append({"PartNumber": num, "ETag": up["ETag"]})
+        try:
+            return client.complete_multipart_upload(
+                Bucket="private-uploads",
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": parts},
+                **complete_kwargs,
+            )
+        except ClientError:
+            client.abort_multipart_upload(
+                Bucket="private-uploads", Key=key, UploadId=upload_id
+            )
+            raise
+
+    def test_multipart_complete_if_none_match_star_blocks_overwrite(self):
+        """`If-None-Match: *` on CompleteMultipartUpload must fail with 412 when
+        the object exists — a large multipart write gets the same CAS guarantee
+        as a single-shot PutObject."""
+        client = static_client()
+        key = f"cond-mpu-inm-{uuid.uuid4()}.bin"
+        body = b"m" * (6 * MIB)
+        self._complete_multipart(client, key, body)  # object now exists
+
+        with pytest.raises(ClientError) as exc_info:
+            self._complete_multipart(client, key, body, IfNoneMatch="*")
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+        assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_multipart_complete_if_match_wrong_etag_rejected(self):
+        """A wrong `If-Match` on CompleteMultipartUpload must fail with 412."""
+        client = static_client()
+        key = f"cond-mpu-ifm-{uuid.uuid4()}.bin"
+        body = b"m" * (6 * MIB)
+        self._complete_multipart(client, key, body)  # object now exists
+
+        with pytest.raises(ClientError) as exc_info:
+            self._complete_multipart(
+                client,
+                key,
+                body,
+                IfMatch='"0000000000000000deadbeef00000000"',
+            )
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+        assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_upload_part_tolerates_leaked_precondition(self):
+        """`UploadPart` shares its `aws-chunked` forward list with the conditional
+        PutObject path. `If-Match`/`If-None-Match` don't apply to a part, and
+        boto3 can't even set them there, so the shared list is only safe if a
+        (hand-injected) precondition rides through the proxy's sign-and-forward
+        without breaking the upload — the backend ignores it.
+
+        Inject a *signed* `If-Match` on every UploadPart and assert the multipart
+        upload still completes intact. Locks in the shared-list assumption at the
+        proxy level (a regression here would surface as a signature/4xx failure).
+        """
+        client = static_client()
+        key = f"cond-part-leak-{uuid.uuid4()}.bin"
+
+        def inject_if_match(request, **kwargs):
+            # before-sign → the header is part of the client's SigV4 signature,
+            # mirroring a client that genuinely (if pointlessly) sent it.
+            request.headers["If-Match"] = '"0000000000000000deadbeef00000000"'
+
+        client.meta.events.register("before-sign.s3.UploadPart", inject_if_match)
+
+        # 6 MiB → two parts, forcing a real multipart upload.
+        self._complete_multipart(client, key, b"p" * (6 * MIB))
+        assert (
+            client.head_object(Bucket="private-uploads", Key=key)["ContentLength"]
+            == 6 * MIB
+        )
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+
+# ---------------------------------------------------------------------------
 # Multipart uploads
 # ---------------------------------------------------------------------------
 

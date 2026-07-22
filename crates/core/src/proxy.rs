@@ -92,12 +92,22 @@ const SIGNED_AWS_CHUNKED_UNSUPPORTED: &str =
 pub const DEFAULT_USER_AGENT: &str = concat!("multistore/", env!("CARGO_PKG_VERSION"));
 
 /// Headers forwarded (and signed) when streaming an `aws-chunked` upload:
-/// the de-chunk headers S3 needs to reconstruct the payload.
+/// the de-chunk headers S3 needs to reconstruct the payload, plus the
+/// conditional-write preconditions (`if-match`/`if-none-match`). AWS SDKs and
+/// the CLI send `PutObject` bodies as `aws-chunked` by default, so this — not
+/// the presigned path — is where an SDK client's precondition must be honored.
+/// Unlike the presigned path these headers *are* signed (`sign_s3_request`
+/// signs the whole map), so S3 evaluates them and returns 412 on a mismatch.
+/// `if-match`/`if-none-match` don't apply to `UploadPart`, but clients never
+/// send them there, so sharing this list with the part-streaming caller is a
+/// no-op for parts.
 const AWS_CHUNKED_FORWARD_HEADERS: &[&str] = &[
     "content-type",
     "content-encoding",
     "x-amz-decoded-content-length",
     "x-amz-trailer",
+    "if-match",
+    "if-none-match",
 ];
 
 /// Headers forwarded (and signed) when streaming a *plain* (non-aws-chunked)
@@ -946,11 +956,17 @@ where
                         original_headers,
                         // Standard HTTP entity headers are safe to forward to a
                         // presigned URL: S3 applies them even though they are not
-                        // part of the (host-only) presigned signature. `x-amz-*`
-                        // write headers (metadata, SSE, tagging, storage-class,
-                        // checksums) are deliberately NOT forwarded here — S3
-                        // rejects unsigned `x-amz-*` headers on presigned
-                        // requests, so they need the header-signing path. See
+                        // part of the (host-only) presigned signature. This
+                        // includes the conditional-write preconditions
+                        // `if-match`/`if-none-match` — S3 evaluates them and
+                        // returns 412 on a mismatch (same as the GET/HEAD read
+                        // paths above), giving Icechunk the compare-and-swap it
+                        // needs. `x-amz-*` write headers (metadata, SSE, tagging,
+                        // storage-class, checksums, and the
+                        // `x-amz-copy-source-if-*` copy preconditions) are
+                        // deliberately NOT forwarded here — S3 rejects unsigned
+                        // `x-amz-*` headers on presigned requests, so they need
+                        // the header-signing path. See
                         // .plans/2026-06-23-data-edit-operations-design.md.
                         &[
                             "content-type",
@@ -961,6 +977,8 @@ where
                             "content-language",
                             "cache-control",
                             "expires",
+                            "if-match",
+                            "if-none-match",
                         ],
                         request_id,
                     )
@@ -1352,10 +1370,19 @@ where
         // path signs every header present (see `sign_s3_request`), so forwarding
         // them here is safe — unlike the presigned PutObject path, where S3
         // rejects unsigned `x-amz-*` headers.
+        //
+        // `if-match`/`if-none-match` complete the conditional-write story:
+        // CompleteMultipartUpload honors them too (S3 and MinIO return 412 on a
+        // mismatch), so a large object written via multipart gets the same
+        // compare-and-swap guarantee as a single-shot PutObject. They only
+        // matter on the completion request; `original_headers.get` is `None` on
+        // Create/UploadPart/Abort, so listing them here is a no-op there.
         for (name, val) in pending.original_headers.iter() {
             let n = name.as_str();
-            if matches!(n, "content-type" | "content-length" | "content-md5")
-                || n.starts_with("x-amz-checksum")
+            if matches!(
+                n,
+                "content-type" | "content-length" | "content-md5" | "if-match" | "if-none-match"
+            ) || n.starts_with("x-amz-checksum")
                 || n == "x-amz-sdk-checksum-algorithm"
             {
                 headers.insert(name.clone(), val.clone());
@@ -1791,6 +1818,38 @@ mod tests {
                         fwd.headers.get("range").map(|v| v.to_str().unwrap()),
                         Some("bytes=0-1023"),
                         "HEAD forward should pass through the Range header"
+                    );
+                }
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            }
+        });
+    }
+
+    #[test]
+    fn put_forward_preserves_conditional_headers() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("if-match", "\"abc123\"".parse().unwrap());
+            headers.insert("if-none-match", "*".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/test-bucket/key.txt", None, &headers, None)
+                .await;
+
+            match action {
+                HandlerAction::Forward(fwd) => {
+                    assert_eq!(fwd.method, Method::PUT);
+                    assert_eq!(
+                        fwd.headers.get("if-match").map(|v| v.to_str().unwrap()),
+                        Some("\"abc123\""),
+                        "PUT forward should pass through If-Match so the backend enforces the precondition (412)"
+                    );
+                    assert_eq!(
+                        fwd.headers
+                            .get("if-none-match")
+                            .map(|v| v.to_str().unwrap()),
+                        Some("*"),
+                        "PUT forward should pass through If-None-Match"
                     );
                 }
                 other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
