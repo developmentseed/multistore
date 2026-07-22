@@ -8,6 +8,8 @@ Provides everything needed to run the multistore proxy on Cloudflare Workers: a 
 
 This crate only compiles for `wasm32-unknown-unknown`.
 
+Depend on the same `worker` major version as this crate (see its `Cargo.toml`) so your Worker entrypoint and multistore resolve to a single `worker` copy in the bundle.
+
 ## Feature Flags
 
 - `azure` — Azure Blob Storage backend support
