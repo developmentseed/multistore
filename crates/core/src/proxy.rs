@@ -1156,13 +1156,13 @@ where
         }
     }
 
-    /// Reject multipart operations on non-S3 backends (an S3-only feature).
+    /// Reject S3-only operations (multipart, server-side copy) on non-S3 backends.
     fn require_s3_backend(config: &BucketConfig) -> Result<(), ProxyError> {
         if config.is_s3_backend() {
             Ok(())
         } else {
             Err(ProxyError::InvalidRequest(format!(
-                "multipart operations not supported for '{}' backends",
+                "operation not supported for '{}' backends",
                 config.backend_type
             )))
         }
