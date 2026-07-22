@@ -83,7 +83,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Cloudflare Workers
-# worker needs wasm-streams 0.5, provided via object_store 0.14 / reqwest 0.13.2.
+# Bumping the major requires a matching worker-build (see examples/cf-workers/wrangler.toml).
 worker = "0.8"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
