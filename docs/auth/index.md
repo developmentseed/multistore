@@ -25,7 +25,7 @@ Clients authenticate with the proxy using one of three methods:
 | **Long-lived access keys** | Service accounts, internal tools | Static `AccessKeyId`/`SecretAccessKey` with SigV4 signing |
 | **OIDC/STS temporary credentials** | CI/CD, user sessions, federated identity | Exchange a JWT from an OIDC provider for scoped temporary credentials |
 
-The proxy verifies all signed requests using standard AWS Signature Version 4 (SigV4). Any S3-compatible client works without modification — just set the endpoint URL.
+The proxy verifies all signed requests using standard AWS Signature Version 4 (SigV4), whether the signature is carried in the `Authorization` header or in the query string of a [presigned URL](./proxy-auth#presigned-urls). Any S3-compatible client works without modification — just set the endpoint URL.
 
 The OIDC/STS flow is the recommended approach for most use cases. See [Client Auth Setup](./proxy-auth) for configuration details.
 

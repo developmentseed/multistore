@@ -801,3 +801,349 @@ fn temporary_credential_round_trip() {
         ));
     });
 }
+
+// ── Presigned URL (query-string auth) tests ─────────────────────
+
+/// Build a valid SigV4 presigned query string for testing.
+///
+/// Returns the full query (params in an intentionally-unsorted order, with
+/// `X-Amz-Signature` appended) so the verify path exercises its own
+/// canonicalization/sorting. Param values are AWS-style percent-encoded.
+#[allow(clippy::too_many_arguments)]
+fn sign_presigned(
+    method: &http::Method,
+    uri_path: &str,
+    host: &str,
+    access_key_id: &str,
+    secret_access_key: &str,
+    date_stamp: &str,
+    amz_date: &str,
+    region: &str,
+    expires: u64,
+    session_token: Option<&str>,
+) -> String {
+    use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+    // AWS leaves the RFC 3986 unreserved set unencoded.
+    const ENC: &AsciiSet = &NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~');
+    let e = |s: &str| utf8_percent_encode(s, ENC).to_string();
+
+    let credential = format!(
+        "{}/{}/{}/s3/aws4_request",
+        access_key_id, date_stamp, region
+    );
+
+    let mut params = vec![
+        "X-Amz-Algorithm=AWS4-HMAC-SHA256".to_string(),
+        format!("X-Amz-Credential={}", e(&credential)),
+        format!("X-Amz-Date={}", amz_date),
+        format!("X-Amz-Expires={}", expires),
+        format!("X-Amz-SignedHeaders={}", e("host")),
+    ];
+    if let Some(token) = session_token {
+        params.push(format!("X-Amz-Security-Token={}", e(token)));
+    }
+
+    // Canonical query = the params (minus signature) sorted lexicographically.
+    let canonical_query = {
+        let mut p = params.clone();
+        p.sort_unstable();
+        p.join("&")
+    };
+
+    let canonical_headers = format!("host:{}\n", host);
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method, uri_path, canonical_query, canonical_headers, "host", "UNSIGNED-PAYLOAD"
+    );
+    let canonical_request_hash = hex::encode(Sha256::digest(canonical_request.as_bytes()));
+    let credential_scope = format!("{}/{}/s3/aws4_request", date_stamp, region);
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+        amz_date, credential_scope, canonical_request_hash
+    );
+
+    let k_date = sigv4::hmac_sha256(
+        format!("AWS4{}", secret_access_key).as_bytes(),
+        date_stamp.as_bytes(),
+    )
+    .unwrap();
+    let k_region = sigv4::hmac_sha256(&k_date, region.as_bytes()).unwrap();
+    let k_service = sigv4::hmac_sha256(&k_region, b"s3").unwrap();
+    let signing_key = sigv4::hmac_sha256(&k_service, b"aws4_request").unwrap();
+    let signature =
+        hex::encode(sigv4::hmac_sha256(&signing_key, string_to_sign.as_bytes()).unwrap());
+
+    // Append the signature to the (unsorted) params — as it arrives off the wire.
+    params.push(format!("X-Amz-Signature={}", signature));
+    params.join("&")
+}
+
+/// Current UTC as (date_stamp, amz_date) so signing-window checks pass.
+fn now_stamps() -> (String, String) {
+    let now = chrono::Utc::now();
+    (
+        now.format("%Y%m%d").to_string(),
+        now.format("%Y%m%dT%H%M%SZ").to_string(),
+    )
+}
+
+#[test]
+fn presigned_url_resolves_identity() {
+    run(async {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let (date_stamp, amz_date) = now_stamps();
+        let config = MockConfig::with_credential(secret);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "s3.example.com".parse().unwrap());
+
+        let query = sign_presigned(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            "s3.example.com",
+            "AKIAIOSFODNN7EXAMPLE",
+            secret,
+            &date_stamp,
+            &amz_date,
+            "us-east-1",
+            3600,
+            None,
+        );
+
+        let identity = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            &query,
+            &headers,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            identity,
+            crate::types::ResolvedIdentity::Authenticated(_)
+        ));
+    });
+}
+
+#[test]
+fn presigned_url_with_security_token_resolves_identity() {
+    run(async {
+        let secret = "TempSecretKey1234567890EXAMPLE000000000000";
+        let mock_token = "FwoGZXIvYXdzEBYaDGFiY2RlZjEyMzQ1Ng==";
+        let (date_stamp, amz_date) = now_stamps();
+
+        let creds = TemporaryCredentials {
+            access_key_id: "ASIATEMP1234EXAMPLE".into(),
+            secret_access_key: secret.into(),
+            session_token: mock_token.into(),
+            expiration: chrono::Utc::now() + chrono::Duration::hours(1),
+            allowed_scopes: vec![AccessScope {
+                bucket: "test-bucket".into(),
+                prefixes: vec![],
+                actions: vec![Action::GetObject],
+            }],
+            assumed_role_id: "role-1".into(),
+            source_identity: "test".into(),
+        };
+        let resolver = MockResolver {
+            expected_token: mock_token.into(),
+            creds,
+        };
+        let config = MockConfig::empty();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "s3.example.com".parse().unwrap());
+
+        let query = sign_presigned(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            "s3.example.com",
+            "ASIATEMP1234EXAMPLE",
+            secret,
+            &date_stamp,
+            &amz_date,
+            "us-east-1",
+            3600,
+            Some(mock_token),
+        );
+
+        let identity = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            &query,
+            &headers,
+            &config,
+            Some(&resolver as &dyn TemporaryCredentialResolver),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            identity,
+            crate::types::ResolvedIdentity::Authenticated(_)
+        ));
+    });
+}
+
+#[test]
+fn presigned_tampered_query_is_rejected() {
+    run(async {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let (date_stamp, amz_date) = now_stamps();
+        let config = MockConfig::with_credential(secret);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "s3.example.com".parse().unwrap());
+
+        let query = sign_presigned(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            "s3.example.com",
+            "AKIAIOSFODNN7EXAMPLE",
+            secret,
+            &date_stamp,
+            &amz_date,
+            "us-east-1",
+            3600,
+            None,
+        );
+        // Inject an unsigned query param — changes the canonical query.
+        let tampered = format!("{}&evil=1", query);
+
+        let err = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            &tampered,
+            &headers,
+            &config,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, ProxyError::SignatureDoesNotMatch));
+    });
+}
+
+#[test]
+fn presigned_expired_is_rejected() {
+    run(async {
+        let secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        let config = MockConfig::with_credential(secret);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "s3.example.com".parse().unwrap());
+
+        // Signed in the distant past with a 1h window — long expired.
+        let query = sign_presigned(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            "s3.example.com",
+            "AKIAIOSFODNN7EXAMPLE",
+            secret,
+            "20200101",
+            "20200101T000000Z",
+            "us-east-1",
+            3600,
+            None,
+        );
+
+        let err = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            &query,
+            &headers,
+            &config,
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, ProxyError::ExpiredCredentials));
+    });
+}
+
+#[test]
+fn presigned_access_key_mismatch_is_rejected() {
+    run(async {
+        let secret = "TempSecretKey1234567890EXAMPLE000000000000";
+        let mock_token = "MOCK_SESSION_TOKEN";
+        let (date_stamp, amz_date) = now_stamps();
+
+        // Resolver returns creds keyed to a *different* access key than the URL.
+        let creds = TemporaryCredentials {
+            access_key_id: "ASIATEMP1234EXAMPLE".into(),
+            secret_access_key: secret.into(),
+            session_token: mock_token.into(),
+            expiration: chrono::Utc::now() + chrono::Duration::hours(1),
+            allowed_scopes: vec![],
+            assumed_role_id: "role-1".into(),
+            source_identity: "test".into(),
+        };
+        let resolver = MockResolver {
+            expected_token: mock_token.into(),
+            creds,
+        };
+        let config = MockConfig::empty();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "s3.example.com".parse().unwrap());
+
+        let query = sign_presigned(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            "s3.example.com",
+            "AKIADIFFERENTKEYEXAMPLE",
+            secret,
+            &date_stamp,
+            &amz_date,
+            "us-east-1",
+            3600,
+            Some(mock_token),
+        );
+
+        let err = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket/key.txt",
+            &query,
+            &headers,
+            &config,
+            Some(&resolver as &dyn TemporaryCredentialResolver),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, ProxyError::AccessDenied));
+    });
+}
+
+#[test]
+fn query_without_sigv4_params_is_anonymous() {
+    run(async {
+        let headers = HeaderMap::new();
+        let config = MockConfig::empty();
+
+        let identity = resolve_identity(
+            &http::Method::GET,
+            "/test-bucket",
+            "list-type=2&prefix=data%2F",
+            &headers,
+            &config,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            identity,
+            crate::types::ResolvedIdentity::Anonymous
+        ));
+    });
+}
