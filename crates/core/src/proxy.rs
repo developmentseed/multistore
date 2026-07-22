@@ -1683,7 +1683,10 @@ fn is_copy_forward_header(name: &str) -> bool {
             | "x-amz-copy-source-if-modified-since"
             | "x-amz-copy-source-if-unmodified-since"
     ) || name.starts_with("x-amz-meta-")
+        // Destination SSE (incl. SSE-C `-customer-*`, encrypting the copy).
         || name.starts_with("x-amz-server-side-encryption")
+        // Source SSE-C (`-customer-*`, decrypting an SSE-C-encrypted source).
+        || name.starts_with("x-amz-copy-source-server-side-encryption")
 }
 
 impl<B, R, C> Dispatch for ProxyGateway<B, R, C>
@@ -2961,6 +2964,11 @@ mod tests {
             // Copy-relevant client headers must be forwarded AND signed.
             headers.insert("x-amz-metadata-directive", "REPLACE".parse().unwrap());
             headers.insert("x-amz-meta-team", "platform".parse().unwrap());
+            // Source SSE-C: needed to decrypt an SSE-C-encrypted source object.
+            headers.insert(
+                "x-amz-copy-source-server-side-encryption-customer-algorithm",
+                "AES256".parse().unwrap(),
+            );
 
             let action = gw
                 .resolve_request(Method::PUT, "/dst-bucket/dst-key.txt", None, &headers, None)
@@ -2990,6 +2998,13 @@ mod tests {
             // Copy-relevant client headers reached the backend.
             assert_eq!(sent.get("x-amz-metadata-directive").unwrap(), "REPLACE");
             assert_eq!(sent.get("x-amz-meta-team").unwrap(), "platform");
+            // Source SSE-C header reached the backend (dropping it would make an
+            // SSE-C-encrypted source unreadable and the copy 400 against S3).
+            assert_eq!(
+                sent.get("x-amz-copy-source-server-side-encryption-customer-algorithm")
+                    .unwrap(),
+                "AES256"
+            );
             // Empty body: the signed payload hash is sha256("").
             assert_eq!(
                 sent.get("x-amz-content-sha256").unwrap(),
@@ -3007,7 +3022,8 @@ mod tests {
             assert!(
                 auth.contains("x-amz-copy-source")
                     && auth.contains("x-amz-metadata-directive")
-                    && auth.contains("x-amz-meta-team"),
+                    && auth.contains("x-amz-meta-team")
+                    && auth.contains("x-amz-copy-source-server-side-encryption-customer-algorithm"),
                 "copy headers missing from SignedHeaders: {auth}"
             );
         });

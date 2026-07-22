@@ -323,3 +323,51 @@ class TestHeadOnCacheableExtension:
             assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
         finally:
             client.delete_object(Bucket=WRITE_BUCKET, Key=key)
+
+
+@requires_write_bucket
+class TestCopyObjectSseCSource:
+    """Same-store CopyObject with an SSE-C-encrypted source, against real S3.
+
+    Regression guard for the copy-source SSE-C headers. To read an
+    SSE-C-encrypted source, the copy must carry
+    `x-amz-copy-source-server-side-encryption-customer-{algorithm,key,key-MD5}`
+    so the backend can decrypt it. If the proxy's copy-header allowlist drops
+    them (they don't match the destination `x-amz-server-side-encryption*`
+    prefix), S3 can't decrypt the source and rejects the copy with 400.
+
+    MinIO (the integration backend) refuses SSE-C over the plaintext HTTP the
+    Docker loop uses, so this can only run against real S3 here. boto3 sends the
+    raw 32-byte key; the SDK base64-encodes it and computes the key MD5.
+    """
+
+    def test_copy_object_with_sse_c_source(self, actions_credentials):
+        client = s3_client(actions_credentials)
+        src = f"smoke-ssec-src-{uuid.uuid4()}.txt"
+        dst = f"smoke-ssec-dst-{uuid.uuid4()}.txt"
+        # AES256 requires a 32-byte customer key.
+        sse_key = b"0123456789abcdef0123456789abcdef"
+        body = b"sse-c-source-bytes"
+        try:
+            client.put_object(
+                Bucket=WRITE_BUCKET,
+                Key=src,
+                Body=body,
+                SSECustomerAlgorithm="AES256",
+                SSECustomerKey=sse_key,
+            )
+            # Dest stored unencrypted; only the source decrypt headers matter
+            # here — dropping them makes this copy 400 before the fix.
+            resp = client.copy_object(
+                Bucket=WRITE_BUCKET,
+                Key=dst,
+                CopySource={"Bucket": WRITE_BUCKET, "Key": src},
+                CopySourceSSECustomerAlgorithm="AES256",
+                CopySourceSSECustomerKey=sse_key,
+            )
+            assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+            got = client.get_object(Bucket=WRITE_BUCKET, Key=dst)
+            assert got["Body"].read() == body
+        finally:
+            client.delete_object(Bucket=WRITE_BUCKET, Key=src)
+            client.delete_object(Bucket=WRITE_BUCKET, Key=dst)
