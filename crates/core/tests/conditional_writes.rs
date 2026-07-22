@@ -29,11 +29,29 @@ use object_store::signer::Signer;
 /// ETag of the object the fake backend pretends already exists.
 const STORED_ETAG: &str = "\"v1\"";
 
+/// Emulate S3's compare-and-swap: the object with `STORED_ETAG` is assumed to
+/// exist, so return the status S3 would given the precondition headers on the
+/// request — `412` on a failed precondition, `200` otherwise.
+fn cas_status(headers: &HeaderMap) -> u16 {
+    let failed = match (headers.get("if-match"), headers.get("if-none-match")) {
+        // If-None-Match: * requires the object to be absent — it exists.
+        (_, Some(v)) if v == "*" => true,
+        // If-Match must equal the current ETag.
+        (Some(v), _) => v.to_str().unwrap_or("") != STORED_ETAG,
+        _ => false,
+    };
+    if failed {
+        412
+    } else {
+        200
+    }
+}
+
 /// Backend that emulates S3 compare-and-swap on the forwarded request headers.
 ///
-/// The object with `STORED_ETAG` is assumed to exist. `forward` reads the
-/// precondition headers off the presigned request and answers as S3 would:
-/// `412` on a failed precondition, `200` otherwise.
+/// `forward` covers the presigned + aws-chunked streaming PutObject paths;
+/// `send_raw` covers the raw-signed multipart completion path. Both read the
+/// precondition off the outbound request, exactly where the real backend does.
 #[derive(Clone)]
 struct CasBackend;
 
@@ -46,17 +64,8 @@ impl ProxyBackend for CasBackend {
         request: multistore::route_handler::ForwardRequest,
         _body: (),
     ) -> Result<ForwardResponse<()>, multistore::error::ProxyError> {
-        let h = &request.headers;
-        let precondition_failed = match (h.get("if-match"), h.get("if-none-match")) {
-            // If-None-Match: * requires the object to be absent — it exists.
-            (_, Some(v)) if v == "*" => true,
-            // If-Match must equal the current ETag.
-            (Some(v), _) => v.to_str().unwrap_or("") != STORED_ETAG,
-            _ => false,
-        };
-        let status = if precondition_failed { 412 } else { 200 };
         Ok(ForwardResponse {
-            status,
+            status: cas_status(&request.headers),
             headers: HeaderMap::new(),
             body: (),
             content_length: Some(0),
@@ -81,10 +90,14 @@ impl ProxyBackend for CasBackend {
         &self,
         _method: Method,
         _url: String,
-        _headers: HeaderMap,
+        headers: HeaderMap,
         _body: Bytes,
     ) -> Result<RawResponse, multistore::error::ProxyError> {
-        unimplemented!("not exercised by conditional-write tests")
+        Ok(RawResponse {
+            status: cas_status(&headers),
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+        })
     }
 }
 
@@ -260,5 +273,62 @@ fn streaming_put_with_matching_if_match_succeeds() {
         streaming_put_status(headers),
         200,
         "an aws-chunked PUT whose If-Match matches must succeed"
+    );
+}
+
+/// A large object written via multipart completes with `CompleteMultipartUpload`
+/// (`POST /{bucket}/{key}?uploadId=…`), which takes the raw-signed `send_raw`
+/// path. The precondition must reach the backend there too, so a multipart write
+/// gets the same compare-and-swap guarantee as a single-shot PutObject.
+fn complete_mpu_status(headers: HeaderMap) -> u16 {
+    let gw = ProxyGateway::new(CasBackend, MockRegistry, MockCreds, None);
+    let method = Method::POST;
+    let req = RequestInfo::new(
+        &method,
+        "/test-bucket/key.txt",
+        Some("uploadId=test-upload"),
+        &headers,
+        None,
+    );
+    let resp = run(gw.handle_request(&req, (), |b: ()| async move {
+        let () = b;
+        Ok::<Bytes, std::convert::Infallible>(Bytes::new())
+    }));
+    match resp {
+        GatewayResponse::Response(r) => r.status,
+        GatewayResponse::Forward(f) => f.status,
+    }
+}
+
+#[test]
+fn complete_mpu_with_wrong_if_match_returns_412() {
+    let mut headers = HeaderMap::new();
+    headers.insert("if-match", "\"stale\"".parse().unwrap());
+    assert_eq!(
+        complete_mpu_status(headers),
+        412,
+        "CompleteMultipartUpload with a wrong If-Match must fail with 412"
+    );
+}
+
+#[test]
+fn complete_mpu_with_if_none_match_star_fails_when_object_exists() {
+    let mut headers = HeaderMap::new();
+    headers.insert("if-none-match", "*".parse().unwrap());
+    assert_eq!(
+        complete_mpu_status(headers),
+        412,
+        "CompleteMultipartUpload If-None-Match: * must fail with 412 when the object exists"
+    );
+}
+
+#[test]
+fn complete_mpu_with_matching_if_match_succeeds() {
+    let mut headers = HeaderMap::new();
+    headers.insert("if-match", STORED_ETAG.parse().unwrap());
+    assert_eq!(
+        complete_mpu_status(headers),
+        200,
+        "CompleteMultipartUpload whose If-Match matches must succeed"
     );
 }

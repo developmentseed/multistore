@@ -395,6 +395,67 @@ class TestConditionalWrites:
 
         client.delete_object(Bucket="private-uploads", Key=key)
 
+    def _complete_multipart(self, client, key: str, body: bytes, **complete_kwargs):
+        """Drive a low-level multipart upload, passing extra kwargs (e.g.
+        IfMatch/IfNoneMatch) to CompleteMultipartUpload."""
+        create = client.create_multipart_upload(Bucket="private-uploads", Key=key)
+        upload_id = create["UploadId"]
+        parts = []
+        # 5 MiB + remainder → at least two parts (S3 requires >=5 MiB per
+        # non-final part), forcing a real multipart completion.
+        chunks = [body[: 5 * MIB], body[5 * MIB :]]
+        for num, chunk in enumerate(chunks, start=1):
+            up = client.upload_part(
+                Bucket="private-uploads",
+                Key=key,
+                PartNumber=num,
+                UploadId=upload_id,
+                Body=chunk,
+            )
+            parts.append({"PartNumber": num, "ETag": up["ETag"]})
+        return client.complete_multipart_upload(
+            Bucket="private-uploads",
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+            **complete_kwargs,
+        )
+
+    def test_multipart_complete_if_none_match_star_blocks_overwrite(self):
+        """`If-None-Match: *` on CompleteMultipartUpload must fail with 412 when
+        the object exists — a large multipart write gets the same CAS guarantee
+        as a single-shot PutObject."""
+        client = static_client()
+        key = f"cond-mpu-inm-{uuid.uuid4()}.bin"
+        body = b"m" * (6 * MIB)
+        self._complete_multipart(client, key, body)  # object now exists
+
+        with pytest.raises(ClientError) as exc_info:
+            self._complete_multipart(client, key, body, IfNoneMatch="*")
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+        assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_multipart_complete_if_match_wrong_etag_rejected(self):
+        """A wrong `If-Match` on CompleteMultipartUpload must fail with 412."""
+        client = static_client()
+        key = f"cond-mpu-ifm-{uuid.uuid4()}.bin"
+        body = b"m" * (6 * MIB)
+        self._complete_multipart(client, key, body)  # object now exists
+
+        with pytest.raises(ClientError) as exc_info:
+            self._complete_multipart(
+                client,
+                key,
+                body,
+                IfMatch='"0000000000000000deadbeef00000000"',
+            )
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 412
+        assert exc_info.value.response["Error"]["Code"] == "PreconditionFailed"
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
 
 # ---------------------------------------------------------------------------
 # Multipart uploads

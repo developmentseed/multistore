@@ -1370,10 +1370,19 @@ where
         // path signs every header present (see `sign_s3_request`), so forwarding
         // them here is safe — unlike the presigned PutObject path, where S3
         // rejects unsigned `x-amz-*` headers.
+        //
+        // `if-match`/`if-none-match` complete the conditional-write story:
+        // CompleteMultipartUpload honors them too (S3 and MinIO return 412 on a
+        // mismatch), so a large object written via multipart gets the same
+        // compare-and-swap guarantee as a single-shot PutObject. They only
+        // matter on the completion request; `original_headers.get` is `None` on
+        // Create/UploadPart/Abort, so listing them here is a no-op there.
         for (name, val) in pending.original_headers.iter() {
             let n = name.as_str();
-            if matches!(n, "content-type" | "content-length" | "content-md5")
-                || n.starts_with("x-amz-checksum")
+            if matches!(
+                n,
+                "content-type" | "content-length" | "content-md5" | "if-match" | "if-none-match"
+            ) || n.starts_with("x-amz-checksum")
                 || n == "x-amz-sdk-checksum-algorithm"
             {
                 headers.insert(name.clone(), val.clone());
