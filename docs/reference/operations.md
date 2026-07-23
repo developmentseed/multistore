@@ -52,6 +52,7 @@ Handled by an STS closure (registered on the `Router` via `StsRouterExt`).
 | Operation | HTTP Method | Description |
 |-----------|------------|-------------|
 | AssumeRoleWithWebIdentity | `POST /?Action=AssumeRoleWithWebIdentity&...` (params in the query string or a form-encoded body, as AWS SDKs send them) | Exchange OIDC JWT for temporary credentials |
+| GetCallerIdentity | `POST /?Action=GetCallerIdentity` (SigV4-signed with the temporary credentials) | Validate assumed credentials; returns a synthetic identity. Called unconditionally by `aws-actions/configure-aws-credentials`. |
 
 ## OIDC Discovery Endpoints
 
