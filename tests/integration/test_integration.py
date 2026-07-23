@@ -31,16 +31,8 @@ PROXY_URL = os.environ.get("PROXY_URL", "http://localhost:8787")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def assume_role(role_arn: str, oidc_token: str) -> dict:
-    """Assume a role via the STS proxy and return parsed credentials."""
-    resp = requests.get(
-        f"{PROXY_URL}/.sts",
-        params={
-            "Action": "AssumeRoleWithWebIdentity",
-            "RoleArn": role_arn,
-            "WebIdentityToken": oidc_token,
-        },
-    )
+def _parse_sts_credentials(resp: requests.Response) -> dict:
+    """Parse an AssumeRoleWithWebIdentity XML response into a creds dict."""
     resp.raise_for_status()
     root = ET.fromstring(resp.text)
     creds_el = root.find(".//{*}Credentials")
@@ -56,6 +48,43 @@ def assume_role(role_arn: str, oidc_token: str) -> dict:
         "SecretAccessKey": text("SecretAccessKey"),
         "SessionToken": text("SessionToken"),
     }
+
+
+def assume_role(role_arn: str, oidc_token: str) -> dict:
+    """Assume a role via the STS proxy (query-string params) and return creds."""
+    return _parse_sts_credentials(
+        requests.get(
+            f"{PROXY_URL}/.sts",
+            params={
+                "Action": "AssumeRoleWithWebIdentity",
+                "RoleArn": role_arn,
+                "WebIdentityToken": oidc_token,
+            },
+        )
+    )
+
+
+def assume_role_form_post(role_arn: str, oidc_token: str) -> dict:
+    """Assume a role the way `aws-actions/configure-aws-credentials` (and every
+    AWS SDK's STS client) does: AssumeRoleWithWebIdentity parameters carried in
+    an `application/x-www-form-urlencoded` POST body, not the query string.
+
+    This is the drop-in SDK path enabled by the form-body parsing in PR #112.
+    `requests` form-encodes a `data=` dict and sets the content type, so this
+    reproduces the exact wire shape the action emits against the proxy.
+    """
+    return _parse_sts_credentials(
+        requests.post(
+            f"{PROXY_URL}/.sts",
+            data={
+                "Action": "AssumeRoleWithWebIdentity",
+                "Version": "2011-06-15",
+                "RoleArn": role_arn,
+                "RoleSessionName": "configure-aws-credentials-integration",
+                "WebIdentityToken": oidc_token,
+            },
+        )
+    )
 
 
 def s3_client(creds: dict):
@@ -827,6 +856,29 @@ class TestOidcCredentialAccess:
         with pytest.raises(ClientError) as exc_info:
             client.list_objects_v2(Bucket="public-data", MaxKeys=1)
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+
+    def test_configure_aws_credentials_action_grants_write_access(self, oidc_token):
+        """`aws-actions/configure-aws-credentials` against the proxy must yield
+        credentials with write access.
+
+        The action assumes the role by POSTing the AssumeRoleWithWebIdentity
+        parameters as a form-encoded body (the shape every AWS SDK STS client
+        sends). `assume_role_form_post` reproduces that request; a successful
+        PUT/GET round-trip with the returned credentials proves the action is a
+        drop-in way to gain write access — the guarantee added by PR #112.
+        """
+        creds = assume_role_form_post("github-actions", oidc_token)
+        assert creds["AccessKeyId"] and creds["SessionToken"]
+
+        client = s3_client(creds)
+        key = f"action-write-{uuid.uuid4()}.txt"
+        body = b"written via configure-aws-credentials"
+
+        client.put_object(Bucket="private-uploads", Key=key, Body=body)
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == body
+
+        client.delete_object(Bucket="private-uploads", Key=key)
 
 
 # ---------------------------------------------------------------------------
