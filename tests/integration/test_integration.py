@@ -100,6 +100,23 @@ def s3_client(creds: dict):
     )
 
 
+def sts_client(creds: dict):
+    """Create an STS client (assumed-role creds) pointed at the proxy endpoint.
+
+    Used to exercise GetCallerIdentity: botocore signs the call with SigV4 over
+    the temporary credentials, exactly as `aws-actions/configure-aws-credentials`
+    does when it validates the credentials it just assumed.
+    """
+    return boto3.client(
+        "sts",
+        endpoint_url=f"{PROXY_URL}/.sts",
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+        region_name="us-east-1",
+    )
+
+
 def static_client(
     access_key: str = "AKTEST000000000001",
     secret_key: str = "testSecretKey00000000000000000001",
@@ -857,28 +874,58 @@ class TestOidcCredentialAccess:
             client.list_objects_v2(Bucket="public-data", MaxKeys=1)
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
 
-    def test_configure_aws_credentials_action_grants_write_access(self, oidc_token):
-        """`aws-actions/configure-aws-credentials` against the proxy must yield
+    def test_sdk_form_post_assume_role_grants_write_access(self, oidc_token):
+        """Assuming a role via a form-encoded POST body (the shape every AWS SDK
+        STS client — and `aws-actions/configure-aws-credentials` — sends) yields
         credentials with write access.
 
-        The action assumes the role by POSTing the AssumeRoleWithWebIdentity
-        parameters as a form-encoded body (the shape every AWS SDK STS client
-        sends). `assume_role_form_post` reproduces that request; a successful
-        PUT/GET round-trip with the returned credentials proves the action is a
-        drop-in way to gain write access — the guarantee added by PR #112.
+        This is the drop-in SDK path added by PR #112. `assume_role_form_post`
+        reproduces the request; a PUT/GET round-trip proves the resulting
+        credentials can write. (The real action is exercised end-to-end in the
+        `integration` CI job.)
         """
         creds = assume_role_form_post("github-actions", oidc_token)
         assert creds["AccessKeyId"] and creds["SessionToken"]
 
         client = s3_client(creds)
         key = f"action-write-{uuid.uuid4()}.txt"
-        body = b"written via configure-aws-credentials"
+        body = b"written via SDK form-post assume-role"
 
         client.put_object(Bucket="private-uploads", Key=key, Body=body)
         resp = client.get_object(Bucket="private-uploads", Key=key)
         assert resp["Body"].read() == body
 
         client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_get_caller_identity(self, actions_credentials):
+        """A signed GetCallerIdentity call returns an STS-shaped identity.
+
+        `aws-actions/configure-aws-credentials` issues exactly this call
+        (unconditionally) to validate the credentials it assumes, so the proxy
+        must serve it. botocore signs the request with SigV4 over the temporary
+        credentials; the proxy verifies the signature against the sealed session
+        token and reports the synthetic account.
+        """
+        identity = sts_client(actions_credentials).get_caller_identity()
+        assert identity["Account"] == "000000000000"
+        assert identity["Arn"].startswith(
+            "arn:aws:sts::000000000000:assumed-role/"
+        )
+        assert identity["UserId"]
+
+    def test_get_caller_identity_rejects_static_credentials(self):
+        """GetCallerIdentity requires a sealed session token; a request signed
+        with static (non-assumed) credentials is denied, not served."""
+        sts = boto3.client(
+            "sts",
+            endpoint_url=f"{PROXY_URL}/.sts",
+            aws_access_key_id="AKTEST000000000001",
+            aws_secret_access_key="testSecretKey00000000000000000001",
+            region_name="us-east-1",
+        )
+        with pytest.raises(ClientError) as exc_info:
+            sts.get_caller_identity()
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 403
 
 
 # ---------------------------------------------------------------------------

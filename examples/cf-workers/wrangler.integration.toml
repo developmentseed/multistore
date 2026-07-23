@@ -109,6 +109,25 @@ trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
 ]
 
+# Role keyed by a full ARN, for the aws-actions/configure-aws-credentials
+# integration test. The action sends its `role-to-assume` input verbatim as the
+# STS `RoleArn`, and `get_role` matches `role_id` exactly — so this must be the
+# full ARN the workflow passes. Account `000000000000` matches the synthetic
+# account the proxy's `GetCallerIdentity` reports.
+[[vars.PROXY_CONFIG.roles]]
+max_session_duration_secs = 3600
+name = "GitHub Actions (configure-aws-credentials)"
+role_id = "arn:aws:iam::000000000000:role/github-actions"
+subject_conditions = ["*"]
+trusted_oidc_issuers = [
+  "https://token.actions.githubusercontent.com",
+]
+
+[[vars.PROXY_CONFIG.roles.allowed_scopes]]
+actions = ["get_object", "head_object", "put_object", "delete_object", "list_bucket"]
+bucket = "private-uploads"
+prefixes = []
+
 # --- Rate limiting bindings (required by wrangler dev) ---
 
 [[ratelimits]]
