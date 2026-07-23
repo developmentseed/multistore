@@ -128,6 +128,40 @@ The response follows the standard AWS STS XML format:
 </AssumeRoleWithWebIdentityResponse>
 ```
 
+### GetCallerIdentity
+
+The endpoint also serves `Action=GetCallerIdentity`. Standard AWS tooling —
+notably [`aws-actions/configure-aws-credentials`](https://github.com/aws-actions/configure-aws-credentials)
+— validates freshly assumed credentials with an unconditional, SigV4-signed
+`GetCallerIdentity` call before exporting them, so serving it is what makes the
+proxy a drop-in STS target rather than a bespoke exchange.
+
+Unlike `AssumeRoleWithWebIdentity`, this call is **authenticated**: the temporary
+session token travels in `x-amz-security-token` and the request is SigV4-signed
+with the temporary secret key. The proxy unseals the token, verifies the
+signature against the recovered secret, and returns a synthetic identity:
+
+```xml
+<GetCallerIdentityResponse>
+  <GetCallerIdentityResult>
+    <Arn>arn:aws:sts::000000000000:assumed-role/github-actions-deployer/repo:myorg/myapp:ref:refs/heads/main</Arn>
+    <UserId>github-actions-deployer:repo:myorg/myapp:ref:refs/heads/main</UserId>
+    <Account>000000000000</Account>
+  </GetCallerIdentityResult>
+</GetCallerIdentityResponse>
+```
+
+The proxy fronts arbitrary S3 backends and has no real AWS account, so `Account`
+is the fabricated `000000000000`. A request with no session token, or a
+signature that does not match, receives an STS-shaped `403` error rather than an
+identity.
+
+> **Trailing slash.** AWS SDK JS v3 (used by `configure-aws-credentials`) appends
+> a trailing slash to the endpoint path, so an endpoint of `.../.sts` is called
+> as `POST /.sts/` and *signed* over `/.sts/`. The handler is registered on both
+> `/.sts` and `/.sts/`, and verifies the signature over the raw path exactly as
+> received — never a normalized form.
+
 ## Integrating with OIDC Providers
 
 The proxy works with any OIDC-compliant identity provider that serves a JWKS endpoint and issues RS256-signed JWTs. You need:
@@ -187,6 +221,25 @@ jobs:
           echo "AWS_ACCESS_KEY_ID=$(echo $CREDS | jq -r '.Credentials.AccessKeyId')" >> $GITHUB_ENV
           echo "AWS_SECRET_ACCESS_KEY=$(echo $CREDS | jq -r '.Credentials.SecretAccessKey')" >> $GITHUB_ENV
           echo "AWS_SESSION_TOKEN=$(echo $CREDS | jq -r '.Credentials.SessionToken')" >> $GITHUB_ENV
+
+      - name: Upload to proxy
+        run: |
+          aws s3 cp ./bundle.tar.gz s3://deploy-bundles/releases/v1.2.3.tar.gz \
+            --endpoint-url https://s3proxy.example.com
+```
+
+Because the proxy also serves `GetCallerIdentity`, the official
+[`aws-actions/configure-aws-credentials`](https://github.com/aws-actions/configure-aws-credentials)
+action works unmodified — point its STS client at the proxy with `sts-endpoint`
+and it handles the OIDC token fetch, assume-role, and validation for you:
+
+```yaml
+      - name: Configure AWS credentials via the proxy
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-region: us-east-1
+          role-to-assume: github-actions-deployer  # sent verbatim as RoleArn
+          sts-endpoint: https://s3proxy.example.com/.sts
 
       - name: Upload to proxy
         run: |
