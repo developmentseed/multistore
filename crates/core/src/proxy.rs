@@ -3398,4 +3398,168 @@ mod tests {
             );
         });
     }
+
+    /// Records every authorization the gateway asks for, and optionally denies
+    /// one action so a half-authorized caller can be simulated.
+    #[derive(Clone)]
+    struct RecordingRegistry {
+        seen: Arc<std::sync::Mutex<Vec<(String, Action, String)>>>,
+        deny: Option<Action>,
+    }
+
+    impl BucketRegistry for RecordingRegistry {
+        async fn get_bucket(
+            &self,
+            name: &str,
+            _identity: &ResolvedIdentity,
+            operation: &S3Operation,
+        ) -> Result<ResolvedBucket, ProxyError> {
+            self.seen.lock().unwrap().push((
+                name.to_string(),
+                operation.action(),
+                operation.key().to_string(),
+            ));
+            if self.deny == Some(operation.action()) {
+                return Err(ProxyError::AccessDenied);
+            }
+            Ok(ResolvedBucket {
+                config: test_bucket_config(name),
+                list_rewrite: None,
+                display_name: None,
+            })
+        }
+
+        async fn list_buckets(
+            &self,
+            _identity: &ResolvedIdentity,
+        ) -> Result<Vec<BucketEntry>, ProxyError> {
+            Ok(vec![])
+        }
+    }
+
+    /// A copy is two permissions, not one. The registry — the authorization
+    /// seam — must be asked to authorize the destination as a write *and* the
+    /// source as a read, each against the key that end actually touches. A
+    /// registry that scopes by key prefix can only enforce that if the right
+    /// key reaches it.
+    #[test]
+    fn copy_authorizes_destination_write_and_source_read() {
+        run(async {
+            let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: Arc::new(std::sync::Mutex::new(None)),
+                },
+                RecordingRegistry {
+                    seen: seen.clone(),
+                    deny: None,
+                },
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-amz-copy-source",
+                "/src-bucket/secret/obj.txt".parse().unwrap(),
+            );
+            let action = gw
+                .resolve_request(
+                    Method::PUT,
+                    "/dst-bucket/public/obj.txt",
+                    None,
+                    &headers,
+                    None,
+                )
+                .await;
+            assert!(matches!(action, HandlerAction::Response(_)));
+
+            let seen = seen.lock().unwrap().clone();
+            assert_eq!(
+                seen,
+                vec![
+                    (
+                        "dst-bucket".to_string(),
+                        Action::PutObject,
+                        "public/obj.txt".to_string()
+                    ),
+                    (
+                        "src-bucket".to_string(),
+                        Action::GetObject,
+                        "secret/obj.txt".to_string()
+                    ),
+                ],
+                "a copy must authorize the destination write and the source read"
+            );
+        });
+    }
+
+    /// Write access to the destination is not enough: a caller who may not read
+    /// the source cannot launder it into a bucket they control. The denial
+    /// lands before the backend is contacted, so no bytes move.
+    #[test]
+    fn copy_denied_when_the_caller_cannot_read_the_source() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                RecordingRegistry {
+                    seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    deny: Some(Action::GetObject),
+                },
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amz-copy-source", "/src-bucket/obj.txt".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/obj.txt", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 403),
+                other => panic!(
+                    "expected 403 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+            assert!(
+                captured.lock().unwrap().is_none(),
+                "an unauthorized source read must never reach the backend"
+            );
+        });
+    }
+
+    /// The mirror case: read access to the source does not let a caller write
+    /// the destination. Denied before the source is even resolved.
+    #[test]
+    fn copy_denied_when_the_caller_cannot_write_the_destination() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                RecordingRegistry {
+                    seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    deny: Some(Action::PutObject),
+                },
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amz-copy-source", "/src-bucket/obj.txt".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/obj.txt", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 403),
+                other => panic!(
+                    "expected 403 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+            assert!(captured.lock().unwrap().is_none());
+        });
+    }
 }
