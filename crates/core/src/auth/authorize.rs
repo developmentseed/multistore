@@ -305,6 +305,7 @@ mod tests {
         let read = |key: &str| S3Operation::GetObject {
             bucket: "b".into(),
             key: key.into(),
+            version: None,
         };
         assert!(authorize(&id, &read("public/src.txt"), &bucket("b", false)).is_ok());
         assert!(authorize(&id, &read("private/src.txt"), &bucket("b", false)).is_err());

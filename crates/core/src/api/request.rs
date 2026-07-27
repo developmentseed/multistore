@@ -160,7 +160,15 @@ pub fn build_s3_operation(
                     raw_query: query.map(|q| q.to_string()),
                 })
             } else {
-                Ok(S3Operation::GetObject { bucket, key })
+                // `?versionId=` is deliberately not carried here: the read
+                // path does not address versions, so the backend returns the
+                // current object and authorizing a version would describe a
+                // read that never happens. See `S3Operation::GetObject::version`.
+                Ok(S3Operation::GetObject {
+                    bucket,
+                    key,
+                    version: None,
+                })
             }
         }
         Method::HEAD => Ok(S3Operation::HeadObject { bucket, key }),

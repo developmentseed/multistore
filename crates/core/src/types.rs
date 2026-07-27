@@ -347,6 +347,21 @@ pub enum S3Operation {
     GetObject {
         bucket: String,
         key: String,
+        /// The object version this read will actually return, or `None` for the
+        /// current version.
+        ///
+        /// Set only where the backend read is genuinely version-scoped — today
+        /// that is the source half of a [`CopyObject`](Self::CopyObject), whose
+        /// `x-amz-copy-source` may carry `?versionId=`. A plain `GET` leaves
+        /// this `None` even when the client sends `?versionId=`, because the
+        /// proxy does not address versions on the read path and serves the
+        /// current object regardless; authorizing such a request as versioned
+        /// would describe a read that never happens.
+        ///
+        /// Registries that scope permissions by version should deny on a
+        /// `Some(_)` they do not recognize rather than ignore it: it names
+        /// bytes that are otherwise unreachable through the proxy.
+        version: Option<String>,
     },
     HeadObject {
         bucket: String,
@@ -503,6 +518,7 @@ mod tests {
         let op = S3Operation::GetObject {
             bucket: "b".into(),
             key: "k".into(),
+            version: None,
         };
         assert_eq!(op.action(), Action::GetObject);
 
@@ -532,6 +548,7 @@ mod tests {
         let op = S3Operation::GetObject {
             bucket: "my-bucket".into(),
             key: "k".into(),
+            version: None,
         };
         assert_eq!(op.bucket(), Some("my-bucket"));
 
@@ -543,6 +560,7 @@ mod tests {
         let op = S3Operation::GetObject {
             bucket: "b".into(),
             key: "my/key.txt".into(),
+            version: None,
         };
         assert_eq!(op.key(), "my/key.txt");
 
