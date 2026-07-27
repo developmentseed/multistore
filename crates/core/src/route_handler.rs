@@ -263,6 +263,22 @@ pub struct RequestInfo<'a> {
     /// When `None`, `query` is used for both operation parsing and signature
     /// verification.
     pub signing_query: Option<&'a str>,
+    /// The `x-amz-copy-source` value rewritten into the gateway's bucket
+    /// namespace, for proxies that rewrite paths before dispatch.
+    ///
+    /// `CopyObject` names its source in a header, not the URL, so a proxy that
+    /// maps client paths onto internal bucket names (see
+    /// `multistore-path-mapping`) must map the copy-source too — otherwise the
+    /// source resolves as a client-facing name the registry has never heard of
+    /// and the copy fails with `NoSuchBucket`. The header itself is signed by
+    /// the client and must not be mutated, so the mapped value is passed
+    /// alongside it here: signature verification keeps using the original
+    /// header, while source resolution uses this value.
+    ///
+    /// Expects the same wire format as the header
+    /// (`[/]bucket/percent-encoded-key[?versionId=id]`). When `None`, the
+    /// `x-amz-copy-source` header is used as sent.
+    pub copy_source: Option<&'a str>,
     /// The form-encoded request body, for handlers that accept parameters in
     /// the body as well as the query string.
     ///
@@ -301,6 +317,7 @@ impl<'a> RequestInfo<'a> {
             params: Params::default(),
             signing_path: None,
             signing_query: None,
+            copy_source: None,
             form_body: None,
         }
     }
@@ -378,6 +395,13 @@ impl<'a> RequestInfo<'a> {
     /// verification uses the query string the client actually signed.
     pub fn with_signing_query(mut self, signing_query: Option<&'a str>) -> Self {
         self.signing_query = signing_query;
+        self
+    }
+
+    /// Set the namespace-rewritten `x-amz-copy-source` value for `CopyObject`.
+    /// See [`RequestInfo::copy_source`].
+    pub fn with_copy_source(mut self, copy_source: Option<&'a str>) -> Self {
+        self.copy_source = copy_source;
         self
     }
 }

@@ -273,6 +273,40 @@ impl PathMapping {
         }
     }
 
+    /// Rewrite an `x-amz-copy-source` header value into the gateway's bucket
+    /// namespace.
+    ///
+    /// `CopyObject` names its source in a header rather than the URL, so
+    /// [`rewrite_request`](Self::rewrite_request) never sees it and the gateway
+    /// would otherwise resolve a client-facing name (`alukach`) that the
+    /// registry has never heard of. Feed the result to
+    /// [`RequestInfo::with_copy_source`] alongside the untouched header, which
+    /// stays as sent for SigV4 verification.
+    ///
+    /// `/{a}/{b}/{key}[?versionId=id]` → `/{a:b}/{key}[?versionId=id]`. The key
+    /// keeps its percent-encoding (only leading segments are rewritten), and
+    /// the `versionId` suffix rides through. Returns `None` when the value has
+    /// too few segments to map, leaving the caller to pass the header through
+    /// unchanged.
+    ///
+    /// [`RequestInfo::with_copy_source`]: multistore::route_handler::RequestInfo::with_copy_source
+    pub fn rewrite_copy_source(&self, copy_source: &str) -> Option<String> {
+        let value = copy_source.strip_prefix('/').unwrap_or(copy_source);
+        let (path, version) = match value.split_once("?versionId=") {
+            Some((p, v)) => (p, Some(v)),
+            None => (value, None),
+        };
+
+        let mapped = self.parse(&format!("/{path}"))?;
+        let key = mapped.key?;
+        let mut out = format!("/{}/{}", mapped.bucket, key);
+        if let Some(version) = version {
+            out.push_str("?versionId=");
+            out.push_str(version);
+        }
+        Some(out)
+    }
+
     /// Fold the first prefix component into the bucket name.
     ///
     /// `/{account}?prefix=product/sub/` → `/{account:product}?prefix=sub/`
@@ -342,6 +376,60 @@ fn rewrite_prefix_in_query(query: &str, new_prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mapping() -> PathMapping {
+        PathMapping {
+            bucket_segments: 2,
+            bucket_separator: ":".into(),
+            display_bucket_segments: 1,
+        }
+    }
+
+    /// The copy-source header is a client-facing path and must be folded into
+    /// the internal bucket name, or the gateway resolves `alukach` (an account,
+    /// not a bucket) and the copy fails with `NoSuchBucket`.
+    #[test]
+    fn rewrite_copy_source_folds_leading_segments_into_the_bucket() {
+        let m = mapping();
+        assert_eq!(
+            m.rewrite_copy_source("/alukach/experimentation/README.md")
+                .as_deref(),
+            Some("/alukach:experimentation/README.md")
+        );
+        // A leading slash is optional on the wire.
+        assert_eq!(
+            m.rewrite_copy_source("alukach/experimentation/README.md")
+                .as_deref(),
+            Some("/alukach:experimentation/README.md")
+        );
+        // Nested keys keep every segment past the bucket.
+        assert_eq!(
+            m.rewrite_copy_source("/alukach/experimentation/a/b/c.txt")
+                .as_deref(),
+            Some("/alukach:experimentation/a/b/c.txt")
+        );
+    }
+
+    /// The key stays percent-encoded (the gateway decodes it) and `versionId`
+    /// rides through untouched.
+    #[test]
+    fn rewrite_copy_source_preserves_encoding_and_version() {
+        assert_eq!(
+            mapping()
+                .rewrite_copy_source("/acme/data/a%20b.txt?versionId=v42")
+                .as_deref(),
+            Some("/acme:data/a%20b.txt?versionId=v42")
+        );
+    }
+
+    /// Too few segments to map (no key, or no product) → `None`, so the caller
+    /// passes the header through and the gateway reports the real error.
+    #[test]
+    fn rewrite_copy_source_declines_unmappable_values() {
+        let m = mapping();
+        assert_eq!(m.rewrite_copy_source("/acme/data"), None);
+        assert_eq!(m.rewrite_copy_source("/acme"), None);
+    }
 
     #[test]
     fn is_list_request_detects_list_type() {

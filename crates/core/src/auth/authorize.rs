@@ -241,4 +241,72 @@ mod tests {
         // Even on an anonymous-readable bucket, batch delete is a write.
         assert!(authorize(&ResolvedIdentity::Anonymous, &op, &bucket("b", true)).is_err());
     }
+
+    fn copy(dest_key: &str) -> S3Operation {
+        S3Operation::CopyObject {
+            bucket: "b".into(),
+            key: dest_key.into(),
+            src_bucket: "b".into(),
+            src_key: "any/source.txt".into(),
+            src_version: None,
+        }
+    }
+
+    /// A copy is a write of its *destination* key, so a prefix-scoped caller may
+    /// only copy into the prefixes they hold. Were the operation's key to read
+    /// as anything else (the source key, or empty), a scoped caller could write
+    /// anywhere in the bucket.
+    #[test]
+    fn copy_object_enforces_prefix_on_the_destination_key() {
+        let id = identity_with(AccessScope {
+            bucket: "b".into(),
+            prefixes: vec!["public/".into()],
+            actions: vec![Action::PutObject],
+        });
+        assert!(authorize(&id, &copy("public/x.txt"), &bucket("b", false)).is_ok());
+        assert!(authorize(&id, &copy("private/x.txt"), &bucket("b", false)).is_err());
+    }
+
+    /// Read access is not copy access: `CopyObject` maps to `PutObject`, so a
+    /// caller holding only `GetObject` cannot copy even within their prefix.
+    #[test]
+    fn copy_object_requires_the_put_action() {
+        let id = identity_with(AccessScope {
+            bucket: "b".into(),
+            prefixes: vec![],
+            actions: vec![Action::GetObject],
+        });
+        assert!(authorize(&id, &copy("anywhere.txt"), &bucket("b", false)).is_err());
+    }
+
+    /// A copy writes, so an anonymous caller is denied even on a bucket that
+    /// allows anonymous reads.
+    #[test]
+    fn copy_object_denied_for_anonymous() {
+        assert!(authorize(
+            &ResolvedIdentity::Anonymous,
+            &copy("x.txt"),
+            &bucket("b", true)
+        )
+        .is_err());
+    }
+
+    /// The other half of a copy's authorization: the gateway resolves the copy
+    /// source through a synthetic `GetObject`, so the source key is prefix-
+    /// checked as a read. A caller scoped to `public/` cannot name a source
+    /// outside it.
+    #[test]
+    fn copy_source_read_enforces_prefix_via_get_object() {
+        let id = identity_with(AccessScope {
+            bucket: "b".into(),
+            prefixes: vec!["public/".into()],
+            actions: vec![Action::GetObject, Action::PutObject],
+        });
+        let read = |key: &str| S3Operation::GetObject {
+            bucket: "b".into(),
+            key: key.into(),
+        };
+        assert!(authorize(&id, &read("public/src.txt"), &bucket("b", false)).is_ok());
+        assert!(authorize(&id, &read("private/src.txt"), &bucket("b", false)).is_err());
+    }
 }
