@@ -378,6 +378,9 @@ pub enum S3Operation {
     HeadObject {
         bucket: String,
         key: String,
+        /// The object version this read will return, or `None` for the current
+        /// version. Same contract as [`GetObject::version`](Self::GetObject).
+        version: Option<String>,
     },
     PutObject {
         bucket: String,

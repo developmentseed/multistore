@@ -127,6 +127,19 @@ fn parse_copy_source(raw: &str) -> Result<(String, String, Option<String>), Prox
     Ok((bucket.to_string(), key, version))
 }
 
+/// Extract a non-empty `versionId` query parameter.
+///
+/// An empty `?versionId=` is treated as absent rather than as a version named
+/// "": S3 has no such version, and reading it as one would turn a malformed
+/// request into a versioned read that can never succeed.
+fn version_id(query_params: &[(String, String)]) -> Option<String> {
+    query_params
+        .iter()
+        .find(|(k, _)| k == "versionId")
+        .map(|(_, v)| v.clone())
+        .filter(|v| !v.is_empty())
+}
+
 /// Build an [`S3Operation`] from an already-extracted bucket, key, and query.
 ///
 /// This is used by both [`parse_s3_request`] and custom resolvers that parse
@@ -160,18 +173,18 @@ pub fn build_s3_operation(
                     raw_query: query.map(|q| q.to_string()),
                 })
             } else {
-                // `?versionId=` is deliberately not carried here: the read
-                // path does not address versions, so the backend returns the
-                // current object and authorizing a version would describe a
-                // read that never happens. See `S3Operation::GetObject::version`.
                 Ok(S3Operation::GetObject {
                     bucket,
                     key,
-                    version: None,
+                    version: version_id(&query_params),
                 })
             }
         }
-        Method::HEAD => Ok(S3Operation::HeadObject { bucket, key }),
+        Method::HEAD => Ok(S3Operation::HeadObject {
+            bucket,
+            key,
+            version: version_id(&query_params),
+        }),
         Method::PUT => {
             if let Some(upload_id) = upload_id {
                 let part_number = query_params
