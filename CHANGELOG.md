@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/developmentseed/multistore/compare/v0.7.0...v0.7.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **copy:** authorize a versioned copy-source against its version ([#129](https://github.com/developmentseed/multistore/issues/129)) ([8261ebe](https://github.com/developmentseed/multistore/commit/8261ebef3f2a984c68c576f552ede3201acdaa82))
+* **copy:** resolve CopyObject sources on path-mapped and OIDC deployments ([#128](https://github.com/developmentseed/multistore/issues/128)) ([d2f56e6](https://github.com/developmentseed/multistore/commit/d2f56e6b5c7cda018749cc1d301760993e6bcde6))
+
 ## [0.7.0](https://github.com/developmentseed/multistore/compare/v0.6.4...v0.7.0) (2026-07-22)
 
 
