@@ -8,12 +8,19 @@ use http::Method;
 ///
 /// Path-style: `/{bucket}/{key}`
 /// Virtual-hosted-style: Host header `{bucket}.s3.example.com` with path `/{key}`
+///
+/// `copy_source_override` replaces the `x-amz-copy-source` header when
+/// resolving a `CopyObject` source — see [`RequestInfo::copy_source`]. Pass
+/// `None` to use the header as the client sent it.
+///
+/// [`RequestInfo::copy_source`]: crate::route_handler::RequestInfo::copy_source
 pub fn parse_s3_request(
     method: &Method,
     uri_path: &str,
     query: Option<&str>,
     headers: &http::HeaderMap,
     host_style: HostStyle,
+    copy_source_override: Option<&str>,
 ) -> Result<S3Operation, ProxyError> {
     // GET / with path-style → ListBuckets (no bucket in path)
     if matches!(host_style, HostStyle::Path) && uri_path.trim_start_matches('/').is_empty() {
@@ -38,13 +45,16 @@ pub fn parse_s3_request(
     // into its own operation handled by `execute_copy`. Callers that invoke
     // `build_s3_operation` directly (custom resolvers) must replicate this
     // check — `build_s3_operation` has no access to headers.
-    if *method == Method::PUT {
-        if let Some(copy_source) = headers.get("x-amz-copy-source") {
-            let copy_source = copy_source.to_str().map_err(|_| {
+    if *method == Method::PUT && headers.contains_key("x-amz-copy-source") {
+        // The override (a namespace-mapped copy-source) wins when present; the
+        // header itself stays untouched because the client signed it.
+        let copy_source = match copy_source_override {
+            Some(mapped) => mapped,
+            None => headers["x-amz-copy-source"].to_str().map_err(|_| {
                 ProxyError::InvalidRequest("x-amz-copy-source is not valid UTF-8".into())
-            })?;
-            return build_copy_object(bucket, key, copy_source, query);
-        }
+            })?,
+        };
+        return build_copy_object(bucket, key, copy_source, query);
     }
 
     build_s3_operation(method, bucket, key, query)
@@ -295,7 +305,7 @@ mod tests {
         query: Option<&str>,
         headers: &http::HeaderMap,
     ) -> Result<S3Operation, ProxyError> {
-        parse_s3_request(&method, path, query, headers, HostStyle::Path)
+        parse_s3_request(&method, path, query, headers, HostStyle::Path, None)
     }
 
     #[test]
@@ -345,6 +355,58 @@ mod tests {
                     && src_key == "src-key"
             ),
             "copy-source PUT must parse as CopyObject, got {op:?}"
+        );
+    }
+
+    /// A path-mapping proxy hands the gateway a copy-source rewritten into the
+    /// internal bucket namespace; the signed header keeps its client-facing
+    /// form, so the override — not the header — must resolve the source.
+    #[test]
+    fn copy_source_override_replaces_the_signed_header() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "x-amz-copy-source",
+            "/account/product/README.md".parse().unwrap(),
+        );
+        let op = parse_s3_request(
+            &Method::PUT,
+            "/account:product/dst-key",
+            None,
+            &headers,
+            HostStyle::Path,
+            Some("/account:product/README.md"),
+        )
+        .unwrap();
+        match op {
+            S3Operation::CopyObject {
+                src_bucket,
+                src_key,
+                ..
+            } => {
+                assert_eq!(src_bucket, "account:product");
+                assert_eq!(src_key, "README.md");
+            }
+            other => panic!("expected CopyObject, got {other:?}"),
+        }
+    }
+
+    /// The override applies only to a request that is already a copy: a PUT
+    /// with no `x-amz-copy-source` header stays a plain `PutObject`.
+    #[test]
+    fn copy_source_override_without_the_header_is_ignored() {
+        let headers = http::HeaderMap::new();
+        let op = parse_s3_request(
+            &Method::PUT,
+            "/dst-bucket/dst-key",
+            None,
+            &headers,
+            HostStyle::Path,
+            Some("/account:product/README.md"),
+        )
+        .unwrap();
+        assert!(
+            matches!(op, S3Operation::PutObject { .. }),
+            "expected PutObject, got {op:?}"
         );
     }
 

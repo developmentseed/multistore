@@ -339,7 +339,14 @@ where
     fn op_needs_buffered_body(&self, req: &RequestInfo<'_>) -> bool {
         let host_style = determine_host_style(req.headers, self.virtual_host_domain.as_deref());
         matches!(
-            request::parse_s3_request(req.method, req.path, req.query, req.headers, host_style),
+            request::parse_s3_request(
+                req.method,
+                req.path,
+                req.query,
+                req.headers,
+                host_style,
+                req.copy_source,
+            ),
             Ok(S3Operation::CreateMultipartUpload { .. }
                 | S3Operation::CompleteMultipartUpload { .. }
                 | S3Operation::AbortMultipartUpload { .. }
@@ -689,6 +696,7 @@ where
             req.query,
             req.headers,
             host_style,
+            req.copy_source,
         ) {
             Ok(op) => op,
             Err(err) => return self.error_result(err, req.path, &request_id, req.source_ip),
@@ -1567,9 +1575,9 @@ where
     ///
     /// The copy is delegated to the backend S3: a signed `PUT` to the
     /// destination key carries `x-amz-copy-source` pointing at the source's
-    /// backend bucket/key. Only same-store copies (source and destination on
-    /// the same S3 endpoint + credentials) are supported — a native S3 copy
-    /// cannot reach across two distinct backends.
+    /// backend bucket/key. Only same-endpoint copies are supported (see
+    /// [`same_s3_endpoint`]) — a native S3 copy cannot reach across two
+    /// distinct backends.
     ///
     /// The backend's `CopyObjectResult` XML (and any 4xx/5xx, including the
     /// "error embedded in a 200" case) is passed straight through: it carries
@@ -1588,7 +1596,7 @@ where
         // destination. Upgrade path: proxy-side read-then-write streaming
         // (with >5 GB handling and 200-embedded-error detection) when a real
         // cross-store use case appears.
-        if !same_backing_store(src_config, dest_config) {
+        if !same_s3_endpoint(src_config, dest_config) {
             return Err(ProxyError::NotImplemented(
                 "cross-store copy (source and destination on different backends) is not supported"
                     .into(),
@@ -1640,23 +1648,30 @@ where
     }
 }
 
-/// Whether two bucket configs point at the same S3 backing store, such that a
-/// native server-side copy from one to the other is possible.
+/// Whether two bucket configs sit on the same S3 endpoint, such that a native
+/// server-side copy from one to the other is possible.
 ///
-/// Requires both to be S3 backends sharing the same endpoint, region, and
-/// credentials — then a `PUT` signed for the destination endpoint can name the
-/// source bucket in `x-amz-copy-source` and S3 performs the copy internally.
-/// The bucket names may differ (cross-bucket copy within one account). This is
-/// deliberately conservative: two configs that resolve to the same physical
-/// store via different credentials are treated as distinct.
-fn same_backing_store(a: &BucketConfig, b: &BucketConfig) -> bool {
+/// Requires both to be S3 backends sharing an endpoint and region — then a
+/// `PUT` signed for the destination endpoint can name the source bucket in
+/// `x-amz-copy-source` and S3 performs the copy internally. The bucket names
+/// may differ (cross-bucket copy within one account).
+///
+/// Credentials are deliberately *not* compared. The copy is signed with the
+/// destination's credentials and the source config contributes only its bucket
+/// name and prefix, so the source's own credentials are never used. Comparing
+/// them is also unobservable here: a credential-injecting middleware (e.g.
+/// `AwsBackendAuth`, which swaps `auth_type=oidc` for minted STS keys) only
+/// runs against the destination config in the dispatch context, so the source
+/// still carries its unresolved form and the two could never match. Whether
+/// the destination's credentials may read the source is an IAM question, and
+/// S3 answers it with `AccessDenied` — which passes through to the client.
+/// Authorization of the caller is unaffected: the source is separately
+/// authorized as a read against the caller's identity before we get here.
+fn same_s3_endpoint(a: &BucketConfig, b: &BucketConfig) -> bool {
     a.is_s3_backend()
         && b.is_s3_backend()
         && a.option("endpoint") == b.option("endpoint")
         && a.option("region") == b.option("region")
-        && a.option("access_key_id") == b.option("access_key_id")
-        && a.option("secret_access_key") == b.option("secret_access_key")
-        && a.option("token") == b.option("token")
 }
 
 /// Build the backend `x-amz-copy-source` header value for a same-store copy:
@@ -2954,30 +2969,59 @@ mod tests {
     }
 
     #[test]
-    fn same_backing_store_matches_shared_endpoint_and_creds() {
-        // Two virtual buckets on the same endpoint/creds but different backend
-        // buckets are the same store — a cross-bucket copy is native.
+    fn same_s3_endpoint_matches_shared_endpoint_and_region() {
+        // Two virtual buckets on the same endpoint but different backend
+        // buckets are copy-compatible — a cross-bucket copy is native.
         let mut a = test_bucket_config("src");
         let mut b = test_bucket_config("dst");
         b.backend_options
             .insert("bucket_name".into(), "other-backend-bucket".into());
-        assert!(same_backing_store(&a, &b));
+        assert!(same_s3_endpoint(&a, &b));
 
-        // Different endpoint → different store.
+        // Different endpoint → a copy can't reach across.
         b.backend_options
             .insert("endpoint".into(), "https://minio.example.com".into());
-        assert!(!same_backing_store(&a, &b));
+        assert!(!same_s3_endpoint(&a, &b));
 
-        // Different credentials → different store (conservative).
+        // Different region → likewise.
         let mut c = test_bucket_config("dst2");
         c.backend_options
-            .insert("access_key_id".into(), "AKIADIFFERENT".into());
-        assert!(!same_backing_store(&a, &c));
+            .insert("region".into(), "eu-west-1".into());
+        assert!(!same_s3_endpoint(&a, &c));
 
         // A non-S3 backend is never a copy-compatible store.
         a.backend_type = "azure".into();
         let d = test_bucket_config("dst3");
-        assert!(!same_backing_store(&a, &d));
+        assert!(!same_s3_endpoint(&a, &d));
+    }
+
+    /// A credential-injecting middleware (`AwsBackendAuth`) resolves
+    /// `auth_type=oidc` into minted STS keys, but only on the *destination*
+    /// config in the dispatch context — the copy source is resolved afterwards
+    /// and still carries its unresolved form. Comparing credentials therefore
+    /// rejected every copy on such a deployment; the endpoint is what matters.
+    #[test]
+    fn middleware_resolved_destination_still_matches_unresolved_source() {
+        let mut src = test_bucket_config("src");
+        src.backend_options.remove("access_key_id");
+        src.backend_options.remove("secret_access_key");
+        src.backend_options
+            .insert("auth_type".into(), "oidc".into());
+        src.backend_options.insert(
+            "oidc_role_arn".into(),
+            "arn:aws:iam::123:role/Reader".into(),
+        );
+
+        // Post-middleware destination: `auth_type` swapped for minted keys.
+        let mut dst = test_bucket_config("dst");
+        dst.backend_options
+            .insert("access_key_id".into(), "ASIAMINTEDBYSTS".into());
+        dst.backend_options
+            .insert("secret_access_key".into(), "minted-secret".into());
+        dst.backend_options
+            .insert("token".into(), "sts-session-token".into());
+
+        assert!(same_s3_endpoint(&src, &dst));
     }
 
     #[test]
@@ -3138,6 +3182,219 @@ mod tests {
             assert!(
                 captured.lock().unwrap().is_none(),
                 "backend must not be contacted for a rejected cross-store copy"
+            );
+        });
+    }
+
+    /// A registry that only knows internal, already-mapped bucket names — the
+    /// shape a path-mapping proxy presents (`/{account}/{product}/{key}` is
+    /// rewritten to the bucket `account:product` before dispatch).
+    #[derive(Clone)]
+    struct MappedMockRegistry;
+
+    impl BucketRegistry for MappedMockRegistry {
+        async fn get_bucket(
+            &self,
+            name: &str,
+            _identity: &ResolvedIdentity,
+            _operation: &S3Operation,
+        ) -> Result<ResolvedBucket, ProxyError> {
+            if !name.contains(':') {
+                return Err(ProxyError::BucketNotFound(name.to_string()));
+            }
+            Ok(ResolvedBucket {
+                config: test_bucket_config(name),
+                list_rewrite: None,
+                display_name: None,
+            })
+        }
+
+        async fn list_buckets(
+            &self,
+            _identity: &ResolvedIdentity,
+        ) -> Result<Vec<BucketEntry>, ProxyError> {
+            Ok(vec![])
+        }
+    }
+
+    /// `x-amz-copy-source` carries a *client-facing* path, which the URL
+    /// rewrite never touches. Without a mapped override the gateway resolves
+    /// the raw first segment (an account, not a bucket) and the copy dies with
+    /// `NoSuchBucket` — the failure every SDK client hits, since they all send
+    /// the client-facing form.
+    #[test]
+    fn unmapped_copy_source_fails_on_a_path_mapping_registry() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                MappedMockRegistry,
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-amz-copy-source",
+                "/account/product/README.md".parse().unwrap(),
+            );
+            let action = gw
+                .resolve_request(
+                    Method::PUT,
+                    "/account:product/README.md.copy",
+                    None,
+                    &headers,
+                    None,
+                )
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 404),
+                other => panic!(
+                    "expected 404 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+            assert!(captured.lock().unwrap().is_none());
+        });
+    }
+
+    /// The same request succeeds once the proxy supplies the copy-source
+    /// mapped into the gateway's bucket namespace. The signed header is left
+    /// alone; only source resolution uses the override.
+    #[test]
+    fn mapped_copy_source_override_resolves_the_source() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                MappedMockRegistry,
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-amz-copy-source",
+                "/account/product/README.md".parse().unwrap(),
+            );
+            let method = Method::PUT;
+            let req = RequestInfo::new(
+                &method,
+                "/account:product/README.md.copy",
+                None,
+                &headers,
+                None,
+            )
+            .with_copy_source(Some("/account:product/README.md"));
+
+            let (action, _) = gw.resolve_request_with_metadata(&req).await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 200),
+                other => panic!(
+                    "expected 200 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+            let sent = captured
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("backend was called");
+            assert_eq!(
+                sent.get("x-amz-copy-source").unwrap(),
+                "/backend-bucket/README.md"
+            );
+        });
+    }
+
+    /// A registry whose configs carry `auth_type=oidc` — credentials are minted
+    /// by middleware, which only ever sees the destination config.
+    #[derive(Clone)]
+    struct OidcRegistry;
+
+    impl BucketRegistry for OidcRegistry {
+        async fn get_bucket(
+            &self,
+            name: &str,
+            _identity: &ResolvedIdentity,
+            operation: &S3Operation,
+        ) -> Result<ResolvedBucket, ProxyError> {
+            let mut config = test_bucket_config(name);
+            // The destination has been through the credential middleware; the
+            // copy source (resolved later, as a GetObject) has not.
+            if matches!(operation, S3Operation::GetObject { .. }) {
+                config.backend_options.remove("access_key_id");
+                config.backend_options.remove("secret_access_key");
+                config
+                    .backend_options
+                    .insert("auth_type".into(), "oidc".into());
+            } else {
+                config
+                    .backend_options
+                    .insert("token".into(), "sts-session-token".into());
+            }
+            Ok(ResolvedBucket {
+                config,
+                list_rewrite: None,
+                display_name: None,
+            })
+        }
+
+        async fn list_buckets(
+            &self,
+            _identity: &ResolvedIdentity,
+        ) -> Result<Vec<BucketEntry>, ProxyError> {
+            Ok(vec![])
+        }
+    }
+
+    /// Source and destination are the same product on the same endpoint, so the
+    /// copy is native — even though only the destination carries the STS
+    /// credentials the middleware minted.
+    #[test]
+    fn copy_succeeds_when_only_the_destination_has_minted_credentials() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                OidcRegistry,
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amz-copy-source", "/src-bucket/obj.txt".parse().unwrap());
+            let action = gw
+                .resolve_request(
+                    Method::PUT,
+                    "/dst-bucket/obj.txt.copy",
+                    None,
+                    &headers,
+                    None,
+                )
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(
+                    resp.status, 200,
+                    "asymmetric credential materialization must not read as a cross-store copy"
+                ),
+                other => panic!(
+                    "expected 200 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+            assert_eq!(
+                captured
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("backend was called")
+                    .get("x-amz-copy-source")
+                    .unwrap(),
+                "/backend-bucket/obj.txt"
             );
         });
     }

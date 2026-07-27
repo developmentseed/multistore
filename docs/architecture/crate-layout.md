@@ -79,6 +79,7 @@ The built-in configuration provider (`StaticProvider`) — the only config provi
 Hierarchical path-based backend resolution:
 - Maps request paths of the form `/{account}/{product}/{key}` to a per-(account, product) backend
 - Resolves the backend for each account/product pair from the configured mapping
+- Maps the `x-amz-copy-source` header into the same namespace (`PathMapping::rewrite_copy_source`), since `CopyObject` names its source in a header rather than the URL
 
 ### `multistore-server`
 
