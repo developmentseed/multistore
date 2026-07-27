@@ -144,4 +144,11 @@ jobs:
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Run smoke tests
-        run: uvx --with pytest,boto3,requests pytest tests/smoke/ -v
+        # A freshly deployed script propagates per edge machine, not per
+        # hostname: for a few seconds after deploy some requests to the same
+        # workers.dev host are answered by a machine that doesn't have it yet
+        # and get Cloudflare's HTML "Page not found" 404, while neighbouring
+        # requests in the same second succeed. No probe loop in the deploy job
+        # can gate on that (it may keep hitting warm machines), so retry here.
+        # A real regression still fails every rerun.
+        run: uvx --with pytest,boto3,requests,pytest-rerunfailures pytest tests/smoke/ -v --reruns 4 --reruns-delay 5
