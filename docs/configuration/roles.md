@@ -92,6 +92,7 @@ actions = ["get_object", "head_object", "put_object"]
 | Action | S3 Operation |
 |--------|-------------|
 | `get_object` | GET (download) |
+| `get_object_version` | GET/copy of a *specific* object version (`?versionId=`) |
 | `head_object` | HEAD (metadata) |
 | `put_object` | PUT (upload) |
 | `delete_object` | DELETE |

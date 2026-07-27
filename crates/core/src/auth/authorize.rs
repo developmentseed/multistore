@@ -291,6 +291,60 @@ mod tests {
         .is_err());
     }
 
+    /// The hole this exists to close: on the bundled policy, a caller granted
+    /// `get_object` over a prefix must not be able to read — or copy out — an
+    /// older version of an object in it. A version-scoped read is its own
+    /// action, so the `get_object` grant simply does not match.
+    #[test]
+    fn get_object_grant_does_not_permit_a_versioned_read() {
+        let id = identity_with(AccessScope {
+            bucket: "b".into(),
+            prefixes: vec!["public/".into()],
+            actions: vec![Action::GetObject, Action::PutObject],
+        });
+        let versioned = S3Operation::GetObject {
+            bucket: "b".into(),
+            key: "public/src.txt".into(),
+            version: Some("v1".into()),
+        };
+        assert!(
+            authorize(&id, &versioned, &bucket("b", false)).is_err(),
+            "get_object must not imply reading previous versions"
+        );
+    }
+
+    /// ...and a caller who *is* granted the version action can, within their
+    /// prefix. Denying by default must stay expressible, not absolute.
+    #[test]
+    fn get_object_version_grant_permits_a_versioned_read_in_prefix() {
+        let id = identity_with(AccessScope {
+            bucket: "b".into(),
+            prefixes: vec!["public/".into()],
+            actions: vec![Action::GetObjectVersion],
+        });
+        let versioned = |key: &str| S3Operation::GetObject {
+            bucket: "b".into(),
+            key: key.into(),
+            version: Some("v1".into()),
+        };
+        assert!(authorize(&id, &versioned("public/src.txt"), &bucket("b", false)).is_ok());
+        // The prefix still binds.
+        assert!(authorize(&id, &versioned("private/src.txt"), &bucket("b", false)).is_err());
+    }
+
+    /// An anonymous caller never reads a previous version, even on a bucket
+    /// that allows anonymous reads: the anonymous grant covers current-object
+    /// reads only.
+    #[test]
+    fn versioned_read_denied_for_anonymous() {
+        let versioned = S3Operation::GetObject {
+            bucket: "b".into(),
+            key: "x.txt".into(),
+            version: Some("v1".into()),
+        };
+        assert!(authorize(&ResolvedIdentity::Anonymous, &versioned, &bucket("b", true)).is_err());
+    }
+
     /// The other half of a copy's authorization: the gateway resolves the copy
     /// source through a synthetic `GetObject`, so the source key is prefix-
     /// checked as a read. A caller scoped to `public/` cannot name a source
@@ -305,6 +359,7 @@ mod tests {
         let read = |key: &str| S3Operation::GetObject {
             bucket: "b".into(),
             key: key.into(),
+            version: None,
         };
         assert!(authorize(&id, &read("public/src.txt"), &bucket("b", false)).is_ok());
         assert!(authorize(&id, &read("private/src.txt"), &bucket("b", false)).is_err());

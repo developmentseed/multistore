@@ -1084,6 +1084,7 @@ where
                 let src_op = S3Operation::GetObject {
                     bucket: src_bucket.clone(),
                     key: src_key.clone(),
+                    version: src_version.clone(),
                 };
                 let src = self
                     .bucket_registry
@@ -3404,7 +3405,12 @@ mod tests {
     #[derive(Clone)]
     struct RecordingRegistry {
         seen: Arc<std::sync::Mutex<Vec<(String, Action, String)>>>,
+        /// Versions seen on read authorizations, in order.
+        versions: Arc<std::sync::Mutex<Vec<Option<String>>>>,
         deny: Option<Action>,
+        /// Deny any read that names an object version, standing in for a
+        /// registry whose policy is not version-aware.
+        deny_versioned_reads: bool,
     }
 
     impl BucketRegistry for RecordingRegistry {
@@ -3419,7 +3425,21 @@ mod tests {
                 operation.action(),
                 operation.key().to_string(),
             ));
+            if let S3Operation::GetObject { version, .. } = operation {
+                self.versions.lock().unwrap().push(version.clone());
+            }
             if self.deny == Some(operation.action()) {
+                return Err(ProxyError::AccessDenied);
+            }
+            if self.deny_versioned_reads
+                && matches!(
+                    operation,
+                    S3Operation::GetObject {
+                        version: Some(_),
+                        ..
+                    }
+                )
+            {
                 return Err(ProxyError::AccessDenied);
             }
             Ok(ResolvedBucket {
@@ -3452,7 +3472,9 @@ mod tests {
                 },
                 RecordingRegistry {
                     seen: seen.clone(),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
                     deny: None,
+                    deny_versioned_reads: false,
                 },
                 MockCreds,
                 None,
@@ -3506,7 +3528,9 @@ mod tests {
                 },
                 RecordingRegistry {
                     seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
                     deny: Some(Action::GetObject),
+                    deny_versioned_reads: false,
                 },
                 MockCreds,
                 None,
@@ -3542,7 +3566,9 @@ mod tests {
                 },
                 RecordingRegistry {
                     seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
                     deny: Some(Action::PutObject),
+                    deny_versioned_reads: false,
                 },
                 MockCreds,
                 None,
@@ -3561,5 +3587,141 @@ mod tests {
             }
             assert!(captured.lock().unwrap().is_none());
         });
+    }
+
+    /// A versioned copy-source reads bytes that no other operation can reach —
+    /// the read path ignores `?versionId=` and serves the current object. The
+    /// version must therefore reach the registry on the source authorization,
+    /// or a policy that would reject it never sees it.
+    #[test]
+    fn copy_source_version_reaches_the_source_authorization() {
+        run(async {
+            let versions = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: Arc::new(std::sync::Mutex::new(None)),
+                },
+                RecordingRegistry {
+                    seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    versions: versions.clone(),
+                    deny: None,
+                    deny_versioned_reads: false,
+                },
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-amz-copy-source",
+                "/src-bucket/obj.txt?versionId=v42".parse().unwrap(),
+            );
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/obj.txt", None, &headers, None)
+                .await;
+            assert!(matches!(action, HandlerAction::Response(_)));
+            assert_eq!(
+                versions.lock().unwrap().clone(),
+                vec![Some("v42".to_string())],
+                "the source read must be authorized against the version it copies"
+            );
+        });
+    }
+
+    /// An unversioned copy-source authorizes an unversioned read — the version
+    /// field describes the read that actually happens, not the request shape.
+    #[test]
+    fn unversioned_copy_source_authorizes_an_unversioned_read() {
+        run(async {
+            let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: Arc::new(std::sync::Mutex::new(None)),
+                },
+                RecordingRegistry {
+                    seen: seen.clone(),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    deny: None,
+                    // Would reject a versioned read; this copy names no version.
+                    deny_versioned_reads: true,
+                },
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amz-copy-source", "/src-bucket/obj.txt".parse().unwrap());
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/obj.txt", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 200),
+                other => panic!(
+                    "expected 200 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
+    /// A registry whose policy is not version-aware can now refuse the read,
+    /// and the refusal lands before the backend is contacted — no versioned
+    /// bytes move.
+    #[test]
+    fn registry_can_deny_a_versioned_copy_source() {
+        run(async {
+            let captured = Arc::new(std::sync::Mutex::new(None));
+            let gw = ProxyGateway::new(
+                CaptureHeadersBackend {
+                    captured: captured.clone(),
+                },
+                RecordingRegistry {
+                    seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    deny: None,
+                    deny_versioned_reads: true,
+                },
+                MockCreds,
+                None,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-amz-copy-source",
+                "/src-bucket/obj.txt?versionId=v42".parse().unwrap(),
+            );
+            let action = gw
+                .resolve_request(Method::PUT, "/dst-bucket/obj.txt", None, &headers, None)
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 403),
+                other => panic!(
+                    "expected 403 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+            assert!(
+                captured.lock().unwrap().is_none(),
+                "a denied versioned read must never reach the backend"
+            );
+        });
+    }
+
+    /// A plain `GET` carrying `?versionId=` stays unversioned: the proxy does
+    /// not address versions on the read path, so authorizing it as versioned
+    /// would describe a read that never happens.
+    #[test]
+    fn plain_get_with_version_id_authorizes_an_unversioned_read() {
+        let headers = HeaderMap::new();
+        let op = crate::api::request::parse_s3_request(
+            &Method::GET,
+            "/b/obj.txt",
+            Some("versionId=v42"),
+            &headers,
+            crate::api::request::HostStyle::Path,
+            None,
+        )
+        .unwrap();
+        assert!(
+            matches!(op, S3Operation::GetObject { version: None, .. }),
+            "expected an unversioned GetObject, got {op:?}"
+        );
     }
 }

@@ -189,6 +189,15 @@ pub struct AccessScope {
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     GetObject,
+    /// Reading a *specific* object version, as opposed to the current one.
+    ///
+    /// A distinct action, mirroring S3's own split between `s3:GetObject` and
+    /// `s3:GetObjectVersion`: a scope that grants reads of an object does not
+    /// thereby grant reads of everything that object used to be. Prefix-scoped
+    /// policy cannot express "may read version X", so a caller must hold this
+    /// action explicitly — a grant of `GetObject` alone denies version-scoped
+    /// reads rather than silently permitting them.
+    GetObjectVersion,
     HeadObject,
     PutObject,
     ListBucket,
@@ -347,6 +356,24 @@ pub enum S3Operation {
     GetObject {
         bucket: String,
         key: String,
+        /// The object version this read will actually return, or `None` for the
+        /// current version.
+        ///
+        /// Set only where the backend read is genuinely version-scoped — today
+        /// that is the source half of a [`CopyObject`](Self::CopyObject), whose
+        /// `x-amz-copy-source` may carry `?versionId=`. A plain `GET` leaves
+        /// this `None` even when the client sends `?versionId=`, because the
+        /// proxy does not address versions on the read path and serves the
+        /// current object regardless; authorizing such a request as versioned
+        /// would describe a read that never happens.
+        ///
+        /// A `Some(_)` here changes the authorization action to
+        /// [`Action::GetObjectVersion`], so the shared policy
+        /// ([`authorize`](crate::auth::authorize)) denies it unless the caller
+        /// holds that action explicitly. Registries with their own policy
+        /// should make the same distinction: this names bytes that are
+        /// otherwise unreachable through the proxy.
+        version: Option<String>,
     },
     HeadObject {
         bucket: String,
@@ -439,7 +466,13 @@ impl S3Operation {
     /// The authorization action for this operation.
     pub fn action(&self) -> Action {
         match self {
-            S3Operation::GetObject { .. } => Action::GetObject,
+            // A version-scoped read is its own action: it reaches bytes that
+            // are otherwise unreachable, so holding `GetObject` must not imply
+            // it. See `Action::GetObjectVersion`.
+            S3Operation::GetObject { version: None, .. } => Action::GetObject,
+            S3Operation::GetObject {
+                version: Some(_), ..
+            } => Action::GetObjectVersion,
             S3Operation::HeadObject { .. } => Action::HeadObject,
             // A copy's destination is a write; the source read is authorized
             // separately at dispatch (see `execute_copy`).
@@ -503,6 +536,7 @@ mod tests {
         let op = S3Operation::GetObject {
             bucket: "b".into(),
             key: "k".into(),
+            version: None,
         };
         assert_eq!(op.action(), Action::GetObject);
 
@@ -532,6 +566,7 @@ mod tests {
         let op = S3Operation::GetObject {
             bucket: "my-bucket".into(),
             key: "k".into(),
+            version: None,
         };
         assert_eq!(op.bucket(), Some("my-bucket"));
 
@@ -543,6 +578,7 @@ mod tests {
         let op = S3Operation::GetObject {
             bucket: "b".into(),
             key: "my/key.txt".into(),
+            version: None,
         };
         assert_eq!(op.key(), "my/key.txt");
 
