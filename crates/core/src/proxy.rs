@@ -3405,6 +3405,8 @@ mod tests {
     #[derive(Clone)]
     struct RecordingRegistry {
         seen: Arc<std::sync::Mutex<Vec<(String, Action, String)>>>,
+        /// Versions seen on read authorizations, in order.
+        versions: Arc<std::sync::Mutex<Vec<Option<String>>>>,
         deny: Option<Action>,
         /// Deny any read that names an object version, standing in for a
         /// registry whose policy is not version-aware.
@@ -3423,6 +3425,9 @@ mod tests {
                 operation.action(),
                 operation.key().to_string(),
             ));
+            if let S3Operation::GetObject { version, .. } = operation {
+                self.versions.lock().unwrap().push(version.clone());
+            }
             if self.deny == Some(operation.action()) {
                 return Err(ProxyError::AccessDenied);
             }
@@ -3467,6 +3472,7 @@ mod tests {
                 },
                 RecordingRegistry {
                     seen: seen.clone(),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
                     deny: None,
                     deny_versioned_reads: false,
                 },
@@ -3522,6 +3528,7 @@ mod tests {
                 },
                 RecordingRegistry {
                     seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
                     deny: Some(Action::GetObject),
                     deny_versioned_reads: false,
                 },
@@ -3559,6 +3566,7 @@ mod tests {
                 },
                 RecordingRegistry {
                     seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
                     deny: Some(Action::PutObject),
                     deny_versioned_reads: false,
                 },
@@ -3589,43 +3597,15 @@ mod tests {
     fn copy_source_version_reaches_the_source_authorization() {
         run(async {
             let versions = Arc::new(std::sync::Mutex::new(Vec::new()));
-
-            #[derive(Clone)]
-            struct VersionRecordingRegistry {
-                versions: Arc<std::sync::Mutex<Vec<Option<String>>>>,
-            }
-
-            impl BucketRegistry for VersionRecordingRegistry {
-                async fn get_bucket(
-                    &self,
-                    name: &str,
-                    _identity: &ResolvedIdentity,
-                    operation: &S3Operation,
-                ) -> Result<ResolvedBucket, ProxyError> {
-                    if let S3Operation::GetObject { version, .. } = operation {
-                        self.versions.lock().unwrap().push(version.clone());
-                    }
-                    Ok(ResolvedBucket {
-                        config: test_bucket_config(name),
-                        list_rewrite: None,
-                        display_name: None,
-                    })
-                }
-
-                async fn list_buckets(
-                    &self,
-                    _identity: &ResolvedIdentity,
-                ) -> Result<Vec<BucketEntry>, ProxyError> {
-                    Ok(vec![])
-                }
-            }
-
             let gw = ProxyGateway::new(
                 CaptureHeadersBackend {
                     captured: Arc::new(std::sync::Mutex::new(None)),
                 },
-                VersionRecordingRegistry {
+                RecordingRegistry {
+                    seen: Arc::new(std::sync::Mutex::new(Vec::new())),
                     versions: versions.clone(),
+                    deny: None,
+                    deny_versioned_reads: false,
                 },
                 MockCreds,
                 None,
@@ -3659,6 +3639,7 @@ mod tests {
                 },
                 RecordingRegistry {
                     seen: seen.clone(),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
                     deny: None,
                     // Would reject a versioned read; this copy names no version.
                     deny_versioned_reads: true,
@@ -3694,6 +3675,7 @@ mod tests {
                 },
                 RecordingRegistry {
                     seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
                     deny: None,
                     deny_versioned_reads: true,
                 },
