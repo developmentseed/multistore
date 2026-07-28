@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/developmentseed/multistore/compare/v0.7.1...v0.7.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* **oidc-provider:** never block a caller on another's credential renewal ([#133](https://github.com/developmentseed/multistore/issues/133)) ([11a5556](https://github.com/developmentseed/multistore/commit/11a5556c910209a91284eaeef5421f7d726ea998))
+
 ## [0.7.1](https://github.com/developmentseed/multistore/compare/v0.7.0...v0.7.1) (2026-07-27)
 
 
