@@ -89,12 +89,15 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
     /// Get credentials for a backend, using cached values when available.
     ///
     /// `exchange` describes how to trade the self-signed JWT for cloud
-    /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend for
-    /// caching purposes (e.g. the role ARN).
+    /// credentials (AWS, Azure, GCP). `cache_key` identifies the backend (e.g.
+    /// the role ARN); the entry is additionally scoped by `subject`, since a
+    /// credential minted for one subject is not interchangeable with another's
+    /// against the same backend — see [`cache::scoped_key`].
     ///
-    /// Concurrent calls for the same `cache_key` are single-flighted: only one
-    /// JWT mint + exchange runs, and the rest await its result. A cached value
-    /// is reused until it nears expiry, then proactively re-minted.
+    /// A cached value is reused until it nears expiry, then renewed. Renewals
+    /// are single-flighted, but **no caller ever waits on another**: while one
+    /// mints, the rest keep receiving the cached credential, which has not
+    /// expired. See [`cache`] for why blocking is not an option.
     pub async fn get_credentials<E: CredentialExchange<H>>(
         &self,
         cache_key: &str,
@@ -103,7 +106,7 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
         extra_claims: &[(&str, &str)],
     ) -> Result<Arc<BackendCredentials>, OidcProviderError> {
         self.cache
-            .get_or_fetch(cache_key, || async {
+            .get_or_fetch(&cache::scoped_key(cache_key, subject), || async {
                 // Cache miss (or due for refresh): mint a JWT and exchange it.
                 let token =
                     self.signer
@@ -329,6 +332,33 @@ mod tests {
             .unwrap();
         provider
             .get_credentials("role-b", &exchange, "sub", &[])
+            .await
+            .unwrap();
+
+        assert_eq!(http.calls(), 2);
+    }
+
+    /// Two subjects assuming the same backend must not share a cache entry: the
+    /// role's trust policy conditions on the assertion's `sub`, so a subject it
+    /// would reject must not be handed a credential minted for one it accepts.
+    #[tokio::test]
+    async fn different_subjects_on_one_backend_make_separate_calls() {
+        let http = MockHttp::new();
+        let provider = OidcCredentialProvider::new(
+            test_signer(),
+            http.clone(),
+            "https://issuer.example.com".into(),
+            "sts.amazonaws.com".into(),
+        );
+
+        let exchange = exchange::aws::AwsExchange::new("arn:aws:iam::123:role/Test".into());
+
+        provider
+            .get_credentials("role-a", &exchange, "scv1:conn:one", &[])
+            .await
+            .unwrap();
+        provider
+            .get_credentials("role-a", &exchange, "scv1:conn:two", &[])
             .await
             .unwrap();
 
