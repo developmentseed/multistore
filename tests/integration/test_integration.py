@@ -31,16 +31,8 @@ PROXY_URL = os.environ.get("PROXY_URL", "http://localhost:8787")
 # Helpers
 # ---------------------------------------------------------------------------
 
-def assume_role(role_arn: str, oidc_token: str) -> dict:
-    """Assume a role via the STS proxy and return parsed credentials."""
-    resp = requests.get(
-        f"{PROXY_URL}/.sts",
-        params={
-            "Action": "AssumeRoleWithWebIdentity",
-            "RoleArn": role_arn,
-            "WebIdentityToken": oidc_token,
-        },
-    )
+def _parse_sts_credentials(resp: requests.Response) -> dict:
+    """Parse an AssumeRoleWithWebIdentity XML response into a creds dict."""
     resp.raise_for_status()
     root = ET.fromstring(resp.text)
     creds_el = root.find(".//{*}Credentials")
@@ -58,6 +50,43 @@ def assume_role(role_arn: str, oidc_token: str) -> dict:
     }
 
 
+def assume_role(role_arn: str, oidc_token: str) -> dict:
+    """Assume a role via the STS proxy (query-string params) and return creds."""
+    return _parse_sts_credentials(
+        requests.get(
+            f"{PROXY_URL}/.sts",
+            params={
+                "Action": "AssumeRoleWithWebIdentity",
+                "RoleArn": role_arn,
+                "WebIdentityToken": oidc_token,
+            },
+        )
+    )
+
+
+def assume_role_form_post(role_arn: str, oidc_token: str) -> dict:
+    """Assume a role the way `aws-actions/configure-aws-credentials` (and every
+    AWS SDK's STS client) does: AssumeRoleWithWebIdentity parameters carried in
+    an `application/x-www-form-urlencoded` POST body, not the query string.
+
+    This is the drop-in SDK path enabled by the form-body parsing in PR #112.
+    `requests` form-encodes a `data=` dict and sets the content type, so this
+    reproduces the exact wire shape the action emits against the proxy.
+    """
+    return _parse_sts_credentials(
+        requests.post(
+            f"{PROXY_URL}/.sts",
+            data={
+                "Action": "AssumeRoleWithWebIdentity",
+                "Version": "2011-06-15",
+                "RoleArn": role_arn,
+                "RoleSessionName": "configure-aws-credentials-integration",
+                "WebIdentityToken": oidc_token,
+            },
+        )
+    )
+
+
 def s3_client(creds: dict):
     """Create an S3 client using the given credentials against the proxy."""
     return boto3.client(
@@ -68,6 +97,23 @@ def s3_client(creds: dict):
         aws_session_token=creds["SessionToken"],
         region_name="us-east-1",
         config=Config(s3={"addressing_style": "path"}),
+    )
+
+
+def sts_client(creds: dict):
+    """Create an STS client (assumed-role creds) pointed at the proxy endpoint.
+
+    Used to exercise GetCallerIdentity: botocore signs the call with SigV4 over
+    the temporary credentials, exactly as `aws-actions/configure-aws-credentials`
+    does when it validates the credentials it just assumed.
+    """
+    return boto3.client(
+        "sts",
+        endpoint_url=f"{PROXY_URL}/.sts",
+        aws_access_key_id=creds["AccessKeyId"],
+        aws_secret_access_key=creds["SecretAccessKey"],
+        aws_session_token=creds["SessionToken"],
+        region_name="us-east-1",
     )
 
 
@@ -827,6 +873,59 @@ class TestOidcCredentialAccess:
         with pytest.raises(ClientError) as exc_info:
             client.list_objects_v2(Bucket="public-data", MaxKeys=1)
         assert exc_info.value.response["Error"]["Code"] == "AccessDenied"
+
+    def test_sdk_form_post_assume_role_grants_write_access(self, oidc_token):
+        """Assuming a role via a form-encoded POST body (the shape every AWS SDK
+        STS client — and `aws-actions/configure-aws-credentials` — sends) yields
+        credentials with write access.
+
+        This is the drop-in SDK path added by PR #112. `assume_role_form_post`
+        reproduces the request; a PUT/GET round-trip proves the resulting
+        credentials can write. (The real action is exercised end-to-end in the
+        `integration` CI job.)
+        """
+        creds = assume_role_form_post("github-actions", oidc_token)
+        assert creds["AccessKeyId"] and creds["SessionToken"]
+
+        client = s3_client(creds)
+        key = f"action-write-{uuid.uuid4()}.txt"
+        body = b"written via SDK form-post assume-role"
+
+        client.put_object(Bucket="private-uploads", Key=key, Body=body)
+        resp = client.get_object(Bucket="private-uploads", Key=key)
+        assert resp["Body"].read() == body
+
+        client.delete_object(Bucket="private-uploads", Key=key)
+
+    def test_get_caller_identity(self, actions_credentials):
+        """A signed GetCallerIdentity call returns an STS-shaped identity.
+
+        `aws-actions/configure-aws-credentials` issues exactly this call
+        (unconditionally) to validate the credentials it assumes, so the proxy
+        must serve it. botocore signs the request with SigV4 over the temporary
+        credentials; the proxy verifies the signature against the sealed session
+        token and reports the synthetic account.
+        """
+        identity = sts_client(actions_credentials).get_caller_identity()
+        assert identity["Account"] == "000000000000"
+        assert identity["Arn"].startswith(
+            "arn:aws:sts::000000000000:assumed-role/"
+        )
+        assert identity["UserId"]
+
+    def test_get_caller_identity_rejects_static_credentials(self):
+        """GetCallerIdentity requires a sealed session token; a request signed
+        with static (non-assumed) credentials is denied, not served."""
+        sts = boto3.client(
+            "sts",
+            endpoint_url=f"{PROXY_URL}/.sts",
+            aws_access_key_id="AKTEST000000000001",
+            aws_secret_access_key="testSecretKey00000000000000000001",
+            region_name="us-east-1",
+        )
+        with pytest.raises(ClientError) as exc_info:
+            sts.get_caller_identity()
+        assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 403
 
 
 # ---------------------------------------------------------------------------

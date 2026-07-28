@@ -40,6 +40,18 @@ pub fn try_parse_sts_request(query: Option<&str>) -> Option<Result<StsRequest, P
     Some(parse_sts_params(&params))
 }
 
+/// Whether a form-urlencoded parameter string (query or `POST` body) requests
+/// `Action=GetCallerIdentity`.
+///
+/// `GetCallerIdentity` carries no other parameters worth extracting — it is
+/// authenticated entirely by the request's SigV4 signature — so a boolean is
+/// all the caller needs.
+pub fn is_get_caller_identity(params: Option<&str>) -> bool {
+    let Some(q) = params else { return false };
+    url::form_urlencoded::parse(q.as_bytes())
+        .any(|(k, v)| k == "Action" && v == "GetCallerIdentity")
+}
+
 fn parse_sts_params(params: &[(String, String)]) -> Result<StsRequest, ProxyError> {
     let role_arn = params
         .iter()
@@ -105,5 +117,21 @@ mod tests {
         let query = "Action=AssumeRoleWithWebIdentity&RoleArn=role";
         let result = try_parse_sts_request(Some(query)).unwrap();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_get_caller_identity() {
+        assert!(is_get_caller_identity(Some(
+            "Action=GetCallerIdentity&Version=2011-06-15"
+        )));
+        // Order-independent and tolerant of extra params.
+        assert!(is_get_caller_identity(Some(
+            "Version=2011-06-15&Action=GetCallerIdentity"
+        )));
+        assert!(!is_get_caller_identity(Some(
+            "Action=AssumeRoleWithWebIdentity&RoleArn=r&WebIdentityToken=t"
+        )));
+        assert!(!is_get_caller_identity(Some("prefix=foo/")));
+        assert!(!is_get_caller_identity(None));
     }
 }

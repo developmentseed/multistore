@@ -155,3 +155,33 @@ jobs:
 
       - name: Run integration tests
         run: uvx --with pytest,boto3,requests pytest tests/integration/ -v
+
+      # End-to-end proof that the flagship consumer of the STS endpoint works
+      # unmodified: aws-actions/configure-aws-credentials assumes a role against
+      # the proxy (AssumeRoleWithWebIdentity) and validates the result with a
+      # signed GetCallerIdentity call — both served by multistore-sts. It exports
+      # AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN for later steps.
+      - name: Assume a role via aws-actions/configure-aws-credentials
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          aws-region: us-east-1
+          # Sent verbatim as the STS RoleArn; must match a role_id in
+          # wrangler.integration.toml.
+          role-to-assume: arn:aws:iam::000000000000:role/github-actions
+          # Point the action's STS client (both AssumeRoleWithWebIdentity and its
+          # mandatory GetCallerIdentity validation) at the proxy.
+          sts-endpoint: http://localhost:8787/.sts
+
+      - name: Write to the proxy with the action's credentials
+        run: |
+          set -euo pipefail
+          # The proxy uses path-style addressing.
+          aws configure set default.s3.addressing_style path
+          endpoint=http://localhost:8787
+          key="action-write/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.txt"
+          echo "written by configure-aws-credentials" > /tmp/action-write.txt
+
+          aws s3 cp /tmp/action-write.txt "s3://private-uploads/$key" --endpoint-url "$endpoint"
+          aws s3 cp "s3://private-uploads/$key" /tmp/action-read.txt --endpoint-url "$endpoint"
+          diff /tmp/action-write.txt /tmp/action-read.txt
+          aws s3 rm "s3://private-uploads/$key" --endpoint-url "$endpoint"

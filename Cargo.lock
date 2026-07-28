@@ -1491,6 +1491,7 @@ dependencies = [
  "aes-gcm",
  "base64",
  "chrono",
+ "hex",
  "http",
  "multistore",
  "quick-xml 0.41.0",

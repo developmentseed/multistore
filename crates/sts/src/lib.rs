@@ -2,7 +2,10 @@
 //!
 //! This crate implements the `AssumeRoleWithWebIdentity` STS API, allowing
 //! workloads like GitHub Actions to exchange OIDC tokens for temporary S3
-//! credentials scoped to specific buckets and prefixes.
+//! credentials scoped to specific buckets and prefixes. It also implements
+//! `GetCallerIdentity` (see [`caller_identity`]), which standard AWS tooling —
+//! notably `aws-actions/configure-aws-credentials` — calls to validate assumed
+//! credentials, so the endpoint is a drop-in STS target.
 //!
 //! # Integration
 //!
@@ -26,6 +29,7 @@
 //!
 //! The client then uses these credentials to sign S3 requests normally.
 
+pub mod caller_identity;
 pub mod jwks;
 pub mod request;
 pub mod responses;
@@ -33,13 +37,14 @@ pub mod route_handler;
 pub mod sealed_token;
 pub mod sts;
 
+pub use caller_identity::handle_get_caller_identity;
 pub use jwks::JwksCache;
 use multistore::error::ProxyError;
 use multistore::registry::CredentialRegistry;
 use multistore::types::TemporaryCredentials;
-pub use request::try_parse_sts_request;
 use request::StsRequest;
-pub use responses::{build_sts_error_response, build_sts_response};
+pub use request::{is_get_caller_identity, try_parse_sts_request};
+pub use responses::{build_caller_identity_response, build_sts_error_response, build_sts_response};
 pub use sealed_token::TokenKey;
 
 /// Try to handle an STS request. Returns `Some((status, xml))` if the query
