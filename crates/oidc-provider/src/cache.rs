@@ -31,13 +31,21 @@
 //! # What is deliberately not single-flighted
 //!
 //! A **cold** key — absent or already expired — has nothing usable to serve, so
-//! concurrent callers each run their own `fetch`. Collapsing those would mean
-//! waiting, and the only way to wait on Workers without being cancelled is to
-//! poll a real timer — which costs about as long as the exchange it avoids,
-//! while adding a spin loop and a dependency on the claimant surviving. The
-//! duplication is bounded (one burst per process start, or per isolate cold
-//! start) and upstream token endpoints are provisioned for it; the recurring
-//! event, renewal, *is* single-flighted.
+//! concurrent callers each run their own `fetch`, with no cap beyond how many
+//! arrive before the first one stores. Collapsing those would mean waiting, and
+//! the only way to wait on Workers without being cancelled is to poll a real
+//! timer — which costs about as long as the exchange it avoids, while adding a
+//! spin loop and a dependency on the claimant surviving. The recurring event,
+//! renewal, *is* single-flighted.
+//!
+//! Size that burst before relying on it. A single cold start mints once per
+//! concurrent caller on that one process or isolate, which is small. A **deploy
+//! or mass eviction is different**: it cools every isolate at once, so the
+//! bursts coincide across the whole fleet and land on the token endpoint
+//! together. If yours is rate-limited (AWS STS throttling surfaces here as
+//! `StsError` → a 502 for every caller in the burst), layer an L2 tier inside
+//! the `fetch` closure so the second and later isolates read a mint instead of
+//! performing one. See `docs/architecture/caching.md`.
 //!
 //! The fetch happens through a caller-supplied closure ([`get_or_fetch`]), so
 //! the cache never needs to know how credentials are minted, and a runtime can
@@ -188,9 +196,16 @@ impl CredentialCache {
         }
 
         // Either we are first into the refresh lead, the previous claim went
-        // stale, or the credential is too close to expiry to hand out. Take the
-        // claim and mint. When there is nothing usable left this gates no one —
-        // concurrent callers have no credential to serve either.
+        // stale, or the credential is now inside `MIN_SERVE_SECS` and too close
+        // to expiry to hand out.
+        //
+        // That last case deliberately ignores a live claim, so in the final
+        // `MIN_SERVE_SECS` a claimant can be overtaken and several fetches run
+        // at once, each overwriting `renewing_since`. That is the intended
+        // trade: there is nothing safe left to serve, so the alternatives are
+        // making callers wait (which the module docs rule out) or failing a
+        // request that could have succeeded. Duplication is bounded to the
+        // callers arriving inside that window.
         entry.renewing_since = Some(now);
         Action::Fetch
     }
@@ -407,6 +422,51 @@ mod tests {
         assert!(
             fetched,
             "must mint rather than serve a credential about to expire"
+        );
+    }
+
+    /// Inside `MIN_SERVE_SECS` a live claim is deliberately overtaken: the
+    /// cached credential is too close to expiry to hand out, so a caller
+    /// arriving during the renewal mints its own rather than being served
+    /// something that may die in transit. Bounded duplication, chosen over
+    /// making the caller wait or failing a request that could have succeeded.
+    #[tokio::test]
+    async fn overtakes_a_claim_when_the_credential_is_about_to_expire() {
+        let cache = CredentialCache::new();
+        cache
+            .get_or_fetch("k", || async { Ok::<_, ()>(creds(MIN_SERVE_SECS - 1)) })
+            .await
+            .unwrap();
+
+        let calls = AtomicUsize::new(0);
+        let claimant = async {
+            cache
+                .get_or_fetch("k", || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    for _ in 0..8 {
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, ()>(creds(3600))
+                })
+                .await
+                .unwrap();
+        };
+        let overtaker = async {
+            cache
+                .get_or_fetch("k", || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>(creds(3600))
+                })
+                .await
+                .unwrap();
+        };
+
+        tokio::join!(claimant, overtaker);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a credential inside the serve floor must not be handed to a caller \
+             arriving during a live renewal"
         );
     }
 

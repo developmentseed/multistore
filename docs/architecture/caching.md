@@ -33,7 +33,11 @@ It gives you three behaviours:
 The entry is keyed by the credential's full identity — the backend scope (e.g. the role ARN) *and* the subject the assertion is minted for. Those are not interchangeable: an AWS role's trust policy conditions on the assertion's `sub`, so a subject the policy would reject must never be served a credential minted for one it accepts.
 
 > [!IMPORTANT]
-> A **cold** key — absent or already expired — is deliberately *not* single-flighted: concurrent callers each mint. There is nothing valid to serve them, so collapsing the burst would mean making them wait, which is [not an option on Workers](#why-the-cache-never-blocks). The duplication is bounded (one burst per process start, or per isolate cold start) while the recurring event — renewal — is collapsed.
+> A **cold** key — absent or already expired — is deliberately *not* single-flighted: concurrent callers each mint, with no cap beyond how many arrive before the first one stores. There is nothing valid to serve them, so collapsing the burst would mean making them wait, which is [not an option on Workers](#why-the-cache-never-blocks). The recurring event — renewal — is collapsed.
+
+Size that burst before you rely on it. One cold start mints once per concurrent caller on that single process or isolate, which is small. A **deploy or mass eviction is the case to plan for**: it cools every isolate at once, so those bursts coincide across the fleet and arrive at the token endpoint together. AWS STS throttling surfaces as an `StsError` and becomes a 502 for every caller in the burst. If your endpoint is rate-limited, [layer an L2 tier](#layering-an-external-tier) so the second and later isolates read a mint rather than performing one — that is the mitigation, not a larger in-memory cache, since the in-memory tier is exactly what a deploy discards.
+
+There is one more, smaller duplication: in the final few seconds before expiry (`MIN_SERVE_SECS`) a live renewal claim is ignored, because the cached credential is by then too close to expiry to hand out safely. Callers arriving in that window each mint. Bounded, and preferable to the alternatives — waiting, or failing a request that could have succeeded.
 
 ### Why the cache never blocks
 
