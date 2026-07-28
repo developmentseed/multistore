@@ -28,7 +28,22 @@ It gives you three behaviours:
 
 - **Serve-while-fresh** — a cached value is returned directly while it is comfortably valid.
 - **Proactive refresh** — once a value is within its *refresh lead* (60s) of expiry, the next access re-mints it, so a credential is never handed out about to expire mid-request.
-- **Single-flight** — while one caller is minting for a key, concurrent callers for that *same* key await the in-flight result instead of each launching their own mint. This collapses a cold-cache burst into a single upstream call.
+- **Non-blocking single-flight renewal** — while one caller is renewing a key, concurrent callers keep receiving the cached credential, which has not expired. One mint runs, and **no caller ever waits on another**.
+
+The entry is keyed by the credential's full identity — the backend scope (e.g. the role ARN) *and* the subject the assertion is minted for. Those are not interchangeable: an AWS role's trust policy conditions on the assertion's `sub`, so a subject the policy would reject must never be served a credential minted for one it accepts.
+
+> [!IMPORTANT]
+> A **cold** key — absent or already expired — is deliberately *not* single-flighted: concurrent callers each mint. There is nothing valid to serve them, so collapsing the burst would mean making them wait, which is [not an option on Workers](#why-the-cache-never-blocks). The duplication is bounded (one burst per process start, or per isolate cold start) while the recurring event — renewal — is collapsed.
+
+### Why the cache never blocks
+
+The cache holds a plain `std::sync::Mutex` for map reads and writes and never holds it across an `.await`. That is a correctness requirement, not a style preference.
+
+On Cloudflare Workers, a request parked on an in-memory waker has no pending I/O of its own. The runtime detects that "all the code associated with the request has executed and no events are left in the event loop" and **cancels the request** — surfacing as `The Workers runtime canceled this request because it detected that your Worker's code had hung and would never generate a response` — rather than waiting for whoever holds the lock. Sharing the in-flight future instead of the lock does not help either: that trips `Cannot perform I/O on behalf of a different request`.
+
+An earlier revision of this cache took a per-key `futures::lock::Mutex` on both the hit *and* miss paths. On Workers a single isolate renewing one key therefore killed every concurrent request touching that key — including requests whose credentials were already cached, since the fast path took the same lock. Serving stale-but-valid credentials is what removes the need for the lock: latecomers never need the claimant's result, so there is nothing to wait for.
+
+Native runtimes benefit from the same design — a renewal no longer stalls every concurrent caller for the duration of an STS round-trip.
 
 Because the cache calls *your* fetch closure on a miss, you can layer additional cache tiers (e.g. the Cloudflare Cache API) *inside* the closure without the cache ever depending on a runtime — see [Layering an external tier](#layering-an-external-tier).
 
@@ -41,14 +56,14 @@ A credential cache is only as useful as the lifetime of the thing holding it. Th
 
 | Tier | Scope | Survives | Use for |
 |------|-------|----------|---------|
-| In-memory (`CredentialCache`) | Per-process (native) / **per-isolate** (Workers) | While the process/isolate is warm | The default; single-flight + proactive refresh |
+| In-memory (`CredentialCache`) | Per-process (native) / **per-isolate** (Workers) | While the process/isolate is warm | The default; non-blocking renewal single-flight + proactive refresh |
 | Cloudflare Cache API | **Per-colo** (data center) | Isolate cold starts within a colo | Sharing mints across isolates in one location |
 | Workers KV | Global, eventually consistent | Everything (≈seconds to propagate) | Cross-colo sharing of short-lived creds |
 | Durable Objects | Global, single owner per key | Everything | True cross-isolate single-flight |
 
 ### Native (server) runtime
 
-The server runtime is a long-lived multi-threaded process. Construct the provider (and thus its `CredentialCache`) **once at startup** and share it across requests. The in-memory cache is then global to the process: one mint per credential lifetime, and single-flight collapses concurrent requests. This is the simple, fully-effective case.
+The server runtime is a long-lived multi-threaded process. Construct the provider (and thus its `CredentialCache`) **once at startup** and share it across requests. The in-memory cache is then global to the process: one mint per credential lifetime, and renewals collapse to a single mint without stalling concurrent requests. This is the simple, fully-effective case.
 
 ### Cloudflare Workers runtime
 
@@ -56,7 +71,7 @@ Workers run in V8 **isolates**, not per-request containers. Global/module-scope 
 
 - The cache is **per-isolate**, and Cloudflare runs many isolates across many colos. With _N_ live isolates you get up to _N_ independent mints per credential lifetime, not one.
 - Isolates cold-start empty and are evicted under memory pressure or idle.
-- Single-flight only collapses concurrency *within* one isolate.
+- Renewal single-flight only collapses concurrency *within* one isolate.
 
 Even so, this is a large win: a warm isolate serving thousands of requests for the same bucket reuses one credential instead of minting per request. To get *any* cross-request benefit, hoist the provider into module scope (e.g. a `OnceCell`) rather than rebuilding it inside the `fetch` handler.
 
@@ -68,7 +83,7 @@ The Cloudflare Cache API is **colo-local**: shared across all isolates in one da
 
 ```text
 request
-  └─ L1: in-memory CredentialCache  (per-isolate, single-flight, proactive refresh)
+  └─ L1: in-memory CredentialCache  (per-isolate, non-blocking renewal, proactive refresh)
        └─ on miss, the fetch closure does:
             L2: Cache API            (colo-local, shared across isolates in the colo)
                  └─ on miss, origin:  STS / token exchange (mint)
