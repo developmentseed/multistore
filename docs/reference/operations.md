@@ -4,8 +4,8 @@
 
 | Operation | HTTP Method | Dispatch | Description |
 |-----------|------------|----------|-------------|
-| GetObject | `GET /{bucket}/{key}` | Forward | Download a file |
-| HeadObject | `HEAD /{bucket}/{key}` | Forward | Get file metadata |
+| GetObject | `GET /{bucket}/{key}[?versionId=ID]` | Forward | Download a file (optionally a specific version) |
+| HeadObject | `HEAD /{bucket}/{key}[?versionId=ID]` | Forward | Get file metadata (optionally for a specific version) |
 | PutObject | `PUT /{bucket}/{key}` | Forward | Upload a file |
 | CopyObject | `PUT /{bucket}/{key}` + `x-amz-copy-source` | Response | Server-side copy within one S3 endpoint |
 | DeleteObject | `DELETE /{bucket}/{key}` | Forward | Delete a file |
@@ -35,7 +35,7 @@
 
 Credentials are *not* compared between the two ends. The copy is signed with the destination's credentials and the source contributes only its bucket name and prefix, so the source's own credentials are never used; whether the destination's credentials may read the source is an IAM question S3 answers with `AccessDenied`. (Comparing them would also be meaningless: a credential-injecting middleware such as `AwsBackendAuth` runs only against the destination config, so a source resolved from the same `auth_type=oidc` connection could never match.) The caller's own authorization is unaffected — the source is separately authorized as a read.
 
-**Versioned sources are authorized as versioned reads.** An `x-amz-copy-source` may carry `?versionId=`, and that version is copied — bytes the read path cannot otherwise reach, since a plain `GET` ignores `?versionId=` and serves the current object. The version is therefore carried on the synthetic `GetObject` used to authorize the source (`S3Operation::GetObject::version`), which makes the authorization action `get_object_version` rather than `get_object` — mirroring S3's own split between `s3:GetObject` and `s3:GetObjectVersion`. This is not merely advice to registry implementors: the bundled policy (`auth::authorize`, which `multistore-static-config` calls) enforces it, because a version-scoped read resolves to its own [action](../configuration/roles.md). A caller granted `get_object` over a prefix therefore cannot read — or copy out — an older version of an object in it, and an anonymous caller never can; the scope must list `get_object_version` explicitly. Prefix-scoped policy cannot express "may read version X", so the default is to deny rather than silently permit. A registry with its own policy should draw the same distinction. A plain `GET` leaves the field `None` even when the client sends `?versionId=` — authorizing it as versioned would describe a read that never happens.
+**Versioned sources are authorized as versioned reads.** An `x-amz-copy-source` may carry `?versionId=`, and that version is copied. The version is carried on the synthetic `GetObject` used to authorize the source (`S3Operation::GetObject::version`), which makes the authorization action `get_object_version` rather than `get_object` — mirroring S3's own split between `s3:GetObject` and `s3:GetObjectVersion`. This is not merely advice to registry implementors: the bundled policy (`auth::authorize`, which `multistore-static-config` calls) enforces it, because a version-scoped read resolves to its own [action](../configuration/roles.md). A caller granted `get_object` over a prefix therefore cannot read — or copy out — an older version of an object in it, and an anonymous caller never can; the scope must list `get_object_version` explicitly. Prefix-scoped policy cannot express "may read version X", so the default is to deny rather than silently permit. A registry with its own policy should draw the same distinction. The same field carries a plain read's version — see "Version-scoped reads" below.
 
 **Path-mapped deployments must map the copy-source.** `CopyObject` names its source in a header, so a proxy that rewrites client paths onto internal bucket names must rewrite the copy-source too — otherwise the source resolves as a client-facing name the registry has never heard of and every copy fails with `404 NoSuchBucket`. The client signed that header, so it must not be mutated; pass the mapped value alongside it via `RequestInfo::with_copy_source`, and signature verification keeps using the header as sent. `PathMapping::rewrite_copy_source` produces the mapped value:
 
@@ -49,6 +49,16 @@ let req = RequestInfo::new(&method, &rewrite.path, query, &headers, None)
     .with_signing_path(&rewrite.signing_path)
     .with_copy_source(mapped.as_deref());
 ```
+
+### Version-scoped reads
+
+`GET` and `HEAD` honor `?versionId=`, returning that version rather than the current object. The version is carried on the operation (`version: Option<String>`, `None` meaning current), so it reaches the registry and authorization sees the version that will actually be read.
+
+Such a read authorizes as **`get_object_version`**, not `get_object` — a caller granted ordinary read access on a prefix cannot reach previous versions of objects in it without that action, and anonymous callers never can. See "Server-side copy" above and the action table in [roles](../configuration/roles.md).
+
+Such a read is **signed with an `Authorization` header** rather than presigned. The query string is part of a presigned request's canonical form, so `versionId` has to be present when the signature is computed — and the `Signer` interface presigns a bare path with no query, so appending it afterwards would invalidate the signature. The runtime streams the response identically either way. Client read headers (`Range`, `If-*`) are attached after signing and travel unsigned, matching the presigned path: SigV4 only requires `host` and `x-amz-*` to be signed, and a runtime that normalizes a forwarded `Range` would otherwise break a signature covering it.
+
+An empty `?versionId=` is treated as absent. Object versioning is an S3 concept, so a version-scoped read of a non-S3 backend returns `501 NotImplemented` rather than silently serving the current object.
 
 ### Writes and request headers
 
@@ -87,7 +97,7 @@ Handled by OIDC discovery closures (registered on the `Router` via `OidcRouterEx
 > - **Server-side copy is same-endpoint only** — `CopyObject` works when source and destination resolve to the same S3 endpoint and region (see "Server-side copy" above). A copy across endpoints, or `UploadPartCopy`, is rejected with `501 NotImplemented`.
 > - **Path-mapped proxies must map the copy-source** — `CopyObject` names its source in a header, which no URL rewrite touches. Pass the mapped value via `RequestInfo::with_copy_source` or every copy fails with `404 NoSuchBucket` (see "Server-side copy" above).
 > - **`x-amz-*` write headers are dropped** — Object metadata, storage class, tagging, ACLs, SSE, and checksum headers on writes are not forwarded (see "Writes and request headers" above).
-> - **Versioned/MFA delete is not handled** — A `?versionId=` on a delete is ignored; the current object version is deleted.
+> - **Versioned/MFA delete is not handled** — A `?versionId=` on a delete is ignored; the current object version is deleted. Reads (`GET`/`HEAD`) do honor it — see "Version-scoped reads" above.
 > - **Degenerate object keys are rejected** — Keys containing empty, `.`, or `..` path segments (including leading/trailing slashes, e.g. `dir/` folder markers), or ASCII control characters, return `400 InvalidRequest` on every keyed operation. Real S3 accepts such keys; the proxy is deliberately stricter because they cannot be addressed consistently across its presigned and raw-signed backend paths. Batch-delete body keys are exempt, as the remediation route for legacy keys already stored under such names.
 > - **Keys are otherwise byte-faithful** — All other keys (including `*`, `%`, `~`, `#`, unicode) are stored on the backend exactly as sent. Objects written through versions **before 0.6.4** via single presigned PUT with characters in object_store's rewrite set (`*`, `%`, `~`, `#`, `?`, `[`, `]`, ...) were silently stored under percent-encoded names (`a*.bin` as `a%2A.bin`); they remain addressable only by that literal mangled name and need a one-time rename to recover their logical keys.
 

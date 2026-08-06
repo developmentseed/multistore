@@ -101,6 +101,18 @@ pub const DEFAULT_USER_AGENT: &str = concat!("multistore/", env!("CARGO_PKG_VERS
 /// `if-match`/`if-none-match` don't apply to `UploadPart`, but clients never
 /// send them there, so sharing this list with the part-streaming caller is a
 /// no-op for parts.
+/// Client headers forwarded on an object read (`GET`/`HEAD`). Forwarded
+/// unsigned on both read paths — the presigned one cannot sign them at all, and
+/// the versioned one deliberately does not (see
+/// [`build_versioned_read_forward`](ProxyGateway::build_versioned_read_forward)).
+const READ_FORWARD_HEADERS: &[&str] = &[
+    "range",
+    "if-match",
+    "if-none-match",
+    "if-modified-since",
+    "if-unmodified-since",
+];
+
 const AWS_CHUNKED_FORWARD_HEADERS: &[&str] = &[
     "content-type",
     "content-encoding",
@@ -905,40 +917,48 @@ where
         };
 
         match operation {
-            S3Operation::GetObject { key, .. } => {
+            S3Operation::GetObject { key, version, .. } => {
+                if version.is_some() {
+                    return Ok(HandlerAction::Forward(self.build_versioned_read_forward(
+                        Method::GET,
+                        bucket_config,
+                        operation,
+                        original_headers,
+                        READ_FORWARD_HEADERS,
+                        request_id,
+                    )?));
+                }
                 let fwd = self
                     .build_forward(
                         Method::GET,
                         bucket_config,
                         key,
                         original_headers,
-                        &[
-                            "range",
-                            "if-match",
-                            "if-none-match",
-                            "if-modified-since",
-                            "if-unmodified-since",
-                        ],
+                        READ_FORWARD_HEADERS,
                         request_id,
                     )
                     .await?;
                 tracing::debug!(path = fwd.url.path(), "GET via presigned URL");
                 Ok(HandlerAction::Forward(fwd))
             }
-            S3Operation::HeadObject { key, .. } => {
+            S3Operation::HeadObject { key, version, .. } => {
+                if version.is_some() {
+                    return Ok(HandlerAction::Forward(self.build_versioned_read_forward(
+                        Method::HEAD,
+                        bucket_config,
+                        operation,
+                        original_headers,
+                        READ_FORWARD_HEADERS,
+                        request_id,
+                    )?));
+                }
                 let fwd = self
                     .build_forward(
                         Method::HEAD,
                         bucket_config,
                         key,
                         original_headers,
-                        &[
-                            "range",
-                            "if-match",
-                            "if-none-match",
-                            "if-modified-since",
-                            "if-unmodified-since",
-                        ],
+                        READ_FORWARD_HEADERS,
                         request_id,
                     )
                     .await?;
@@ -1136,6 +1156,74 @@ where
             method,
             url,
             headers: fwd_headers,
+            request_id: request_id.to_string(),
+        })
+    }
+
+    /// Build a [`ForwardRequest`] for a **version-scoped** read (`GET`/`HEAD`
+    /// carrying `?versionId=`), signed with headers rather than presigned.
+    ///
+    /// A presigned URL cannot carry the parameter: the query string is part of
+    /// a presigned request's canonical form, so `versionId` must be present
+    /// when the signature is computed — and the [`Signer`] interface presigns a
+    /// bare path with no query. Appending it afterwards invalidates the
+    /// signature. Signing the request with an `Authorization` header instead
+    /// puts `versionId` in the URL before signing, and the runtime still
+    /// streams the response body exactly as it does for a presigned forward.
+    ///
+    /// The client's read headers are attached *after* signing, so they travel
+    /// unsigned — matching the presigned path. That is deliberate: SigV4 only
+    /// requires `host` and `x-amz-*` to be signed, and a runtime that
+    /// normalizes a forwarded `Range` or conditional header (Cloudflare may)
+    /// would otherwise break a signature that covered it.
+    fn build_versioned_read_forward(
+        &self,
+        method: Method,
+        config: &BucketConfig,
+        operation: &S3Operation,
+        original_headers: &HeaderMap,
+        forward_header_names: &[&'static str],
+        request_id: &str,
+    ) -> Result<ForwardRequest, ProxyError> {
+        // Object versioning is an S3 concept; the other backends model it
+        // differently and would silently ignore the parameter. `NotImplemented`
+        // rather than the `require_s3_backend` 400: the request is valid S3, it
+        // is this backend that cannot serve it.
+        if !config.is_s3_backend() {
+            return Err(ProxyError::NotImplemented(format!(
+                "version-scoped reads are not supported for '{}' backends",
+                config.backend_type
+            )));
+        }
+
+        let url_str = build_backend_url(config, operation)?;
+
+        // Sign an otherwise-empty header map: the signer contributes `host`,
+        // `x-amz-date`, `x-amz-content-sha256` and `authorization`, and nothing
+        // else ends up in `SignedHeaders`.
+        let mut headers = HeaderMap::new();
+        sign_s3_request(
+            &method,
+            &url_str,
+            &mut headers,
+            config,
+            hash_payload(&[]).as_str(),
+        )?;
+
+        for name in forward_header_names {
+            if let Some(v) = original_headers.get(*name) {
+                headers.insert(*name, v.clone());
+            }
+        }
+        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+
+        let url = url::Url::parse(&url_str)
+            .map_err(|e| ProxyError::Internal(format!("invalid backend URL: {e}")))?;
+        tracing::debug!(path = url.path(), "versioned read via backend re-sign");
+        Ok(ForwardRequest {
+            method,
+            url,
+            headers,
             request_id: request_id.to_string(),
         })
     }
@@ -3704,24 +3792,195 @@ mod tests {
         });
     }
 
-    /// A plain `GET` carrying `?versionId=` stays unversioned: the proxy does
-    /// not address versions on the read path, so authorizing it as versioned
-    /// would describe a read that never happens.
+    /// A `GET` carrying `?versionId=` now *is* a versioned read, so it parses
+    /// as one — the read path honors the parameter rather than silently
+    /// serving the current object, and the version must reach authorization.
+    /// (This inverts the assertion made when the read path ignored versions.)
     #[test]
-    fn plain_get_with_version_id_authorizes_an_unversioned_read() {
+    fn plain_get_with_version_id_parses_as_a_versioned_read() {
         let headers = HeaderMap::new();
-        let op = crate::api::request::parse_s3_request(
-            &Method::GET,
-            "/b/obj.txt",
-            Some("versionId=v42"),
-            &headers,
-            crate::api::request::HostStyle::Path,
-            None,
-        )
-        .unwrap();
-        assert!(
-            matches!(op, S3Operation::GetObject { version: None, .. }),
-            "expected an unversioned GetObject, got {op:?}"
-        );
+        let parse = |method: Method, query| {
+            crate::api::request::parse_s3_request(
+                &method,
+                "/b/obj.txt",
+                query,
+                &headers,
+                crate::api::request::HostStyle::Path,
+                None,
+            )
+            .unwrap()
+        };
+
+        match parse(Method::GET, Some("versionId=v42")) {
+            S3Operation::GetObject { version, .. } => {
+                assert_eq!(version.as_deref(), Some("v42"))
+            }
+            other => panic!("expected GetObject, got {other:?}"),
+        }
+        match parse(Method::HEAD, Some("versionId=v42")) {
+            S3Operation::HeadObject { version, .. } => {
+                assert_eq!(version.as_deref(), Some("v42"))
+            }
+            other => panic!("expected HeadObject, got {other:?}"),
+        }
+        // No parameter, and a malformed empty one, both mean "current".
+        for query in [None, Some("versionId=")] {
+            match parse(Method::GET, query) {
+                S3Operation::GetObject { version, .. } => assert_eq!(version, None),
+                other => panic!("expected GetObject, got {other:?}"),
+            }
+        }
+    }
+
+    /// A versioned read is signed with an `Authorization` header and carries
+    /// `versionId` in the backend URL. A presigned URL could not express this:
+    /// the query is part of its canonical form, so appending the parameter
+    /// afterwards would invalidate the signature.
+    #[test]
+    fn versioned_get_forwards_a_header_signed_url_carrying_the_version() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(
+                    Method::GET,
+                    "/test-bucket/obj.txt",
+                    Some("versionId=v42"),
+                    &headers,
+                    None,
+                )
+                .await;
+            let fwd = match action {
+                HandlerAction::Forward(fwd) => fwd,
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            };
+            assert_eq!(fwd.url.query(), Some("versionId=v42"));
+            let auth = fwd
+                .headers
+                .get("authorization")
+                .expect("versioned read must be header-signed")
+                .to_str()
+                .unwrap()
+                .to_string();
+            assert!(auth.starts_with("AWS4-HMAC-SHA256 Credential="));
+            // The signature must not be in the URL as well.
+            assert!(!fwd.url.as_str().contains("X-Amz-Signature"));
+        });
+    }
+
+    /// An unversioned read keeps the presigned path untouched.
+    #[test]
+    fn unversioned_get_still_uses_a_presigned_url() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(Method::GET, "/test-bucket/obj.txt", None, &headers, None)
+                .await;
+            let fwd = match action {
+                HandlerAction::Forward(fwd) => fwd,
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            };
+            assert!(fwd.url.as_str().contains("X-Amz-Signature"));
+            assert!(fwd.headers.get("authorization").is_none());
+        });
+    }
+
+    /// Read headers ride along on a versioned read, but stay *out* of
+    /// `SignedHeaders`: a runtime that normalizes a forwarded `Range` would
+    /// otherwise break a signature that covered it.
+    #[test]
+    fn versioned_read_forwards_range_unsigned() {
+        run(async {
+            let gw = gateway();
+            let mut headers = HeaderMap::new();
+            headers.insert("range", "bytes=0-99".parse().unwrap());
+            headers.insert("if-none-match", "\"etag\"".parse().unwrap());
+            let action = gw
+                .resolve_request(
+                    Method::GET,
+                    "/test-bucket/obj.txt",
+                    Some("versionId=v42"),
+                    &headers,
+                    None,
+                )
+                .await;
+            let fwd = match action {
+                HandlerAction::Forward(fwd) => fwd,
+                other => panic!("expected Forward, got {:?}", std::mem::discriminant(&other)),
+            };
+            assert_eq!(fwd.headers.get("range").unwrap(), "bytes=0-99");
+            assert_eq!(fwd.headers.get("if-none-match").unwrap(), "\"etag\"");
+            let auth = fwd.headers.get("authorization").unwrap().to_str().unwrap();
+            assert!(
+                !auth.contains("range") && !auth.contains("if-none-match"),
+                "read headers must not be signed: {auth}"
+            );
+            // A ranged read must still bypass the full-object cache.
+            assert!(fwd.should_bypass_cache());
+        });
+    }
+
+    /// Versioning is an S3 concept. A versioned read of a non-S3 backend is
+    /// rejected rather than silently served as the current object.
+    #[test]
+    fn versioned_read_of_a_non_s3_backend_is_rejected() {
+        run(async {
+            let gw = gateway();
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(
+                    Method::GET,
+                    "/azure-bucket/obj.txt",
+                    Some("versionId=v42"),
+                    &headers,
+                    None,
+                )
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 501),
+                other => panic!(
+                    "expected 501 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
+    }
+
+    /// The version reaches the registry on a plain versioned `GET`, so a
+    /// version-aware policy can refuse it — the same guarantee a versioned
+    /// copy-source has.
+    #[test]
+    fn versioned_get_is_authorized_against_its_version() {
+        run(async {
+            let gw = ProxyGateway::new(
+                MockBackend,
+                RecordingRegistry {
+                    seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    versions: Arc::new(std::sync::Mutex::new(Vec::new())),
+                    deny: None,
+                    deny_versioned_reads: true,
+                },
+                MockCreds,
+                None,
+            );
+            let headers = HeaderMap::new();
+            let action = gw
+                .resolve_request(
+                    Method::GET,
+                    "/test-bucket/obj.txt",
+                    Some("versionId=v42"),
+                    &headers,
+                    None,
+                )
+                .await;
+            match action {
+                HandlerAction::Response(resp) => assert_eq!(resp.status, 403),
+                other => panic!(
+                    "expected 403 Response, got {:?}",
+                    std::mem::discriminant(&other)
+                ),
+            }
+        });
     }
 }

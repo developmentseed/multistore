@@ -87,6 +87,20 @@ pub fn build_backend_url(
             url.push('?');
             url.push_str(&qs);
         }
+        S3Operation::GetObject {
+            version: Some(version),
+            ..
+        }
+        | S3Operation::HeadObject {
+            version: Some(version),
+            ..
+        } => {
+            let qs = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("versionId", version)
+                .finish();
+            url.push('?');
+            url.push_str(&qs);
+        }
         S3Operation::CompleteMultipartUpload { upload_id, .. }
         | S3Operation::AbortMultipartUpload { upload_id, .. } => {
             let qs = url::form_urlencoded::Serializer::new(String::new())
