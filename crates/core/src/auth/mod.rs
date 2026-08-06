@@ -11,7 +11,10 @@ pub mod sigv4;
 
 pub use authorize::{authorize, key_authorized};
 pub use identity::resolve_identity;
-pub use sigv4::{parse_sigv4_auth, verify_sigv4_signature, SigV4Auth};
+pub use sigv4::{
+    is_presigned, parse_sigv4_auth, parse_sigv4_presigned, verify_sigv4_presigned,
+    verify_sigv4_signature, PresignedSig, SigV4Auth,
+};
 
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};

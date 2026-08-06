@@ -46,6 +46,12 @@ actions = ["get_object", "head_object"]
 
 Clients sign requests using standard AWS SigV4. Any S3-compatible client works without modification.
 
+### Presigned URLs
+
+SigV4 material can also arrive in the **query string** instead of the `Authorization` header — i.e. a standard S3 [presigned URL](https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html). The proxy verifies these the same way as header-signed requests: same credential lookup, same signature check, same authorization. This covers contexts that can't set an `Authorization` header, such as `<img>`/`<a>` tags and browser `fetch`.
+
+Both long-lived access keys and OIDC/STS temporary credentials (the `X-Amz-Security-Token` query param) can sign a presigned URL. The URL is rejected once its `X-Amz-Expires` window elapses.
+
 ## OIDC/STS Temporary Credentials
 
 This is the recommended authentication method. Clients exchange a JWT from an OIDC-compatible identity provider for scoped, time-limited credentials via `AssumeRoleWithWebIdentity`.
