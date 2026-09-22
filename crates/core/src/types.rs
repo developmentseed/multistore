@@ -126,8 +126,10 @@ pub struct RoleConfig {
     pub trusted_oidc_issuers: Vec<String>,
 
     /// Audience claim values accepted for this role. A token is accepted if its
-    /// `aud` claim matches any entry; empty (or absent/null) means no audience
-    /// restriction. Accepts a single string or a list, and the legacy
+    /// `aud` claim matches any entry. Empty (or absent/null) accepts **no**
+    /// token: the audience is what keeps a token minted for another service
+    /// from being exchanged here, so a role without one is misconfigured, not
+    /// open. Accepts a single string or a list, and the legacy
     /// `required_audience` key, for backward compatibility — set one key or the
     /// other, not both (specifying both is a config error).
     #[serde(
@@ -137,10 +139,20 @@ pub struct RoleConfig {
     )]
     pub required_audiences: Vec<String>,
 
-    /// Conditions on the subject claim (glob patterns).
-    /// e.g., "repo:myorg/myrepo:ref:refs/heads/main"
+    /// Conditions on the subject claim (glob patterns), e.g.
+    /// `"repo:myorg/myrepo:ref:refs/heads/main"`. A token's `sub` must match at
+    /// least one. Empty accepts **no** subject; to accept every subject, say
+    /// so with `"*"`.
     #[serde(default)]
     pub subject_conditions: Vec<String>,
+
+    /// Issuers whose tokens may omit `exp`, because the host tracks their
+    /// validity itself — its own long-lived API keys with server-side
+    /// revocation, say. Tokens from every other issuer must carry `exp`: a
+    /// third-party token with no expiry is an indefinitely replayable
+    /// credential its issuer never meant to issue.
+    #[serde(default)]
+    pub allow_missing_exp_from: Vec<String>,
 
     /// Buckets and prefixes this role can access.
     #[serde(default)]
@@ -164,8 +176,8 @@ where
         Many(Vec<String>),
     }
     // `Option` so an explicit `null` (e.g. legacy `required_audience: null`)
-    // maps to "unrestricted", matching the old `Option<String>` behavior
-    // instead of failing to parse.
+    // parses as an empty list — which accepts no token — rather than failing
+    // to parse; config validation is what reports it.
     Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
         None => vec![],
         Some(OneOrMany::One(s)) => vec![s],
