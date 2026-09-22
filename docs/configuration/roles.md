@@ -135,7 +135,7 @@ actions = ["get_object", "head_object", "put_object", "list_bucket"]
 
 A user with `sub = "alice"` receives credentials scoped to `bucket = "alice"`. Any string claim from the JWT can be referenced — `{email}`, `{org}`, etc.
 
-Missing or non-string claims resolve to an empty string, which safely fails authorization.
+A claim the template names that is missing from the token, or is not a string, is an error at mint time: an empty prefix would match every key in the bucket, so an unresolvable template refuses to mint rather than widen.
 
 ### Examples
 

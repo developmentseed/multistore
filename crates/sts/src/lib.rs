@@ -170,7 +170,7 @@ pub async fn assume_role_with_web_identity<C: CredentialRegistry>(
         .unwrap_or(3600)
         .clamp(MIN_SESSION_DURATION_SECS, role.max_session_duration_secs);
 
-    let mut creds = sts::mint_temporary_credentials(&role, subject, duration, key_prefix, &claims);
+    let mut creds = sts::mint_temporary_credentials(&role, subject, duration, key_prefix, &claims)?;
 
     // Encrypt the full credentials into the session token — stateless, no storage needed
     creds.session_token = token_key.seal(&creds)?;
