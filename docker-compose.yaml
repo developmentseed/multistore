@@ -1,39 +1,44 @@
 services:
-  # ── MinIO (backing object store) ──────────────────────────────────────
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
+  # ── RustFS (backing object store) ─────────────────────────────────────
+  # MinIO no longer publishes public images; RustFS is an S3-compatible
+  # drop-in that takes the same static credentials.
+  rustfs:
+    image: rustfs/rustfs:1.0.0
     ports:
       - "9000:9000"   # S3 API
       - "9001:9001"   # Web console
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-sf", "http://localhost:9000/health"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # ── Seed MinIO with example buckets and data ──────────────────────────
-  minio-init:
-    image: minio/mc:latest
+  # ── Seed RustFS with example buckets and data ─────────────────────────
+  rustfs-init:
+    image: amazon/aws-cli:2.37.2
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
     entrypoint: /bin/sh
     command:
       - -c
       - |
-        mc alias set local http://minio:9000 minioadmin minioadmin
-        mc mb --ignore-existing local/public-data
-        mc mb --ignore-existing local/private-uploads
-        mc anonymous set download local/public-data
-        echo "Hello from s3-proxy!" | mc pipe local/public-data/hello.txt
-        echo '{"status":"ok"}' | mc pipe local/public-data/health.json
-        echo "Secret payload" | mc pipe local/private-uploads/docs/secret.txt
+        s3() { aws --endpoint-url http://rustfs:9000 s3 "$$@"; }
+        for b in public-data private-uploads; do
+          s3 ls "s3://$$b" >/dev/null 2>&1 || s3 mb "s3://$$b"
+        done
+        echo "Hello from s3-proxy!" | s3 cp - s3://public-data/hello.txt
+        echo '{"status":"ok"}' | s3 cp - s3://public-data/health.json
+        echo "Secret payload" | s3 cp - s3://private-uploads/docs/secret.txt
 
 volumes:
-  minio-data:
+  rustfs-data:
