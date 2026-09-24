@@ -1,6 +1,6 @@
 # Local Development
 
-This guide walks through setting up a full local development environment with [RustFS](https://github.com/rustfs/rustfs), an S3-compatible server, as the backing object store. (MinIO no longer publishes public images.)
+This guide walks through setting up a full local development environment with [RustFS](https://github.com/rustfs/rustfs), an S3-compatible server, as the backing object store.
 
 ## Docker Compose
 

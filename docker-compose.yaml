@@ -1,7 +1,5 @@
 services:
   # ── RustFS (backing object store) ─────────────────────────────────────
-  # MinIO no longer publishes public images; RustFS is an S3-compatible
-  # drop-in that takes the same static credentials.
   rustfs:
     image: rustfs/rustfs:1.0.0
     ports:

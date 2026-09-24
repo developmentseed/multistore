@@ -91,8 +91,6 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      # MinIO no longer publishes public images, so the backing store is RustFS,
-      # an S3-compatible server that takes the same static credentials.
       - name: Start RustFS
         run: |
           docker run -d --name rustfs \
