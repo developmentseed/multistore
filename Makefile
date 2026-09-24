@@ -24,7 +24,7 @@ clippy-fix:
 test:
 	cargo test
 
-# Run the integration suite locally: MinIO (docker compose) + the Workers
+# Run the integration suite locally: RustFS (docker compose) + the Workers
 # runtime (wrangler dev), mirroring CI. Pass extra pytest args via ARGS.
 test-integration:
 	./scripts/integration-test.sh $(ARGS)
