@@ -85,6 +85,7 @@ prefixes = ["allowed/"]
 max_session_duration_secs = 3600
 name = "GitHub Actions"
 role_id = "github-actions"
+required_audiences = ["sts.amazonaws.com"]
 subject_conditions = ["*"]
 trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
@@ -104,6 +105,7 @@ prefixes = []
 max_session_duration_secs = 3600
 name = "GitHub Actions (No Access)"
 role_id = "github-actions-no-access"
+required_audiences = ["sts.amazonaws.com"]
 subject_conditions = ["*"]
 trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",

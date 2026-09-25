@@ -120,6 +120,7 @@ prefixes = []
 max_session_duration_secs = 3600
 name = "Example User"
 role_id = "example-user"
+required_audiences = ["https://api.example.com"]
 subject_conditions = ["*"]
 trusted_oidc_issuers = [
   "https://auth.example.com",
@@ -139,6 +140,7 @@ prefixes = []
 max_session_duration_secs = 3600
 name = "GitHub Actions"
 role_id = "github-actions"
+required_audiences = ["sts.amazonaws.com"]
 subject_conditions = ["repo:developmentseed/multistore:*"]
 trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
@@ -153,6 +155,7 @@ prefixes = []
 max_session_duration_secs = 3600
 name = "Default User Access"
 role_id = "default"
+required_audiences = ["https://data.staging.source.coop"]
 subject_conditions = ["*"]
 trusted_oidc_issuers = [
   "https://auth.staging.source.coop",
@@ -177,6 +180,7 @@ prefixes = []
 max_session_duration_secs = 3600
 name = "GitHub Actions (No Access)"
 role_id = "github-actions-no-access"
+required_audiences = ["sts.amazonaws.com"]
 subject_conditions = ["repo:developmentseed/multistore:*"]
 trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
