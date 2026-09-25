@@ -4,6 +4,7 @@
 //! `web_sys::Response`, including header conversion utilities.
 
 use crate::headers::WsHeaders;
+use http::header::CACHE_CONTROL;
 use http::HeaderMap;
 use multistore::backend::ForwardResponse;
 use multistore::proxy::GatewayResponse;
@@ -29,13 +30,38 @@ pub(crate) fn response_from_proxy_result(result: ProxyResult) -> web_sys::Respon
 
 /// Convert a `ForwardResponse<web_sys::Response>` into a `web_sys::Response`
 /// for the client, preserving the backend's body stream (zero-copy).
-pub(crate) fn response_from_forward(resp: ForwardResponse<web_sys::Response>) -> web_sys::Response {
+pub(crate) fn response_from_forward(
+    mut resp: ForwardResponse<web_sys::Response>,
+) -> web_sys::Response {
+    set_no_transform(&mut resp.headers);
     let resp_init = web_sys::ResponseInit::new();
     resp_init.set_status(resp.status);
     resp_init.set_headers(&WsHeaders::from(&resp.headers).into_inner().into());
 
     web_sys::Response::new_with_opt_readable_stream_and_init(resp.body.body().as_ref(), &resp_init)
         .unwrap_or_else(|_| error_response(502, "Bad Gateway"))
+}
+
+/// Add `no-transform` to `Cache-Control` so Cloudflare passes a forwarded
+/// object body through unchanged.
+///
+/// Otherwise Cloudflare gzips compressible types (e.g. `text/*`) for clients
+/// sending `Accept-Encoding: gzip`, which strips `Content-Length` and
+/// `Accept-Ranges` from full-object responses. Backend directives are kept.
+fn set_no_transform(headers: &mut HeaderMap) {
+    let value = match headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()) {
+        Some(v)
+            if v.split(',')
+                .any(|d| d.trim().eq_ignore_ascii_case("no-transform")) =>
+        {
+            return
+        }
+        Some(v) if !v.trim().is_empty() => format!("{v}, no-transform"),
+        _ => "no-transform".to_string(),
+    };
+    if let Ok(v) = value.parse() {
+        headers.insert(CACHE_CONTROL, v);
+    }
 }
 
 /// Build a plain-text error response.
