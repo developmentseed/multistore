@@ -17,13 +17,12 @@ pub(crate) fn response_from_proxy_result(result: ProxyResult) -> web_sys::Respon
     resp_init.set_headers(&WsHeaders::from(&result.headers).into_inner().into());
 
     match result.body {
-        ProxyResponseBody::Empty => {
-            web_sys::Response::new_with_opt_str_and_init(None, &resp_init).unwrap()
-        }
+        ProxyResponseBody::Empty => web_sys::Response::new_with_opt_str_and_init(None, &resp_init)
+            .unwrap_or_else(|_| error_response(500, "Internal Server Error")),
         ProxyResponseBody::Bytes(bytes) => {
             let uint8 = js_sys::Uint8Array::from(bytes.as_ref());
             web_sys::Response::new_with_opt_buffer_source_and_init(Some(&uint8), &resp_init)
-                .unwrap()
+                .unwrap_or_else(|_| error_response(500, "Internal Server Error"))
         }
     }
 }
@@ -69,7 +68,7 @@ pub(crate) fn error_response(status: u16, message: &str) -> web_sys::Response {
     let init = web_sys::ResponseInit::new();
     init.set_status(status);
     web_sys::Response::new_with_opt_str_and_init(Some(message), &init)
-        .unwrap_or_else(|_| web_sys::Response::new().unwrap())
+        .unwrap_or_else(|_| web_sys::Response::new().expect("Response::new() cannot fail"))
 }
 
 /// Extension trait for converting a [`GatewayResponse`] into a `web_sys::Response`.

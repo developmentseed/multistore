@@ -220,7 +220,8 @@ fn subject_matches(subject: &str, pattern: &str) -> bool {
     }
 
     // Last part must be a suffix
-    let last = parts.last().unwrap();
+    // `split` always yields at least one element.
+    let last = parts.last().copied().unwrap_or("");
     if !last.is_empty() {
         return remaining.ends_with(last);
     }
