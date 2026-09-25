@@ -60,6 +60,32 @@ fn new_fixed_length_stream(
     }
 }
 
+/// Observe the request-body pipe so its failure reason reaches the logs instead
+/// of being discarded.
+///
+/// Spawns rather than awaits: `forward` must return as soon as the outbound
+/// response headers arrive, and the pipe is still driven by that fetch's
+/// backpressure. The spawned task only observes a promise — it performs no I/O
+/// of its own and does not extend the request's lifetime.
+///
+/// The rejection is the only place the real cause is visible — the inbound body
+/// ending short of, or running past, the declared `Content-Length` (either errors
+/// the `FixedLengthStream`), the inbound stream itself erroring, or the outbound
+/// fetch cancelling `readable`. Downstream all of these look identical: a
+/// truncated subrequest body and an origin that hangs up without responding.
+fn log_pipe_rejection(pipe: js_sys::Promise, declared_len: u64) {
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(err) = wasm_bindgen_futures::JsFuture::from(pipe).await {
+            tracing::warn!(
+                declared_content_length = declared_len,
+                error = ?err,
+                "request body pipe failed; the outbound body is truncated and the \
+                 origin will likely close without responding"
+            );
+        }
+    });
+}
+
 impl ProxyBackend for WorkerBackend {
     type ResponseBody = web_sys::Response;
     type Body = JsBody;
@@ -104,13 +130,18 @@ impl ProxyBackend for WorkerBackend {
                         let transform: &web_sys::TransformStream = fls.as_ref();
                         // The outbound fetch consuming `readable` pulls the body
                         // through the transform; the pipe is driven by that
-                        // backpressure, so it streams rather than buffers. The
-                        // returned promise is intentionally dropped: a pipe
-                        // failure (e.g. the client sending fewer/more bytes than
-                        // Content-Length, which errors the FixedLengthStream)
-                        // also errors `readable`, so the awaited outbound fetch
-                        // fails and the error surfaces there.
-                        let _ = stream.pipe_to(&transform.writable());
+                        // backpressure, so it streams rather than buffers.
+                        //
+                        // The pipe's rejection is logged rather than discarded.
+                        // It used to be dropped on the reasoning that a pipe
+                        // failure also errors `readable`, so the awaited outbound
+                        // fetch would surface it. In practice it does not: the
+                        // origin sees a truncated request, closes without
+                        // replying, and the runtime turns that into a
+                        // Cloudflare-minted `error code: 520` carrying no
+                        // diagnostic — no origin request id, no error document.
+                        // The reason the body pipe failed is then unrecoverable.
+                        log_pipe_rejection(stream.pipe_to(&transform.writable()), len);
                         init.set_body(&transform.readable());
                     }
                     None => init.set_body(stream),
