@@ -11,7 +11,7 @@
 use multistore::error::ProxyError;
 use multistore::middleware::{DispatchContext, Middleware, Next};
 use multistore::route_handler::HandlerAction;
-use multistore::types::BucketConfig;
+use multistore::types::{BackendType, BucketConfig};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -82,8 +82,8 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         if config.option("auth_type") != Some("oidc") {
             return Ok(None);
         }
-        match config.backend_type.as_str() {
-            "s3" => self.resolve_aws(config).await.map(Some),
+        match config.backend_type {
+            BackendType::S3 => self.resolve_aws(config).await.map(Some),
             other => Err(ProxyError::ConfigError(format!(
                 "OIDC backend auth not yet supported for backend_type '{other}'"
             ))),
@@ -99,9 +99,9 @@ impl<H: HttpExchange> Middleware for AwsBackendAuth<H> {
     ) -> Result<HandlerAction, ProxyError> {
         if let Some(bucket_config) = ctx.bucket_config.take() {
             if bucket_config.option("auth_type") == Some("oidc") {
-                match bucket_config.backend_type.as_str() {
-                    "s3" => {
-                        let options = self.resolve_aws(&bucket_config).await?;
+                match bucket_config.backend_type {
+                    BackendType::S3 => {
+                        let options = self.resolve_aws(bucket_config).await?;
                         ctx.bucket_config = Some(Cow::Owned(BucketConfig {
                             backend_options: options,
                             ..bucket_config.into_owned()
@@ -230,7 +230,7 @@ mod tests {
         opts.insert("region".into(), "us-east-1".into());
         BucketConfig {
             name: "test".into(),
-            backend_type: "s3".into(),
+            backend_type: BackendType::S3,
             backend_prefix: None,
             anonymous_access: false,
             allowed_roles: vec![],
@@ -249,7 +249,7 @@ mod tests {
         opts.insert("bucket_name".into(), "my-bucket".into());
         BucketConfig {
             name: "test".into(),
-            backend_type: "s3".into(),
+            backend_type: BackendType::S3,
             backend_prefix: None,
             anonymous_access: false,
             allowed_roles: vec![],

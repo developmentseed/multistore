@@ -29,6 +29,7 @@ skip_signature = "true"
 role_id = "github-actions"
 name = "GitHub Actions"
 trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
+required_audiences = ["sts.amazonaws.com"]
 subject_conditions = ["repo:developmentseed/multistore:*"]
 max_session_duration_secs = 3600
 
@@ -42,6 +43,7 @@ actions = ["get_object", "head_object", "list_bucket"]
 role_id = "default"
 name = "Source Cooperative User"
 trusted_oidc_issuers = ["https://auth.staging.source.coop"]
+required_audiences = ["https://data.staging.source.coop"]
 subject_conditions = ["*"]
 max_session_duration_secs = 3600
 
@@ -65,5 +67,6 @@ actions = [
 role_id = "github-actions-no-access"
 name = "GitHub Actions (No Access)"
 trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
+required_audiences = ["sts.amazonaws.com"]
 subject_conditions = ["repo:alukach/not-this-repo:*"]
 max_session_duration_secs = 3600

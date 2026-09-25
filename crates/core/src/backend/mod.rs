@@ -168,47 +168,34 @@ impl StoreBuilder {
 /// an HTTP connector), then call [`StoreBuilder::build`] or
 /// [`StoreBuilder::build_signer`].
 pub fn create_builder(config: &BucketConfig) -> Result<StoreBuilder, ProxyError> {
-    let backend_type = config.parsed_backend_type().ok_or_else(|| {
-        ProxyError::ConfigError(format!(
-            "unsupported backend_type: '{}'",
-            config.backend_type
-        ))
-    })?;
+    /// Apply every `backend_options` entry whose key the provider recognizes.
+    /// A macro rather than a fn because each builder has its own config-key type.
+    macro_rules! with_options {
+        ($builder:expr) => {{
+            let mut b = $builder;
+            for (k, v) in &config.backend_options {
+                if let Ok(key) = k.parse() {
+                    b = b.with_config(key, v);
+                }
+            }
+            b
+        }};
+    }
 
-    match backend_type {
-        BackendType::S3 => {
-            let mut b = AmazonS3Builder::new();
-            for (k, v) in &config.backend_options {
-                if let Ok(key) = k.parse() {
-                    b = b.with_config(key, v);
-                }
-            }
-            Ok(StoreBuilder::S3(b))
-        }
+    match config.backend_type {
+        BackendType::S3 => Ok(StoreBuilder::S3(with_options!(AmazonS3Builder::new()))),
         #[cfg(feature = "azure")]
-        BackendType::Azure => {
-            let mut b = MicrosoftAzureBuilder::new();
-            for (k, v) in &config.backend_options {
-                if let Ok(key) = k.parse() {
-                    b = b.with_config(key, v);
-                }
-            }
-            Ok(StoreBuilder::Azure(b))
-        }
+        BackendType::Azure => Ok(StoreBuilder::Azure(with_options!(
+            MicrosoftAzureBuilder::new()
+        ))),
         #[cfg(not(feature = "azure"))]
         BackendType::Azure => Err(ProxyError::ConfigError(
             "Azure backend support not enabled (requires 'azure' feature)".into(),
         )),
         #[cfg(feature = "gcp")]
-        BackendType::Gcs => {
-            let mut b = GoogleCloudStorageBuilder::new();
-            for (k, v) in &config.backend_options {
-                if let Ok(key) = k.parse() {
-                    b = b.with_config(key, v);
-                }
-            }
-            Ok(StoreBuilder::Gcs(b))
-        }
+        BackendType::Gcs => Ok(StoreBuilder::Gcs(with_options!(
+            GoogleCloudStorageBuilder::new()
+        ))),
         #[cfg(not(feature = "gcp"))]
         BackendType::Gcs => Err(ProxyError::ConfigError(
             "GCS backend support not enabled (requires 'gcp' feature)".into(),

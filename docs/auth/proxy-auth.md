@@ -80,8 +80,10 @@ When a client calls `AssumeRoleWithWebIdentity`:
 3. The proxy fetches the issuer's JWKS endpoint and verifies the JWT signature (RS256)
 4. The proxy evaluates the trust policy:
    - **Issuer**: must be in the role's `trusted_oidc_issuers`
-   - **Audience**: if the role's `required_audiences` is non-empty, the token's `aud` claim must match at least one of the accepted values
-   - **Subject**: the token's `sub` claim must match at least one of the role's `subject_conditions` (supports `*` glob wildcards)
+   - **Token type**: if the header carries `typ`, it must be `JWT`
+   - **Audience**: the token's `aud` claim must match at least one of the role's `required_audiences`; a role with none accepts no token
+   - **Expiry**: the token must carry `exp`, unless its issuer is in the role's `allow_missing_exp_from`
+   - **Subject**: the token's `sub` claim must match at least one of the role's `subject_conditions` (supports `*` glob wildcards); a role with none accepts no subject
 5. The proxy mints temporary credentials scoped to the role's `allowed_scopes`
 6. If `SESSION_TOKEN_KEY` is configured, the credentials are AES-256-GCM encrypted into the session token (see [Sealed Session Tokens](./sealed-tokens))
 7. The proxy returns the credentials in an XML response matching the AWS STS format
