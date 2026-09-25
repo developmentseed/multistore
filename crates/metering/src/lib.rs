@@ -32,11 +32,8 @@ use multistore::api::response::ErrorResponse;
 use multistore::error::ProxyError;
 use multistore::maybe_send::{MaybeSend, MaybeSync};
 use multistore::middleware::{CompletedRequest, DispatchContext, Middleware, Next};
-use multistore::route_handler::{HandlerAction, ProxyResponseBody, ProxyResult};
+use multistore::route_handler::{HandlerAction, ProxyResult};
 use multistore::types::{ResolvedIdentity, S3Operation};
-
-use bytes::Bytes;
-use http::HeaderMap;
 
 /// A completed operation's metadata, passed to [`UsageRecorder::record_operation`].
 pub struct UsageEvent<'a> {
@@ -161,13 +158,7 @@ impl<Q: QuotaChecker, U: UsageRecorder> Middleware for MeteringMiddleware<Q, U> 
         {
             tracing::warn!(bucket = bucket_name, "quota exceeded, returning 429");
             let xml = ErrorResponse::slow_down(ctx.request_id).to_xml();
-            let mut headers = HeaderMap::new();
-            headers.insert("content-type", "application/xml".parse().unwrap());
-            return Ok(HandlerAction::Response(ProxyResult {
-                status: 429,
-                headers,
-                body: ProxyResponseBody::Bytes(Bytes::from(xml)),
-            }));
+            return Ok(HandlerAction::Response(ProxyResult::xml(429, xml)));
         }
 
         next.run(ctx).await

@@ -106,7 +106,7 @@ async fn fetch(req: web_sys::Request, env: Env, _ctx: Context) -> Result<web_sys
 
     // Parse request metadata and extract the body stream (zero-copy).
     let (mut parts, mut js_body) =
-        RequestParts::from_web_sys(&req).map_err(|e| worker::Error::RustError(e))?;
+        RequestParts::from_web_sys(&req).map_err(worker::Error::RustError)?;
 
     // AWS SDKs send STS AssumeRoleWithWebIdentity as a form-encoded POST body
     // rather than query parameters; collect it so the STS handler sees it.

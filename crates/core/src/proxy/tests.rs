@@ -289,9 +289,18 @@ fn delete_forward_includes_user_agent_header() {
 }
 
 #[test]
+fn invalid_user_agent_is_rejected_at_configuration() {
+    // A newline is not a valid header value. It must be rejected when the
+    // gateway is configured, not panic on the first forwarded request.
+    assert!(gateway().with_user_agent("bad\nagent").is_err());
+}
+
+#[test]
 fn custom_user_agent_is_used_in_forward() {
     run(async {
-        let gw = gateway().with_user_agent("myapp/1.0 multistore/0.2.0");
+        let gw = gateway()
+            .with_user_agent("myapp/1.0 multistore/0.2.0")
+            .expect("valid user agent");
         let headers = HeaderMap::new();
         let action = gw
             .resolve_request(Method::GET, "/test-bucket/key.txt", None, &headers, None)
