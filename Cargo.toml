@@ -105,10 +105,10 @@ console_error_panic_hook = "0.1.7"
 lambda_http = "0.13"
 
 # Internal crates
-multistore = { path = "crates/core", version = "0.7.3" } # x-release-please-version
-multistore-static-config = { path = "crates/static-config", version = "0.7.3" } # x-release-please-version
-multistore-sts = { path = "crates/sts", version = "0.7.3" } # x-release-please-version
-multistore-metering = { path = "crates/metering", version = "0.7.3" } # x-release-please-version
-multistore-cf-workers = { path = "crates/cf-workers", version = "0.7.3" } # x-release-please-version
-multistore-oidc-provider = { path = "crates/oidc-provider", version = "0.7.3" } # x-release-please-version
-multistore-path-mapping = { path = "crates/path-mapping", version = "0.7.3" } # x-release-please-version
+multistore = { path = "crates/core", version = "0.7.2" } # x-release-please-version
+multistore-static-config = { path = "crates/static-config", version = "0.7.2" } # x-release-please-version
+multistore-sts = { path = "crates/sts", version = "0.7.2" } # x-release-please-version
+multistore-metering = { path = "crates/metering", version = "0.7.2" } # x-release-please-version
+multistore-cf-workers = { path = "crates/cf-workers", version = "0.7.2" } # x-release-please-version
+multistore-oidc-provider = { path = "crates/oidc-provider", version = "0.7.2" } # x-release-please-version
+multistore-path-mapping = { path = "crates/path-mapping", version = "0.7.2" } # x-release-please-version
