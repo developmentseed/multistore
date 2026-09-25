@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.0](https://github.com/developmentseed/multistore/compare/v0.7.2...v1.0.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sts:** a role must set required_audiences and subject_conditions (use ["*"] to accept any subject); RoleConfig gains allow_missing_exp_from, which struct-literal constructors must add.
+
+### Features
+
+* **sts:** fail closed on empty trust fields, check token type, require exp, log successes ([#146](https://github.com/developmentseed/multistore/issues/146)) ([8c86e73](https://github.com/developmentseed/multistore/commit/8c86e73e8bf4b00635db15cb6b307a9a41d2f4b2))
+
+
+### Bug Fixes
+
+* **cf-workers:** mark forwarded object responses no-transform ([#150](https://github.com/developmentseed/multistore/issues/150)) ([662314b](https://github.com/developmentseed/multistore/commit/662314b3cf6251fc1b7fdb135bdeff367a689322))
+
 ## [0.7.2](https://github.com/developmentseed/multistore/compare/v0.7.1...v0.7.2) (2026-07-28)
 
 
