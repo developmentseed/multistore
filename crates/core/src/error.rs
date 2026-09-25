@@ -154,9 +154,16 @@ impl ProxyError {
             other => other.to_string(),
         }
     }
+}
 
-    /// Convert an `object_store::Error` into a `ProxyError`.
-    pub fn from_object_store_error(e: object_store::Error) -> Self {
+/// Classify an `object_store` failure into the S3 error the client should see.
+///
+/// `NotFound`, `Precondition`, and `NotModified` map to their S3 equivalents
+/// (404 `NoSuchKey`, 412, 304). Everything else is a 503 `BackendError`
+/// carrying the store's message, which [`ProxyError::safe_message`] hides
+/// from clients. Lets call sites use `?` directly on `object_store` results.
+impl From<object_store::Error> for ProxyError {
+    fn from(e: object_store::Error) -> Self {
         match e {
             object_store::Error::NotFound { path, .. } => Self::NoSuchKey(path),
             object_store::Error::Precondition { .. } => Self::PreconditionFailed,
@@ -180,6 +187,43 @@ mod tests {
         let msg = err.safe_message();
         assert_ne!(msg, "Internal server error");
         assert!(msg.contains("InvalidIdentityToken"), "got: {msg}");
+    }
+
+    #[test]
+    fn object_store_errors_classify_to_s3_equivalents() {
+        let not_found = object_store::Error::NotFound {
+            path: "a/b.txt".into(),
+            source: "gone".into(),
+        };
+        assert!(matches!(ProxyError::from(not_found), ProxyError::NoSuchKey(p) if p == "a/b.txt"));
+
+        let precondition = object_store::Error::Precondition {
+            path: "a/b.txt".into(),
+            source: "etag mismatch".into(),
+        };
+        assert!(matches!(
+            ProxyError::from(precondition),
+            ProxyError::PreconditionFailed
+        ));
+
+        let not_modified = object_store::Error::NotModified {
+            path: "a/b.txt".into(),
+            source: "same".into(),
+        };
+        assert!(matches!(
+            ProxyError::from(not_modified),
+            ProxyError::NotModified
+        ));
+
+        let other = object_store::Error::Generic {
+            store: "S3",
+            source: "boom".into(),
+        };
+        let err = ProxyError::from(other);
+        assert!(matches!(err, ProxyError::BackendError(_)));
+        assert_eq!(err.status_code(), 503);
+        // 5xx detail stays out of the client-facing message.
+        assert_eq!(err.safe_message(), "Service unavailable");
     }
 
     #[test]
