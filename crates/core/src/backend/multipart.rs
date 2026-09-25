@@ -7,7 +7,7 @@
 //! CompleteMultipartUpload, AbortMultipartUpload) and batch delete
 //! (DeleteObjects).
 
-use crate::backend::request_signer::S3RequestSigner;
+use crate::backend::request_signer::{header_value, S3RequestSigner};
 use crate::error::ProxyError;
 use crate::types::{BucketConfig, S3Operation};
 use http::{HeaderMap, Method};
@@ -137,7 +137,7 @@ pub(crate) fn sign_s3_request(
         } else {
             host.to_string()
         };
-        headers.insert("host", host_header.parse().unwrap());
+        headers.insert("host", header_value("host", &host_header)?);
     }
 
     Ok(())

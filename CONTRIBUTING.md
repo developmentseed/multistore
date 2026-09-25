@@ -17,14 +17,20 @@ cargo check
 # Check (WASM)
 cargo check -p multistore-cf-workers --target wasm32-unknown-unknown
 
+# Lint (WASM) — the Workers crates are not in `default-members`, so lint them explicitly
+cargo clippy -p multistore-cf-workers -p multistore-cf-workers-example --target wasm32-unknown-unknown -- -D warnings
+
 # Unit + doc tests
 cargo test
 
 # Integration tests (RustFS via docker compose behind wrangler dev; mirrors CI)
 make test-integration
 ```
+### Lints and MSRV
 
-`Cargo.lock` is committed and CI runs `cargo check --locked`, so commit lockfile changes alongside any dependency change. The release PR bumps the workspace members' entries in `Cargo.lock` itself (see `release-please-config.json`), so a release never leaves the lockfile stale.
+Lint levels live in `[workspace.lints]` in the root `Cargo.toml`; every crate opts in with `[lints] workspace = true`. Beyond clippy's defaults the workspace warns on `missing_docs` (document every `pub` item) and `clippy::unwrap_used` (return an error, or use `expect` with a message that states the invariant). Tests are exempt from the unwrap lint via `clippy.toml`. CI runs clippy with `-D warnings`, so a new warning fails the build.
+
+The minimum supported Rust version is declared as `rust-version` in the root `Cargo.toml`. It is set by the dependency tree; raise it only when a dependency forces it.
 
 ## Release Process
 
@@ -49,6 +55,8 @@ When that PR is merged, release-please creates a GitHub release, which triggers 
 2. Patches the workspace version in `Cargo.toml`
 3. Dry-runs all crates to catch packaging errors
 4. Publishes all crates to crates.io using OIDC trusted publishing
+
+`Cargo.lock` is committed and CI runs `cargo check --locked`, so commit lockfile changes alongside any dependency change. The release PR bumps the workspace members' entries in `Cargo.lock` itself (see `release-please-config.json`), so a release never leaves the lockfile stale.
 
 ### Pre-releases
 

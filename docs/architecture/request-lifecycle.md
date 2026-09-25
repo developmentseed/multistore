@@ -162,8 +162,10 @@ The default value is `multistore/{version}`, where `{version}` is derived from t
 
 ```rust
 let gateway = ProxyGateway::new(backend, bucket_registry, cred_registry, domain)
-    .with_user_agent("myapp/1.0 multistore/0.4.0");
+    .with_user_agent("myapp/1.0 multistore/0.4.0")?;
 ```
+
+`with_user_agent` validates the value up front and returns `ProxyError::ConfigError` if it is not a legal HTTP header value, so a bad setting fails at startup rather than on the first forwarded request.
 
 This is useful for backend access log analysis and debugging.
 

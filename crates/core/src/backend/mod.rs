@@ -86,8 +86,11 @@ pub trait ProxyBackend: Clone + MaybeSend + MaybeSync + 'static {
 
 /// Response from a raw HTTP request to a backend.
 pub struct RawResponse {
+    /// HTTP status code from the backend.
     pub status: u16,
+    /// Response headers from the backend.
     pub headers: HeaderMap,
+    /// The fully buffered response body.
     pub body: Bytes,
 }
 
@@ -113,9 +116,12 @@ pub struct ForwardResponse<S> {
 /// connector), then call [`build`](Self::build) or
 /// [`build_signer`](Self::build_signer).
 pub enum StoreBuilder {
+    /// Amazon S3 or an S3-compatible store.
     S3(AmazonS3Builder),
+    /// Azure Blob Storage.
     #[cfg(feature = "azure")]
     Azure(MicrosoftAzureBuilder),
+    /// Google Cloud Storage.
     #[cfg(feature = "gcp")]
     Gcs(GoogleCloudStorageBuilder),
 }
