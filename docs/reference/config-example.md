@@ -102,6 +102,7 @@ actions = [
 role_id = "user-role"
 name = "User Role"
 trusted_oidc_issuers = ["https://auth.example.com"]
+required_audiences = ["s3proxy.example.com"]
 subject_conditions = ["*"]                  # Any subject
 max_session_duration_secs = 3600
 
@@ -116,6 +117,7 @@ actions = ["get_object", "head_object", "put_object", "list_bucket"]
 role_id = "ci-readonly"
 name = "CI Read-Only Role"
 trusted_oidc_issuers = ["https://token.actions.githubusercontent.com"]
+required_audiences = ["sts.s3proxy.example.com"]
 subject_conditions = ["repo:myorg/*"]       # Any repo in the org
 max_session_duration_secs = 1800            # 30 minutes
 

@@ -34,8 +34,9 @@ actions = ["get_object", "head_object"]
 | `role_id` | string | Yes | Identifier used as the `RoleArn` in STS requests |
 | `name` | string | Yes | Human-readable display name |
 | `trusted_oidc_issuers` | string[] | Validated as required | OIDC provider URLs whose tokens are accepted. Deserializes fine when absent, but config validation rejects a role with no issuers (it could never accept a token). |
-| `required_audiences` | string \| string[] | No | Accepted `aud` claim values. A token passes if its `aud` matches any entry; empty or omitted means no audience restriction. Accepts a single string or a list. The legacy `required_audience` key (single string) is still accepted for backward compatibility — set one key or the other, not both. |
-| `subject_conditions` | string[] | No | Glob patterns matched against the `sub` claim. When omitted or empty, the subject check is skipped entirely and all subjects match. |
+| `required_audiences` | string \| string[] | Validated as required | Accepted `aud` claim values. A token passes if its `aud` matches any entry. Empty or omitted accepts no token — the audience is what keeps a token minted for another service from being exchanged here — and config validation rejects the role. Accepts a single string or a list. The legacy `required_audience` key (single string) is still accepted for backward compatibility — set one key or the other, not both. |
+| `subject_conditions` | string[] | Validated as required | Glob patterns matched against the `sub` claim. Empty or omitted accepts no subject, and config validation rejects the role; to accept every subject, say so with `"*"`. |
+| `allow_missing_exp_from` | string[] | No | Issuers whose tokens may omit `exp` because the host tracks their validity itself — its own long-lived API keys with server-side revocation, say. Tokens from every other issuer must carry `exp`. |
 | `max_session_duration_secs` | integer | Yes | Maximum session lifetime granted by this role |
 | `allowed_scopes` | AccessScope[] | Yes | Buckets, prefixes, and actions granted |
 
@@ -46,8 +47,10 @@ When a client calls `AssumeRoleWithWebIdentity`, the proxy evaluates the JWT aga
 1. **Issuer** — The JWT's `iss` claim must match one of `trusted_oidc_issuers`
 2. **Algorithm** — Only RS256 is supported
 3. **Signature** — Verified against the issuer's JWKS (fetched and cached)
-4. **Audience** — If `required_audiences` is non-empty, the JWT's `aud` claim must match at least one of the accepted values
-5. **Subject** — If `subject_conditions` is non-empty, the JWT's `sub` claim must match at least one pattern. If it is empty (or omitted), the subject check is skipped and all subjects pass.
+4. **Token type** — If the JWT header carries `typ`, it must be `JWT`; access tokens (`at+jwt`) and other typed tokens are not identity tokens
+5. **Audience** — The JWT's `aud` claim must match at least one of `required_audiences`; a role with none accepts no token
+6. **Expiry** — The JWT must carry `exp` (validated with 60 seconds of clock skew), unless its issuer is listed in `allow_missing_exp_from`
+7. **Subject** — The JWT's `sub` claim must match at least one of `subject_conditions`; a role with none accepts no subject
 
 If any check fails, the STS request returns an error.
 
@@ -64,7 +67,7 @@ subject_conditions = [
 ]
 ```
 
-The `sub` claim only needs to match one of the patterns. If `subject_conditions` is omitted or left empty, the subject check is skipped entirely and every subject is accepted.
+The `sub` claim only needs to match one of the patterns. An empty list matches nothing — "any subject" is written `"*"`, so that a role which forgot its conditions fails closed rather than open.
 
 ## Session Duration
 
@@ -132,7 +135,7 @@ actions = ["get_object", "head_object", "put_object", "list_bucket"]
 
 A user with `sub = "alice"` receives credentials scoped to `bucket = "alice"`. Any string claim from the JWT can be referenced — `{email}`, `{org}`, etc.
 
-Missing or non-string claims resolve to an empty string, which safely fails authorization.
+A claim the template names that is missing from the token, or is not a string, is an error at mint time: an empty prefix would match every key in the bucket, so an unresolvable template refuses to mint rather than widen.
 
 ### Examples
 

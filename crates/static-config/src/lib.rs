@@ -69,6 +69,18 @@ impl StaticConfig {
                     role.role_id
                 ));
             }
+            if role.required_audiences.is_empty() {
+                errors.push(format!(
+                    "role {:?} has no required_audiences (will never accept a token)",
+                    role.role_id
+                ));
+            }
+            if role.subject_conditions.is_empty() {
+                errors.push(format!(
+                    "role {:?} has no subject_conditions (will never accept a token; use \"*\" for any subject)",
+                    role.role_id
+                ));
+            }
         }
 
         // Check credentials
@@ -284,8 +296,9 @@ mod tests {
                 role_id: "my-role".into(),
                 name: "My Role".into(),
                 trusted_oidc_issuers: vec!["https://issuer.example.com".into()],
-                required_audiences: vec![],
-                subject_conditions: vec![],
+                required_audiences: vec!["my-audience".into()],
+                subject_conditions: vec!["*".into()],
+                allow_missing_exp_from: vec![],
                 allowed_scopes: vec![],
                 max_session_duration_secs: 3600,
             }],
@@ -356,6 +369,16 @@ mod tests {
         config.roles[0].trusted_oidc_issuers.clear();
         let err = config.validate().unwrap_err().to_string();
         assert!(err.contains("no trusted_oidc_issuers"), "{}", err);
+    }
+
+    #[test]
+    fn test_empty_audiences_and_subject_conditions_are_rejected() {
+        let mut config = valid_config();
+        config.roles[0].required_audiences.clear();
+        config.roles[0].subject_conditions.clear();
+        let err = config.validate().unwrap_err().to_string();
+        assert!(err.contains("no required_audiences"), "{}", err);
+        assert!(err.contains("no subject_conditions"), "{}", err);
     }
 
     #[test]

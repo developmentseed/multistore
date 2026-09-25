@@ -122,12 +122,12 @@ fn rsa_public_key_from_components(n: &str, e: &str) -> Result<RsaPublicKey, Prox
 
 /// Whether a token's `aud` claim is acceptable for a set of accepted audiences.
 ///
-/// An empty `accepted` set means no audience restriction (always allowed). The
-/// `aud` claim may be a single string or an array; it passes if any of its
-/// values is in `accepted`.
+/// An empty `accepted` set accepts nothing: a role with no audience would take
+/// a token minted for any other service. The `aud` claim may be a single
+/// string or an array; it passes if any of its values is in `accepted`.
 fn audience_allowed(aud_claim: Option<&serde_json::Value>, accepted: &[String]) -> bool {
     if accepted.is_empty() {
-        return true;
+        return false;
     }
     match aud_claim {
         Some(serde_json::Value::String(aud)) => accepted.iter().any(|a| a == aud),
@@ -184,10 +184,40 @@ pub fn verify_token(
             ProxyError::InvalidOidcToken(format!("JWT signature verification failed: {}", e))
         })?;
 
-    // Decode and validate claims
     let claims = decode_jwt_segment(payload_b64)?;
+    validate_claims(
+        &header,
+        &claims,
+        issuer,
+        role,
+        chrono::Utc::now().timestamp(),
+    )?;
+    Ok(claims)
+}
 
-    // Validate issuer
+/// Validate a signature-verified token's header and claims against `role`.
+///
+/// Kept apart from signature verification so every rule here is testable
+/// without a key pair; `verify_token` calls it once the signature checks out.
+fn validate_claims(
+    header: &serde_json::Value,
+    claims: &serde_json::Value,
+    issuer: &str,
+    role: &RoleConfig,
+    now: i64,
+) -> Result<(), ProxyError> {
+    // A token that says what it is must say it is a JWT. Access tokens
+    // (`at+jwt`) and other typed tokens are not identity tokens, whoever
+    // signed them.
+    if let Some(typ) = header.get("typ").and_then(|v| v.as_str()) {
+        if !typ.eq_ignore_ascii_case("JWT") {
+            return Err(ProxyError::InvalidOidcToken(format!(
+                "unsupported token type: {}",
+                typ
+            )));
+        }
+    }
+
     let token_issuer = claims.get("iss").and_then(|v| v.as_str()).unwrap_or("");
     if token_issuer != issuer {
         return Err(ProxyError::InvalidOidcToken(format!(
@@ -196,7 +226,6 @@ pub fn verify_token(
         )));
     }
 
-    // Validate audience if restricted.
     if !audience_allowed(claims.get("aud"), &role.required_audiences) {
         return Err(ProxyError::InvalidOidcToken(format!(
             "audience mismatch: expected one of {:?}",
@@ -204,13 +233,21 @@ pub fn verify_token(
         )));
     }
 
-    // Validate time-based claims with clock skew tolerance
-    let now = chrono::Utc::now().timestamp();
     const CLOCK_SKEW_SECS: i64 = 60;
 
-    if let Some(exp) = claims.get("exp").and_then(|v| v.as_i64()) {
-        if now > exp + CLOCK_SKEW_SECS {
-            return Err(ProxyError::InvalidOidcToken("token has expired".into()));
+    match claims.get("exp").and_then(|v| v.as_i64()) {
+        Some(exp) => {
+            if now > exp + CLOCK_SKEW_SECS {
+                return Err(ProxyError::InvalidOidcToken("token has expired".into()));
+            }
+        }
+        // Only an issuer the host vouches for may leave expiry to the host.
+        None => {
+            if !role.allow_missing_exp_from.iter().any(|i| i == issuer) {
+                return Err(ProxyError::InvalidOidcToken(
+                    "token has no exp claim".into(),
+                ));
+            }
         }
     }
 
@@ -222,7 +259,7 @@ pub fn verify_token(
         }
     }
 
-    Ok(claims)
+    Ok(())
 }
 
 /// In-memory cache for JWKS responses, keyed by issuer URL.
@@ -319,13 +356,85 @@ impl JwksCache {
 
 #[cfg(test)]
 mod tests {
-    use super::audience_allowed;
+    use super::{audience_allowed, validate_claims};
+    use multistore::types::RoleConfig;
     use serde_json::json;
 
+    const ISSUER: &str = "https://issuer.example";
+    const NOW: i64 = 1_700_000_000;
+
+    fn role() -> RoleConfig {
+        RoleConfig {
+            role_id: "r".into(),
+            name: "r".into(),
+            trusted_oidc_issuers: vec![ISSUER.into()],
+            required_audiences: vec!["aud".into()],
+            subject_conditions: vec!["*".into()],
+            allow_missing_exp_from: vec![],
+            allowed_scopes: vec![],
+            max_session_duration_secs: 3600,
+        }
+    }
+
+    fn claims() -> serde_json::Value {
+        json!({"iss": ISSUER, "aud": "aud", "sub": "s", "exp": NOW + 300})
+    }
+
     #[test]
-    fn empty_accepted_means_no_restriction() {
-        assert!(audience_allowed(None, &[]));
-        assert!(audience_allowed(Some(&json!("anything")), &[]));
+    fn empty_accepted_denies() {
+        assert!(!audience_allowed(None, &[]));
+        assert!(!audience_allowed(Some(&json!("anything")), &[]));
+    }
+
+    #[test]
+    fn a_well_formed_token_passes() {
+        validate_claims(&json!({"typ": "JWT"}), &claims(), ISSUER, &role(), NOW).unwrap();
+        validate_claims(&json!({}), &claims(), ISSUER, &role(), NOW).unwrap();
+    }
+
+    #[test]
+    fn a_typed_non_jwt_is_rejected() {
+        let err = validate_claims(&json!({"typ": "at+jwt"}), &claims(), ISSUER, &role(), NOW)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unsupported token type"), "{}", err);
+    }
+
+    #[test]
+    fn a_role_with_no_audience_accepts_nothing() {
+        let mut role = role();
+        role.required_audiences.clear();
+        let err = validate_claims(&json!({}), &claims(), ISSUER, &role, NOW)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("audience mismatch"), "{}", err);
+    }
+
+    #[test]
+    fn exp_is_required_unless_the_issuer_is_exempt() {
+        let mut claims = claims();
+        claims.as_object_mut().unwrap().remove("exp");
+
+        let err = validate_claims(&json!({}), &claims, ISSUER, &role(), NOW)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no exp claim"), "{}", err);
+
+        let mut exempt = role();
+        exempt.allow_missing_exp_from = vec![ISSUER.into()];
+        validate_claims(&json!({}), &claims, ISSUER, &exempt, NOW).unwrap();
+    }
+
+    #[test]
+    fn an_expired_token_is_rejected_beyond_the_skew() {
+        let mut claims = claims();
+        claims["exp"] = json!(NOW - 30);
+        validate_claims(&json!({}), &claims, ISSUER, &role(), NOW).unwrap();
+        claims["exp"] = json!(NOW - 61);
+        let err = validate_claims(&json!({}), &claims, ISSUER, &role(), NOW)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expired"), "{}", err);
     }
 
     #[test]
