@@ -54,7 +54,7 @@ fn bucket_config(with_creds: bool) -> BucketConfig {
     }
     BucketConfig {
         name: "test".into(),
-        backend_type: "s3".into(),
+        backend_type: multistore::types::BackendType::S3,
         backend_prefix: None,
         anonymous_access: !with_creds,
         allowed_roles: vec![],
