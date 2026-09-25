@@ -5,7 +5,7 @@
 
 use crate::{try_handle_sts, JwksCache, TokenKey};
 use multistore::registry::CredentialRegistry;
-use multistore::route_handler::{ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture};
+use multistore::route_handler::{ProxyResult, RequestInfo, RouteHandler};
 use multistore::router::Router;
 
 /// Handler that intercepts `AssumeRoleWithWebIdentity` STS requests.
@@ -16,18 +16,16 @@ struct StsHandler<C> {
 }
 
 impl<C: CredentialRegistry> RouteHandler for StsHandler<C> {
-    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
-        Box::pin(async move {
-            let (status, xml) = try_handle_sts(
-                req.query,
-                req.form_body,
-                &self.config,
-                &self.cache,
-                self.key.as_ref(),
-            )
-            .await?;
-            Some(ProxyResult::xml(status, xml))
-        })
+    async fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> Option<ProxyResult> {
+        let (status, xml) = try_handle_sts(
+            req.query,
+            req.form_body,
+            &self.config,
+            &self.cache,
+            self.key.as_ref(),
+        )
+        .await?;
+        Some(ProxyResult::xml(status, xml))
     }
 }
 

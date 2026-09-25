@@ -180,13 +180,14 @@ pub fn filter_response_headers(source: &http::HeaderMap) -> http::HeaderMap {
     out
 }
 
-/// The future type returned by [`RouteHandler::handle`].
+/// Boxed future used by [`ErasedRouteHandler`] to type-erase handlers.
 #[cfg(not(target_arch = "wasm32"))]
-pub type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<ProxyResult>> + Send + 'a>>;
+pub(crate) type RouteHandlerFuture<'a> =
+    Pin<Box<dyn Future<Output = Option<ProxyResult>> + Send + 'a>>;
 
-/// The future type returned by [`RouteHandler::handle`].
+/// Boxed future used by [`ErasedRouteHandler`] to type-erase handlers.
 #[cfg(target_arch = "wasm32")]
-pub type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<ProxyResult>> + 'a>>;
+pub(crate) type RouteHandlerFuture<'a> = Pin<Box<dyn Future<Output = Option<ProxyResult>> + 'a>>;
 
 /// Extracted path parameters from route matching.
 ///
@@ -412,25 +413,46 @@ impl<'a> RequestInfo<'a> {
 /// - `Some(result)` to handle the request (stops further handler checks)
 /// - `None` to pass the request to the next handler or the proxy
 ///
+/// `handle` is a native async method: implement it with `async fn` and the
+/// router boxes the future internally, the same way [`Middleware`] is erased.
+///
 /// ```rust,ignore
 /// struct HealthCheck;
 ///
 /// impl RouteHandler for HealthCheck {
-///     fn handle<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
-///         Box::pin(async move {
-///             Some(ProxyResult::json(200, r#"{"ok":true}"#))
-///         })
+///     async fn handle<'a>(&'a self, _req: &'a RequestInfo<'a>) -> Option<ProxyResult> {
+///         Some(ProxyResult::json(200, r#"{"ok":true}"#))
 ///     }
 /// }
 ///
 /// router.route("/health", HealthCheck);
 /// ```
+///
+/// [`Middleware`]: crate::middleware::Middleware
 pub trait RouteHandler: MaybeSend + MaybeSync {
     /// Handle an incoming request.
     ///
     /// Return `Some(result)` to short-circuit, or `None` to fall through
     /// to the next handler or the proxy dispatch pipeline.
+    fn handle<'a>(
+        &'a self,
+        req: &'a RequestInfo<'a>,
+    ) -> impl Future<Output = Option<ProxyResult>> + MaybeSend + 'a;
+}
+
+/// Object-safe adapter over [`RouteHandler`].
+///
+/// `RouteHandler::handle` returns `impl Future`, which makes the trait
+/// non-object-safe. The router stores `Box<dyn ErasedRouteHandler>` instead;
+/// this blanket impl boxes the future so implementors never have to.
+pub(crate) trait ErasedRouteHandler: MaybeSend + MaybeSync {
     fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a>;
+}
+
+impl<T: RouteHandler> ErasedRouteHandler for T {
+    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+        Box::pin(<T as RouteHandler>::handle(self, req))
+    }
 }
 
 #[cfg(test)]
