@@ -120,6 +120,7 @@ trusted_oidc_issuers = [
 max_session_duration_secs = 3600
 name = "GitHub Actions (configure-aws-credentials)"
 role_id = "arn:aws:iam::000000000000:role/github-actions"
+required_audiences = ["sts.amazonaws.com"]
 subject_conditions = ["*"]
 trusted_oidc_issuers = [
   "https://token.actions.githubusercontent.com",
