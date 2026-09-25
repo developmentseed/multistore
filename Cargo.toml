@@ -27,6 +27,17 @@ resolver = "2"
 version = "0.7.2"
 edition = "2021"
 license = "MIT"
+# Floor set by the dependency tree (crc-fast via object_store); verified with `cargo +1.89 check`.
+rust-version = "1.89"
+
+# Opted into per crate with `[lints] workspace = true`.
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Production code returns errors; `expect` with a message documents a real invariant.
+# Tests are exempt via `allow-unwrap-in-tests` in clippy.toml.
+unwrap_used = "warn"
 
 [workspace.dependencies]
 # Core
