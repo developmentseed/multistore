@@ -10,7 +10,7 @@ A complete, annotated configuration file showing all available options.
 # A publicly accessible S3 bucket (anonymous reads allowed)
 [[buckets]]
 name = "public-data"                    # Client-visible bucket name
-backend_type = "s3"                     # Backend provider: "s3", "az", or "gcs"
+backend_type = "s3"                     # Backend provider: "s3", "azure" (or "az"), "gcs" (or "gs")
 anonymous_access = true                 # Allow GET/HEAD/LIST without auth
 allowed_roles = []                      # No STS roles (anonymous only)
 
