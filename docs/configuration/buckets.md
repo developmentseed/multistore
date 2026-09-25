@@ -25,7 +25,7 @@ secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Client-visible bucket name |
-| `backend_type` | string | Yes | Backend provider: `"s3"`, `"az"`, or `"gcs"` |
+| `backend_type` | string | Yes | Backend provider: `"s3"`, `"azure"` (alias `"az"`), or `"gcs"` (alias `"gs"`). Any other value is a config error. |
 | `backend_prefix` | string | No | Prefix prepended to keys when forwarding to the backend |
 | `anonymous_access` | bool | Yes | Allow GET/HEAD/LIST without authentication (must be set explicitly; omitting it is a config error) |
 | `allowed_roles` | string[] | No | Role IDs that can be assumed for this bucket |

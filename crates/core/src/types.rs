@@ -1,9 +1,11 @@
 //! Shared types used across the proxy.
 
+use crate::error::ProxyError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
+use std::str::FromStr;
 
 /// Owner identity for S3 ListBuckets responses.
 #[derive(Debug, Clone, Serialize)]
@@ -20,8 +22,10 @@ pub struct BucketConfig {
     /// The virtual bucket name exposed to clients.
     pub name: String,
 
-    /// Provider type: "s3", "az", "gcs", etc.
-    pub backend_type: String,
+    /// Backend provider. In config files this is `"s3"`, `"azure"` (alias
+    /// `"az"`), or `"gcs"` (alias `"gs"`); an unknown value is rejected when
+    /// the config is parsed rather than on the first request.
+    pub backend_type: BackendType,
 
     /// Optional prefix to prepend to all keys when forwarding.
     pub backend_prefix: Option<String>,
@@ -78,32 +82,60 @@ impl fmt::Debug for BucketConfig {
 }
 
 /// Known backend provider types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serializes as the canonical lowercase name (`s3`, `azure`, `gcs`).
+/// Deserialization and [`FromStr`] also accept the short aliases `az` and `gs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BackendType {
     /// Amazon S3 or S3-compatible storage.
     S3,
     /// Azure Blob Storage.
+    #[serde(alias = "az")]
     Azure,
     /// Google Cloud Storage.
+    #[serde(alias = "gs")]
     Gcs,
 }
 
-impl BucketConfig {
-    /// Parse the `backend_type` string into a known [`BackendType`].
-    pub fn parsed_backend_type(&self) -> Option<BackendType> {
-        match self.backend_type.as_str() {
-            "s3" => Some(BackendType::S3),
-            "az" | "azure" => Some(BackendType::Azure),
-            "gcs" | "gs" => Some(BackendType::Gcs),
-            _ => None,
+impl BackendType {
+    /// The canonical config-file spelling of this backend type.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::S3 => "s3",
+            Self::Azure => "azure",
+            Self::Gcs => "gcs",
         }
     }
+}
 
+impl fmt::Display for BackendType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for BackendType {
+    type Err = ProxyError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "s3" => Ok(Self::S3),
+            "az" | "azure" => Ok(Self::Azure),
+            "gcs" | "gs" => Ok(Self::Gcs),
+            other => Err(ProxyError::ConfigError(format!(
+                "unsupported backend_type: '{other}' (expected s3, azure, or gcs)"
+            ))),
+        }
+    }
+}
+
+impl BucketConfig {
     /// Whether this is an S3 backend. Operations that go through raw signed
     /// HTTP rather than presigned URLs — multipart uploads and batch delete —
     /// are gated on this.
     pub fn is_s3_backend(&self) -> bool {
-        matches!(self.parsed_backend_type(), Some(BackendType::S3))
+        self.backend_type == BackendType::S3
     }
 
     /// Look up a value in `backend_options`.
@@ -544,6 +576,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn backend_type_parses_canonical_names_and_aliases() {
+        assert_eq!("s3".parse::<BackendType>().unwrap(), BackendType::S3);
+        assert_eq!("azure".parse::<BackendType>().unwrap(), BackendType::Azure);
+        assert_eq!("az".parse::<BackendType>().unwrap(), BackendType::Azure);
+        assert_eq!("gcs".parse::<BackendType>().unwrap(), BackendType::Gcs);
+        assert_eq!("gs".parse::<BackendType>().unwrap(), BackendType::Gcs);
+        assert!(matches!(
+            "ftp".parse::<BackendType>(),
+            Err(ProxyError::ConfigError(_))
+        ));
+    }
+
+    #[test]
+    fn backend_type_serde_accepts_aliases_and_emits_canonical_name() {
+        let parsed: BackendType = serde_json::from_str("\"az\"").unwrap();
+        assert_eq!(parsed, BackendType::Azure);
+        let parsed: BackendType = serde_json::from_str("\"gs\"").unwrap();
+        assert_eq!(parsed, BackendType::Gcs);
+        assert_eq!(
+            serde_json::to_string(&BackendType::Azure).unwrap(),
+            "\"azure\""
+        );
+        assert!(serde_json::from_str::<BackendType>("\"ftp\"").is_err());
+    }
+
+    #[test]
+    fn bucket_config_rejects_unknown_backend_type_at_parse_time() {
+        let err = serde_json::from_str::<BucketConfig>(
+            r#"{"name":"b","backend_type":"ftp","anonymous_access":true}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("ftp"), "got: {err}");
+    }
+
+    #[test]
     fn test_action() {
         let op = S3Operation::GetObject {
             bucket: "b".into(),
@@ -611,7 +678,7 @@ mod tests {
         backend_options.insert("skip_signature".to_string(), "true".to_string());
         BucketConfig {
             name: "acct:product".to_string(),
-            backend_type: "s3".to_string(),
+            backend_type: BackendType::S3,
             backend_prefix: None,
             anonymous_access: true,
             allowed_roles: vec![],

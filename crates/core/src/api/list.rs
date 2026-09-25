@@ -387,7 +387,7 @@ mod tests {
     fn make_config(backend_prefix: Option<&str>) -> BucketConfig {
         BucketConfig {
             name: "test-bucket".to_string(),
-            backend_type: "s3".to_string(),
+            backend_type: crate::types::BackendType::S3,
             backend_prefix: backend_prefix.map(|s| s.to_string()),
             anonymous_access: false,
             allowed_roles: vec![],
