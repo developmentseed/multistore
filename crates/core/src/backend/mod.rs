@@ -209,3 +209,73 @@ pub fn create_builder(config: &BucketConfig) -> Result<StoreBuilder, ProxyError>
         )),
     }
 }
+
+/// The byte length to wrap a streamed PUT body in, or `None` to forward the raw
+/// stream unsized.
+///
+/// Runtimes that stream a PUT body through without buffering need this: a bare
+/// stream body makes the Cloudflare Workers runtime send the subrequest with
+/// `Transfer-Encoding: chunked` and *drop* `Content-Length`, and an S3 origin
+/// that never learns the body size can hang up without answering at all.
+///
+/// `Content-Length` is the correct size for both body shapes, `aws-chunked`
+/// included: it counts the bytes actually placed on the wire — chunk framing and
+/// trailer included — whereas `x-amz-decoded-content-length` counts only the
+/// payload S3 reconstructs after de-chunking. Sizing the leg does not reframe
+/// the body, so the chunk framing reaches S3 untouched.
+///
+/// Returns `None` only when there is no usable `Content-Length` to size with.
+pub fn streamed_put_body_length(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn plain_put_is_sized_by_content_length() {
+        assert_eq!(
+            streamed_put_body_length(&headers(&[("content-length", "1024")])),
+            Some(1024)
+        );
+    }
+
+    /// An `aws-chunked` body must be sized too. Its `Content-Length` is the
+    /// *encoded* length — the 135-byte gap here is the chunk framing plus the
+    /// CRC32 trailer — which is exactly what goes on the wire.
+    #[test]
+    fn aws_chunked_put_is_sized_by_encoded_content_length() {
+        let h = headers(&[
+            ("content-encoding", "aws-chunked"),
+            ("content-length", "10094598"),
+            ("x-amz-decoded-content-length", "10094463"),
+            ("x-amz-trailer", "x-amz-checksum-crc32"),
+        ]);
+        assert_eq!(streamed_put_body_length(&h), Some(10094598));
+    }
+
+    #[test]
+    fn no_content_length_forwards_raw_stream() {
+        assert_eq!(streamed_put_body_length(&headers(&[])), None);
+        let chunked_only = headers(&[
+            ("content-encoding", "aws-chunked"),
+            ("x-amz-decoded-content-length", "10094463"),
+        ]);
+        assert_eq!(streamed_put_body_length(&chunked_only), None);
+    }
+}

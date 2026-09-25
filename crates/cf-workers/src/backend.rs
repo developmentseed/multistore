@@ -11,7 +11,9 @@ use crate::response::headermap_from_js;
 use bytes::Bytes;
 use http::HeaderMap;
 use multistore::backend::ForwardResponse;
-use multistore::backend::{build_signer, create_builder, ProxyBackend, RawResponse, StoreBuilder};
+use multistore::backend::{
+    build_signer, create_builder, streamed_put_body_length, ProxyBackend, RawResponse, StoreBuilder,
+};
 use multistore::error::ProxyError;
 use multistore::route_handler::ForwardRequest;
 use multistore::types::BucketConfig;
@@ -28,25 +30,6 @@ use worker::Fetch;
 /// for raw multipart operations.
 #[derive(Clone)]
 pub struct WorkerBackend;
-
-/// The byte length to wrap a streamed PUT body in, or `None` to forward the raw
-/// stream. Returns `None` for aws-chunked bodies (S3 sizes those from
-/// `x-amz-decoded-content-length`) and for bodies with no usable
-/// `Content-Length`.
-fn fixed_body_length(headers: &HeaderMap) -> Option<u64> {
-    let aws_chunked = headers
-        .get(http::header::CONTENT_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.contains("aws-chunked"))
-        .unwrap_or(false);
-    if aws_chunked {
-        return None;
-    }
-    headers
-        .get(http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok())
-}
 
 /// Build a Cloudflare `FixedLengthStream` of the given length (parts can exceed
 /// `u32::MAX`, so fall back to the BigInt constructor).
@@ -86,17 +69,24 @@ impl ProxyBackend for WorkerBackend {
 
         // For PUT: stream the body through without buffering it in WASM memory.
         // A bare `ReadableStream` body makes the Workers runtime send the
-        // subrequest with
-        // `Transfer-Encoding: chunked` and *drop* `Content-Length` — which S3
-        // rejects for a non-aws-chunked payload (it can't size the object/part),
-        // leaving the subrequest hung until the whole body streams through.
-        // Wrapping the stream in a `FixedLengthStream` makes the runtime emit a
-        // real `Content-Length`. aws-chunked bodies are sized by S3 from
-        // `x-amz-decoded-content-length` and keep their chunk framing, so those
-        // pass through raw.
+        // subrequest with `Transfer-Encoding: chunked` and *drop*
+        // `Content-Length`, leaving S3 unable to size the object/part. Wrapping
+        // the stream in a `FixedLengthStream` makes the runtime emit a real
+        // `Content-Length` instead.
+        //
+        // This applies to aws-chunked bodies too. They were previously exempted
+        // on the grounds that S3 sizes them from `x-amz-decoded-content-length`,
+        // but that only sizes the *de-chunked payload* — the HTTP leg itself was
+        // still left unsized, and an unsized leg is what an origin hangs up on
+        // without answering (surfacing as a Cloudflare-minted 520 on the
+        // worker's egress). `Content-Length` is the encoded byte count, framing
+        // and trailer included, so it sizes the leg without reframing the body:
+        // the chunk framing still reaches S3 untouched. It is forwarded
+        // *unsigned* (see `build_streaming_forward`), so changing the transfer
+        // framing cannot invalidate the SigV4 signature.
         if request.method == http::Method::PUT {
             if let Some(stream) = js_body.stream() {
-                match fixed_body_length(&request.headers) {
+                match streamed_put_body_length(&request.headers) {
                     Some(len) => {
                         let fls = new_fixed_length_stream(len).map_err(|e| {
                             ProxyError::Internal(format!("FixedLengthStream init failed: {e:?}"))
