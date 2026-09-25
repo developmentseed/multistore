@@ -18,6 +18,7 @@ use sha2::Sha256;
 /// A JSON Web Key Set (JWKS) containing one or more public keys.
 #[derive(Debug, Clone, Deserialize)]
 pub struct JwksResponse {
+    /// The keys published by the issuer.
     pub keys: Vec<JwkKey>,
 }
 
@@ -238,6 +239,10 @@ pub fn verify_token(
 /// (`Instant` panics on `wasm32-unknown-unknown`).
 type JwksEntries = Arc<Mutex<HashMap<String, (DateTime<Utc>, JwksResponse)>>>;
 
+/// TTL cache of issuer JWKS documents with negative caching of fetch failures.
+///
+/// Successful fetches are reused for `ttl`; a failed fetch is remembered for a
+/// short back-off window so a flapping issuer is not hammered on every request.
 #[derive(Clone)]
 pub struct JwksCache {
     client: reqwest::Client,
@@ -245,6 +250,13 @@ pub struct JwksCache {
     failure_ttl: Duration,
     entries: JwksEntries,
     failures: Arc<Mutex<HashMap<String, DateTime<Utc>>>>,
+}
+
+/// Lock a cache mutex, recovering the guard if a previous holder panicked.
+///
+/// The maps only hold cached data, so a poisoned lock is safe to keep using.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl JwksCache {
@@ -272,7 +284,7 @@ impl JwksCache {
 
         // Check if we recently failed for this issuer
         {
-            let failures = self.failures.lock().unwrap();
+            let failures = lock(&self.failures);
             if let Some(failed_at) = failures.get(issuer) {
                 let elapsed = Utc::now().signed_duration_since(*failed_at).num_seconds();
                 if elapsed >= 0 && (elapsed as u64) < self.failure_ttl.as_secs() {
@@ -287,26 +299,23 @@ impl JwksCache {
         // Cache miss — fetch from the network
         match fetch_jwks(&self.client, issuer).await {
             Ok(jwks) => {
-                let mut entries = self.entries.lock().unwrap();
+                let mut entries = lock(&self.entries);
                 entries.insert(issuer.to_string(), (Utc::now(), jwks.clone()));
                 // Clear any failure state on success
                 drop(entries);
-                self.failures.lock().unwrap().remove(issuer);
+                lock(&self.failures).remove(issuer);
                 Ok(jwks)
             }
             Err(e) => {
                 tracing::warn!(issuer = %issuer, error = %e, "JWKS fetch failed, backing off");
-                self.failures
-                    .lock()
-                    .unwrap()
-                    .insert(issuer.to_string(), Utc::now());
+                lock(&self.failures).insert(issuer.to_string(), Utc::now());
                 Err(e)
             }
         }
     }
 
     fn get_cached(&self, issuer: &str) -> Option<JwksResponse> {
-        let entries = self.entries.lock().unwrap();
+        let entries = lock(&self.entries);
         if let Some((fetched_at, jwks)) = entries.get(issuer) {
             let elapsed = Utc::now().signed_duration_since(*fetched_at).num_seconds();
             if elapsed >= 0 && (elapsed as u64) < self.ttl.as_secs() {

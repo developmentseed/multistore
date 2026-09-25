@@ -25,6 +25,7 @@ use tokio::net::TcpListener;
 
 /// Server configuration.
 pub struct ServerConfig {
+    /// Address and port to bind the HTTP listener to.
     pub listen_addr: SocketAddr,
     /// The base domain for virtual-hosted-style requests (e.g., "s3.example.com").
     /// If set, requests to `{bucket}.s3.example.com` use virtual-hosted style.
@@ -178,7 +179,7 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
                 return Response::builder()
                     .status(400)
                     .body(Body::from("form body too large or unreadable"))
-                    .unwrap();
+                    .expect("static 400 response is valid");
             }
         }
     } else {
@@ -207,7 +208,9 @@ async fn request_handler<R: BucketRegistry, C: CredentialRegistry>(
                 builder = builder.header(k, v);
             }
 
-            builder.body(body).unwrap()
+            builder
+                .body(body)
+                .expect("backend status and headers are already valid HTTP")
         }
     }
 }

@@ -153,7 +153,9 @@ async fn request_handler(req: Request) -> Result<Response<Body>, Error> {
                 for (k, v) in resp.headers.iter() {
                     builder = builder.header(k, v);
                 }
-                builder.body(resp.body).unwrap()
+                builder
+                    .body(resp.body)
+                    .expect("backend status and headers are already valid HTTP")
             }
         },
     )
@@ -171,5 +173,7 @@ fn build_lambda_response(result: ProxyResult) -> Response<Body> {
         builder = builder.header(key, value);
     }
 
-    builder.body(body).unwrap()
+    builder
+        .body(body)
+        .expect("gateway status and headers are already valid HTTP")
 }
