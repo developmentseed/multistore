@@ -24,6 +24,8 @@ cargo test
 make test-integration
 ```
 
+`Cargo.lock` is committed and CI runs `cargo check --locked`, so commit lockfile changes alongside any dependency change. The release PR bumps the workspace members' entries in `Cargo.lock` itself (see `release-please-config.json`), so a release never leaves the lockfile stale.
+
 ## Release Process
 
 ### Publishable Crates
