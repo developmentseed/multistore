@@ -26,6 +26,8 @@ make test-integration
 
 `Cargo.lock` is committed and CI runs `cargo check --locked`, so commit lockfile changes alongside any dependency change. The release PR bumps the workspace members' entries in `Cargo.lock` itself (see `release-please-config.json`), so a release never leaves the lockfile stale.
 
+When adding a workspace crate, give its `[workspace.dependencies]` entry a `version` pin (cargo requires one to publish a path dependency) and end the line with `# x-release-please-version`, as the existing entries do. That comment is what the release PR keys on; without it the new crate's pin is left behind at the old version.
+
 ## Release Process
 
 ### Publishable Crates
