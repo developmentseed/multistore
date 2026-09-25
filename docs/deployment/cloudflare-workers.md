@@ -9,6 +9,22 @@ The CF Workers runtime deploys the proxy to Cloudflare's edge network. It compil
 > - **Static config only** — config is supplied inline via the `PROXY_CONFIG` var
 > - **`SESSION_TOKEN_KEY` required** — Workers are stateless, so sealed tokens are the only way to persist temporary credentials
 
+## Response Handling
+
+Forwarded object responses (GET/HEAD) carry `Cache-Control: no-transform`, appended to any directives the backend returned. Without it, Cloudflare gzips compressible types such as `text/*` for clients that send `Accept-Encoding: gzip`, which strips `Content-Length` and `Accept-Ranges`, weakens the `ETag` (`W/"…"`), and breaks clients that size or split downloads from a HEAD or send `If-Match`.
+
+To trade those guarantees for edge compression (e.g. a text-only public mirror), remove the directive from the `web_sys::Response` returned by `into_web_sys()`:
+
+```rust
+let resp = gateway
+    .handle_request(&parts.as_request_info(), js_body, collect_js_body)
+    .await
+    .into_web_sys();
+resp.headers().delete("cache-control")?;
+```
+
+This drops any backend `Cache-Control` directives too; re-set the header if you need them.
+
 ## Configuration
 
 ### `wrangler.toml`
