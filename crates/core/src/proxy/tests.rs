@@ -107,13 +107,13 @@ fn test_bucket_config(name: &str) -> BucketConfig {
     // A bucket named `azure-*` resolves to a non-S3 backend so tests can
     // exercise the non-S3 rejection paths; everything else is S3.
     let backend_type = if name.starts_with("azure") {
-        "azure"
+        crate::types::BackendType::Azure
     } else {
-        "s3"
+        crate::types::BackendType::S3
     };
     BucketConfig {
         name: name.to_string(),
-        backend_type: backend_type.into(),
+        backend_type,
         backend_prefix: None,
         anonymous_access: true,
         allowed_roles: vec![],
@@ -1149,7 +1149,7 @@ fn same_s3_endpoint_matches_shared_endpoint_and_region() {
     assert!(!same_s3_endpoint(&a, &c));
 
     // A non-S3 backend is never a copy-compatible store.
-    a.backend_type = "azure".into();
+    a.backend_type = crate::types::BackendType::Azure;
     let d = test_bucket_config("dst3");
     assert!(!same_s3_endpoint(&a, &d));
 }

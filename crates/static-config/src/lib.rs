@@ -274,7 +274,7 @@ mod tests {
             owner_display_name: None,
             buckets: vec![BucketConfig {
                 name: "my-bucket".into(),
-                backend_type: "s3".into(),
+                backend_type: multistore::types::BackendType::S3,
                 backend_prefix: None,
                 anonymous_access: true,
                 allowed_roles: vec![],
