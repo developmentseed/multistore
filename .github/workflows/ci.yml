@@ -91,35 +91,36 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
-      - name: Start MinIO
+      - name: Start RustFS
         run: |
-          docker run -d --name minio \
+          docker run -d --name rustfs \
             -p 9000:9000 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data
+            -e RUSTFS_ACCESS_KEY=minioadmin \
+            -e RUSTFS_SECRET_KEY=minioadmin \
+            rustfs/rustfs:1.0.0
 
-          # Wait for MinIO to be ready
+          # Wait for RustFS to be ready
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:9000/minio/health/live > /dev/null 2>&1; then
-              echo "MinIO is ready"
+            if curl -sf http://localhost:9000/health > /dev/null 2>&1; then
+              echo "RustFS is ready"
               break
             fi
             sleep 1
           done
 
-      - name: Seed MinIO buckets
+      - name: Seed buckets
+        env:
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_DEFAULT_REGION: us-east-1
         run: |
-          curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc
-          chmod +x /usr/local/bin/mc
+          s3() { aws --endpoint-url http://localhost:9000 s3 "$@"; }
 
-          mc alias set local http://localhost:9000 minioadmin minioadmin
-          mc mb --ignore-existing local/public-data
-          mc mb --ignore-existing local/private-uploads
-          mc anonymous set download local/public-data
-          echo "Hello from s3-proxy!" | mc pipe local/public-data/hello.txt
-          echo '{"status":"ok"}' | mc pipe local/public-data/health.json
-          echo "Secret payload" | mc pipe local/private-uploads/docs/secret.txt
+          s3 mb s3://public-data
+          s3 mb s3://private-uploads
+          echo "Hello from s3-proxy!" | s3 cp - s3://public-data/hello.txt
+          echo '{"status":"ok"}' | s3 cp - s3://public-data/health.json
+          echo "Secret payload" | s3 cp - s3://private-uploads/docs/secret.txt
 
       - name: Build worker
         working-directory: examples/cf-workers

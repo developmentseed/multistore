@@ -177,7 +177,10 @@ class TestStaticCredentialWrites:
         resp = client.get_object(Bucket="private-uploads", Key=key)
         assert resp["ContentType"] == "application/json"
         assert resp["ContentDisposition"] == 'attachment; filename="report.json"'
-        assert resp["CacheControl"] == "max-age=3600"
+        # The Workers runtime appends `no-transform` to forwarded responses so
+        # Cloudflare doesn't re-encode the body; the stored directive survives.
+        directives = [d.strip() for d in resp["CacheControl"].split(",")]
+        assert directives == ["max-age=3600", "no-transform"]
 
         client.delete_object(Bucket="private-uploads", Key=key)
 
