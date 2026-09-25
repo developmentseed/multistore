@@ -84,19 +84,77 @@ impl JwtSigner {
         }
         let payload_b64 = b64.encode(payload.to_string().as_bytes());
 
-        // Sign
+        Ok(self.sign_encoded(&header_b64, &payload_b64))
+    }
+
+    /// Sign a JWT whose claims the caller supplies in full.
+    ///
+    /// For tokens whose `sub`, `jti` and expiry — or lack of one — are the
+    /// caller's to decide: a host's long-lived API keys with server-side
+    /// revocation, say. Nothing is added or checked; `sign` remains the path
+    /// for the proxy's own short-lived assertions, which it dates itself.
+    pub fn sign_claims(&self, claims: &serde_json::Value) -> Result<String, OidcProviderError> {
+        if !claims.is_object() {
+            return Err(OidcProviderError::KeyError(
+                "JWT claims must be a JSON object".into(),
+            ));
+        }
+        let b64 = &base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let header = serde_json::json!({
+            "alg": "RS256",
+            "typ": "JWT",
+            "kid": self.kid,
+        });
+        let header_b64 = b64.encode(header.to_string().as_bytes());
+        let payload_b64 = b64.encode(claims.to_string().as_bytes());
+        Ok(self.sign_encoded(&header_b64, &payload_b64))
+    }
+
+    fn sign_encoded(&self, header_b64: &str, payload_b64: &str) -> String {
+        let b64 = &base64::engine::general_purpose::URL_SAFE_NO_PAD;
         let signing_input = format!("{header_b64}.{payload_b64}");
         let signing_key = SigningKey::<Sha256>::new(self.private_key.clone());
         let signature = signing_key.sign(signing_input.as_bytes());
         let sig_b64 = b64.encode(signature.to_bytes());
-
-        Ok(format!("{signing_input}.{sig_b64}"))
+        format!("{signing_input}.{sig_b64}")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sign_claims_signs_exactly_the_claims_given() {
+        let pem = test_key_pem();
+        let signer = JwtSigner::from_pem(&pem, "test-kid".into(), 300).unwrap();
+        let claims = serde_json::json!({
+            "iss": "https://proxy.example.com",
+            "sub": "nightly-sync",
+            "jti": "my-own-id",
+            "type": "api_key"
+        });
+        let token = signer.sign_claims(&claims).unwrap();
+        let parts: Vec<&str> = token.split('.').collect();
+        assert_eq!(parts.len(), 3);
+
+        let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[1])
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).unwrap();
+        assert_eq!(payload, claims, "no claim added, none dropped");
+        assert!(payload.get("exp").is_none());
+
+        let header_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(parts[0])
+            .unwrap();
+        let header: serde_json::Value = serde_json::from_slice(&header_bytes).unwrap();
+        assert_eq!(header["kid"], "test-kid");
+
+        assert!(signer
+            .sign_claims(&serde_json::json!("not an object"))
+            .is_err());
+    }
 
     fn test_key_pem() -> String {
         // Generate a small RSA key for testing
