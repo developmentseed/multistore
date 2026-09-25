@@ -9,6 +9,10 @@ The CF Workers runtime deploys the proxy to Cloudflare's edge network. It compil
 > - **Static config only** — config is supplied inline via the `PROXY_CONFIG` var
 > - **`SESSION_TOKEN_KEY` required** — Workers are stateless, so sealed tokens are the only way to persist temporary credentials
 
+## Response Handling
+
+Forwarded object responses (GET/HEAD) carry `Cache-Control: no-transform`, appended to any directives the backend returned. Without it, Cloudflare gzips compressible types such as `text/*` for clients that send `Accept-Encoding: gzip`, which strips `Content-Length` and `Accept-Ranges` and breaks clients that size or split downloads from a HEAD.
+
 ## Configuration
 
 ### `wrangler.toml`
