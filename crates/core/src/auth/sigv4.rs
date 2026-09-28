@@ -196,7 +196,9 @@ pub(crate) fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>, ProxyError
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
-pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+/// Compare two byte slices in constant time (for a given length), so the
+/// comparison doesn't leak how many leading bytes matched.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

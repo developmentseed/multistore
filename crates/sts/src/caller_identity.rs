@@ -15,7 +15,7 @@
 //! assumed-role session proves itself here exactly as it would when signing an
 //! S3 request.
 
-use multistore::auth::{parse_sigv4_auth, verify_sigv4_signature};
+use multistore::auth::{constant_time_eq, parse_sigv4_auth, verify_sigv4_signature};
 use multistore::error::ProxyError;
 use multistore::route_handler::RequestInfo;
 use sha2::{Digest, Sha256};
@@ -59,7 +59,7 @@ fn resolve_caller_identity(
 
     let auth_header = header(req, "authorization").ok_or(ProxyError::AccessDenied)?;
     let sig = parse_sigv4_auth(auth_header)?;
-    if sig.access_key_id != creds.access_key_id {
+    if !constant_time_eq(sig.access_key_id.as_bytes(), creds.access_key_id.as_bytes()) {
         tracing::warn!(
             header_key = %sig.access_key_id,
             resolved_key = %creds.access_key_id,
