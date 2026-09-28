@@ -94,13 +94,30 @@ impl ProxyBackend for WorkerBackend {
                         let transform: &web_sys::TransformStream = fls.as_ref();
                         // The outbound fetch consuming `readable` pulls the body
                         // through the transform; the pipe is driven by that
-                        // backpressure, so it streams rather than buffers. The
-                        // returned promise is intentionally dropped: a pipe
-                        // failure (e.g. the client sending fewer/more bytes than
-                        // Content-Length, which errors the FixedLengthStream)
-                        // also errors `readable`, so the awaited outbound fetch
-                        // fails and the error surfaces there.
-                        let _ = stream.pipe_to(&transform.writable());
+                        // backpressure, so it streams rather than buffers.
+                        //
+                        // The pipe is still not awaited inline — doing so would
+                        // deadlock, since nothing drains `readable` until the
+                        // fetch below runs — but its rejection is no longer
+                        // dropped. A pipe failure also errors `readable`, so the
+                        // outbound fetch fails on its own either way; what the
+                        // fetch cannot report is *why* the body stopped. That
+                        // distinction is the whole diagnostic: a body-side
+                        // failure rejects here, whereas a connection-side one
+                        // leaves the pipe healthy and fails only at the fetch.
+                        // Observability only — backpressure and streaming are
+                        // unchanged.
+                        let pipe = stream.pipe_to(&transform.writable());
+                        let pipe_request_id = request.request_id.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Err(e) = wasm_bindgen_futures::JsFuture::from(pipe).await {
+                                tracing::warn!(
+                                    request_id = %pipe_request_id,
+                                    error = ?e,
+                                    "streamed PUT body pipe failed"
+                                );
+                            }
+                        });
                         init.set_body(&transform.readable());
                     }
                     None => init.set_body(stream),
