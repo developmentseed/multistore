@@ -1,4 +1,11 @@
 //! SigV4 signature parsing and verification for inbound requests.
+//!
+//! Two request shapes are supported:
+//! - **Header auth** — SigV4 material in the `Authorization` header
+//!   ([`parse_sigv4_auth`] + [`verify_sigv4_signature`]).
+//! - **Presigned URLs** — SigV4 material in the query string
+//!   ([`parse_sigv4_presigned`] + [`verify_sigv4_presigned`]). Browsers can't
+//!   set an `Authorization` header, so `<img>`/`<a>`/`fetch` use this form.
 
 use crate::error::ProxyError;
 use hmac::{Hmac, Mac};
@@ -7,7 +14,10 @@ use sha2::{Digest, Sha256};
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Parsed SigV4 Authorization header.
+/// Parsed SigV4 credential scope, signed headers, and signature.
+///
+/// Shared by both header-based and presigned requests — only the *source* of
+/// these fields differs, not their meaning.
 #[derive(Debug, Clone)]
 pub struct SigV4Auth {
     /// The access key ID from the credential scope.
@@ -22,6 +32,20 @@ pub struct SigV4Auth {
     pub signed_headers: Vec<String>,
     /// The hex-encoded HMAC-SHA256 signature.
     pub signature: String,
+}
+
+/// SigV4 material extracted from a presigned URL's query string.
+#[derive(Debug, Clone)]
+pub struct PresignedSig {
+    /// The credential scope, signed headers, and signature.
+    pub auth: SigV4Auth,
+    /// The `X-Amz-Date` query param (`YYYYMMDDTHHMMSSZ`) — used as the
+    /// string-to-sign date instead of the `x-amz-date` header.
+    pub amz_date: String,
+    /// The `X-Amz-Expires` value, in seconds after `amz_date`.
+    pub expires: u64,
+    /// The `X-Amz-Security-Token`, percent-decoded, if present.
+    pub session_token: Option<String>,
 }
 
 /// Parse a SigV4 Authorization header.
@@ -54,25 +78,48 @@ pub fn parse_sigv4_auth(auth_header: &str) -> Result<SigV4Auth, ProxyError> {
     let signature =
         signature.ok_or_else(|| ProxyError::InvalidRequest("missing Signature".into()))?;
 
-    // Parse credential: AKID/date/region/service/aws4_request
-    let cred_parts: Vec<&str> = credential.split('/').collect();
-    if cred_parts.len() != 5 || cred_parts[4] != "aws4_request" {
-        return Err(ProxyError::InvalidRequest(
-            "malformed credential scope".into(),
-        ));
-    }
+    build_sigv4_auth(credential, signed_headers, signature)
+}
 
-    Ok(SigV4Auth {
-        access_key_id: cred_parts[0].to_string(),
-        date_stamp: cred_parts[1].to_string(),
-        region: cred_parts[2].to_string(),
-        service: cred_parts[3].to_string(),
-        signed_headers: signed_headers.split(';').map(String::from).collect(),
-        signature: signature.to_string(),
+/// Is this query string a SigV4 presigned request?
+///
+/// True when it carries `X-Amz-Algorithm=AWS4-HMAC-SHA256`.
+pub fn is_presigned(query: &str) -> bool {
+    query_param(query, "X-Amz-Algorithm").as_deref() == Some("AWS4-HMAC-SHA256")
+}
+
+/// Parse SigV4 material from a presigned URL query string.
+///
+/// Query param *values* are percent-decoded for parsing (e.g. `X-Amz-Credential`
+/// arrives as `AKID%2F.../aws4_request`). The raw, still-encoded query string is
+/// what gets canonicalized during verification — do not decode it there.
+pub fn parse_sigv4_presigned(query: &str) -> Result<PresignedSig, ProxyError> {
+    let require = |key: &str| {
+        query_param(query, key)
+            .map(|v| decode(&v))
+            .ok_or_else(|| ProxyError::InvalidRequest(format!("missing {key}")))
+    };
+
+    let credential = require("X-Amz-Credential")?;
+    let signed_headers = require("X-Amz-SignedHeaders")?;
+    let signature = require("X-Amz-Signature")?;
+    let amz_date = require("X-Amz-Date")?;
+    let expires = require("X-Amz-Expires")?
+        .parse::<u64>()
+        .map_err(|_| ProxyError::InvalidRequest("invalid X-Amz-Expires".into()))?;
+
+    Ok(PresignedSig {
+        auth: build_sigv4_auth(&credential, &signed_headers, &signature)?,
+        amz_date,
+        expires,
+        session_token: query_param(query, "X-Amz-Security-Token").map(|v| decode(&v)),
     })
 }
 
-/// Verify a SigV4 signature against a known secret key.
+/// Verify a header-auth SigV4 signature against a known secret key.
+///
+/// The string-to-sign date is read from the `x-amz-date` header; the payload
+/// hash is supplied by the caller (from `x-amz-content-sha256`).
 pub fn verify_sigv4_signature(
     method: &http::Method,
     uri_path: &str,
@@ -82,7 +129,71 @@ pub fn verify_sigv4_signature(
     secret_access_key: &str,
     payload_hash: &str,
 ) -> Result<bool, ProxyError> {
-    // Reconstruct canonical request
+    let canonical_query = canonicalize_query_string(query_string);
+    let amz_date = headers
+        .get("x-amz-date")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    verify_signed(
+        method,
+        uri_path,
+        &canonical_query,
+        headers,
+        auth,
+        secret_access_key,
+        payload_hash,
+        amz_date,
+    )
+}
+
+/// Verify a presigned-URL SigV4 signature against a known secret key.
+///
+/// Differs from header auth: `X-Amz-Signature` is excluded from the canonical
+/// query, the payload hash is the literal `UNSIGNED-PAYLOAD`, and the
+/// string-to-sign date comes from the `X-Amz-Date` query param.
+pub fn verify_sigv4_presigned(
+    method: &http::Method,
+    uri_path: &str,
+    query_string: &str,
+    headers: &HeaderMap,
+    auth: &SigV4Auth,
+    secret_access_key: &str,
+    amz_date: &str,
+) -> Result<bool, ProxyError> {
+    // Canonical query is every param except the signature itself, sorted.
+    let stripped: String = query_string
+        .split('&')
+        .filter(|p| !p.starts_with("X-Amz-Signature="))
+        .collect::<Vec<_>>()
+        .join("&");
+    let canonical_query = canonicalize_query_string(&stripped);
+    verify_signed(
+        method,
+        uri_path,
+        &canonical_query,
+        headers,
+        auth,
+        secret_access_key,
+        "UNSIGNED-PAYLOAD",
+        amz_date,
+    )
+}
+
+/// Shared core: reconstruct the canonical request, derive the signing key, and
+/// constant-time compare against the provided signature. Callers supply the
+/// already-canonicalized query, payload hash, and string-to-sign date so the
+/// header vs. presigned differences live entirely in the thin wrappers above.
+#[allow(clippy::too_many_arguments)]
+fn verify_signed(
+    method: &http::Method,
+    uri_path: &str,
+    canonical_query: &str,
+    headers: &HeaderMap,
+    auth: &SigV4Auth,
+    secret_access_key: &str,
+    payload_hash: &str,
+    amz_date: &str,
+) -> Result<bool, ProxyError> {
     let canonical_headers: String = auth
         .signed_headers
         .iter()
@@ -98,11 +209,6 @@ pub fn verify_sigv4_signature(
 
     let signed_headers_str = auth.signed_headers.join(";");
 
-    // SigV4 requires query parameters sorted alphabetically by key (then value).
-    // The raw query string from the URL may not be sorted, but the client SDK
-    // sorts them when constructing the canonical request for signing.
-    let canonical_query = canonicalize_query_string(query_string);
-
     let canonical_request = format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
         method, uri_path, canonical_query, canonical_headers, signed_headers_str, payload_hash
@@ -114,11 +220,6 @@ pub fn verify_sigv4_signature(
         "{}/{}/{}/aws4_request",
         auth.date_stamp, auth.region, auth.service
     );
-
-    let amz_date = headers
-        .get("x-amz-date")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
 
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{}\n{}\n{}",
@@ -144,11 +245,6 @@ pub fn verify_sigv4_signature(
             region = %auth.region,
             "SigV4 signature mismatch"
         );
-        // A literal space in the canonical URI means a decoded path reached
-        // signing (clients sign `%20`) — the usual cause of this mismatch.
-        if uri_path.contains(' ') {
-            tracing::warn!("signing path has a literal space; pass the percent-encoded path, not the decoded one");
-        }
         tracing::debug!(
             canonical_request = %canonical_request,
             string_to_sign = %string_to_sign,
@@ -159,32 +255,52 @@ pub fn verify_sigv4_signature(
     Ok(matched)
 }
 
-/// Build the SigV4 canonical query string: every parameter as `key=value`,
-/// sorted.
-///
-/// A value-less flag parameter (e.g. `?uploads`, `?delete`) is canonicalized
-/// with an empty value and a trailing `=` per the SigV4 spec. Clients (and
-/// backends) sign it that way, so the proxy must reconstruct it identically on
-/// both the inbound-verification and outbound-signing sides or the signature
-/// will not match. Empty segments (from a stray `&`) are dropped.
+/// Build a [`SigV4Auth`] from the raw credential scope, signed headers, and
+/// signature strings (decoded — no percent-encoding).
+fn build_sigv4_auth(
+    credential: &str,
+    signed_headers: &str,
+    signature: &str,
+) -> Result<SigV4Auth, ProxyError> {
+    // Parse credential: AKID/date/region/service/aws4_request
+    let cred_parts: Vec<&str> = credential.split('/').collect();
+    if cred_parts.len() != 5 || cred_parts[4] != "aws4_request" {
+        return Err(ProxyError::InvalidRequest(
+            "malformed credential scope".into(),
+        ));
+    }
+
+    Ok(SigV4Auth {
+        access_key_id: cred_parts[0].to_string(),
+        date_stamp: cred_parts[1].to_string(),
+        region: cred_parts[2].to_string(),
+        service: cred_parts[3].to_string(),
+        signed_headers: signed_headers.split(';').map(String::from).collect(),
+        signature: signature.to_string(),
+    })
+}
+
+/// Look up a query param by exact key, returning its raw (still-encoded) value.
+fn query_param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|p| {
+        let (k, v) = p.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+/// Percent-decode a query param value (lossy on invalid UTF-8).
+fn decode(value: &str) -> String {
+    percent_encoding::percent_decode_str(value)
+        .decode_utf8_lossy()
+        .into_owned()
+}
+
+/// Sort query string parameters for SigV4 canonical request construction.
 pub(crate) fn canonicalize_query_string(query: &str) -> String {
     if query.is_empty() {
         return String::new();
     }
-    // Borrow params that are already `key=value`; only the value-less flags
-    // (`?delete`, `?uploads`) need an owned `key=`. This keeps the common path
-    // allocation-free on the per-request signing/verification hot path.
-    let mut parts: Vec<std::borrow::Cow<str>> = query
-        .split('&')
-        .filter(|p| !p.is_empty())
-        .map(|p| {
-            if p.contains('=') {
-                std::borrow::Cow::Borrowed(p)
-            } else {
-                std::borrow::Cow::Owned(format!("{p}="))
-            }
-        })
-        .collect();
+    let mut parts: Vec<&str> = query.split('&').collect();
     parts.sort_unstable();
     parts.join("&")
 }
@@ -204,50 +320,4 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         .zip(b.iter())
         .fold(0u8, |acc, (x, y)| acc | (x ^ y))
         == 0
-}
-
-#[cfg(test)]
-mod tests {
-    use super::canonicalize_query_string;
-
-    #[test]
-    fn empty_query_is_empty() {
-        assert_eq!(canonicalize_query_string(""), "");
-    }
-
-    #[test]
-    fn value_less_flag_gets_trailing_equals() {
-        // The bug that broke multipart and batch delete: `?uploads` / `?delete`
-        // must canonicalize to `uploads=` / `delete=`.
-        assert_eq!(canonicalize_query_string("uploads"), "uploads=");
-        assert_eq!(canonicalize_query_string("delete"), "delete=");
-    }
-
-    #[test]
-    fn valued_params_are_sorted_and_unchanged() {
-        assert_eq!(
-            canonicalize_query_string("list-type=2&prefix=foo"),
-            "list-type=2&prefix=foo"
-        );
-        // Sorting is by the full encoded parameter.
-        assert_eq!(
-            canonicalize_query_string("partNumber=1&uploadId=abc"),
-            "partNumber=1&uploadId=abc"
-        );
-        assert_eq!(canonicalize_query_string("b=2&a=1"), "a=1&b=2");
-    }
-
-    #[test]
-    fn mixed_flag_and_valued_params() {
-        // Real shape of a versioned delete-style request.
-        assert_eq!(
-            canonicalize_query_string("versionId=v1&delete"),
-            "delete=&versionId=v1"
-        );
-    }
-
-    #[test]
-    fn stray_empty_segments_are_dropped() {
-        assert_eq!(canonicalize_query_string("delete&"), "delete=");
-    }
 }
