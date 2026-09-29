@@ -11,7 +11,7 @@ pub mod sigv4;
 
 pub use authorize::{authorize, key_authorized};
 pub use identity::resolve_identity;
-pub use sigv4::{parse_sigv4_auth, verify_sigv4_signature, SigV4Auth};
+pub use sigv4::{constant_time_eq, parse_sigv4_auth, verify_sigv4_signature, SigV4Auth};
 
 use crate::error::ProxyError;
 use crate::maybe_send::{MaybeSend, MaybeSync};

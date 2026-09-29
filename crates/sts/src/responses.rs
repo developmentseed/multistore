@@ -73,6 +73,56 @@ pub fn build_sts_response(creds: &TemporaryCredentials) -> (u16, String) {
     (200, response.to_xml())
 }
 
+/// The fabricated 12-digit AWS account id used in synthetic STS identities.
+///
+/// The proxy fronts arbitrary S3 backends and has no real AWS account, so
+/// `GetCallerIdentity` reports a zero account. Using it consistently in both the
+/// account field and the assumed-role ARN keeps the identity document
+/// internally coherent for tooling (e.g. `aws-actions/configure-aws-credentials`
+/// surfaces `Account` as its `aws-account-id` output).
+pub const SYNTHETIC_ACCOUNT_ID: &str = "000000000000";
+
+/// STS `GetCallerIdentity` response.
+#[derive(Debug, Serialize)]
+#[serde(rename = "GetCallerIdentityResponse")]
+struct GetCallerIdentityResponse {
+    #[serde(rename = "GetCallerIdentityResult")]
+    result: GetCallerIdentityResult,
+}
+
+#[derive(Debug, Serialize)]
+struct GetCallerIdentityResult {
+    #[serde(rename = "Arn")]
+    arn: String,
+    #[serde(rename = "UserId")]
+    user_id: String,
+    #[serde(rename = "Account")]
+    account: String,
+}
+
+/// Build a `GetCallerIdentity` XML document describing an assumed-role session.
+///
+/// The identity is synthesized from the sealed credentials: `Account` is the
+/// fabricated [`SYNTHETIC_ACCOUNT_ID`], and `Arn`/`UserId` are derived from the
+/// assumed role id and the OIDC subject that assumed it. `quick_xml` escapes the
+/// subject, which may contain characters like `:` and `/` from an OIDC `sub`.
+pub fn build_caller_identity_response(creds: &TemporaryCredentials) -> String {
+    let response = GetCallerIdentityResponse {
+        result: GetCallerIdentityResult {
+            arn: format!(
+                "arn:aws:sts::{}:assumed-role/{}/{}",
+                SYNTHETIC_ACCOUNT_ID, creds.assumed_role_id, creds.source_identity
+            ),
+            user_id: format!("{}:{}", creds.assumed_role_id, creds.source_identity),
+            account: SYNTHETIC_ACCOUNT_ID.to_string(),
+        },
+    };
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n{}",
+        xml_to_string(&response).unwrap_or_default()
+    )
+}
+
 /// Build an STS error response (status code + XML body) from a ProxyError.
 pub fn build_sts_error_response(err: &ProxyError) -> (u16, String) {
     let (status, code, message) = match err {
@@ -84,6 +134,17 @@ pub fn build_sts_error_response(err: &ProxyError) -> (u16, String) {
         ProxyError::InvalidOidcToken(msg) => (400, "InvalidIdentityToken", msg.clone()),
         ProxyError::InvalidRequest(msg) => (400, "InvalidParameterValue", msg.clone()),
         ProxyError::AccessDenied => (403, "AccessDenied", "access denied".to_string()),
+        // GetCallerIdentity authentication failures.
+        ProxyError::SignatureDoesNotMatch => (
+            403,
+            "SignatureDoesNotMatch",
+            "the request signature does not match".to_string(),
+        ),
+        ProxyError::ExpiredCredentials => (
+            403,
+            "ExpiredToken",
+            "the security token included in the request is expired".to_string(),
+        ),
         _ => (500, "InternalError", "internal error".to_string()),
     };
 
@@ -98,4 +159,35 @@ pub fn build_sts_error_response(err: &ProxyError) -> (u16, String) {
         code, message
     );
     (status, xml)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn creds() -> TemporaryCredentials {
+        TemporaryCredentials {
+            access_key_id: "STSPRXYAAA".into(),
+            secret_access_key: "secret".into(),
+            session_token: "sealed".into(),
+            expiration: Utc::now(),
+            allowed_scopes: vec![],
+            assumed_role_id: "github-actions".into(),
+            source_identity: "repo:org/repo:ref:refs/heads/main".into(),
+        }
+    }
+
+    #[test]
+    fn caller_identity_xml_has_account_arn_userid() {
+        let xml = build_caller_identity_response(&creds());
+        assert!(xml.contains("<Account>000000000000</Account>"), "{xml}");
+        assert!(xml.contains(
+            "<Arn>arn:aws:sts::000000000000:assumed-role/github-actions/repo:org/repo:ref:refs/heads/main</Arn>"
+        ), "{xml}");
+        assert!(
+            xml.contains("<UserId>github-actions:repo:org/repo:ref:refs/heads/main</UserId>"),
+            "{xml}"
+        );
+    }
 }
