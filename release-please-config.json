@@ -2,6 +2,7 @@
   "packages": {
     ".": {
       "release-type": "simple",
+      "bump-minor-pre-major": true,
       "package-name": "multistore",
       "include-component-in-tag": false,
       "extra-files": [
