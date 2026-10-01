@@ -14,11 +14,13 @@
 
 // --- Native targets: MaybeSend = Send, MaybeSync = Sync ---
 
+/// `Send` on native targets, no bound on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSend: Send {}
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Send> MaybeSend for T {}
 
+/// `Sync` on native targets, no bound on wasm32.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSync: Sync {}
 #[cfg(not(target_arch = "wasm32"))]
@@ -26,11 +28,13 @@ impl<T: Sync> MaybeSync for T {}
 
 // --- WASM targets: MaybeSend and MaybeSync are no-ops ---
 
+/// `Send` on native targets, no bound on wasm32.
 #[cfg(target_arch = "wasm32")]
 pub trait MaybeSend {}
 #[cfg(target_arch = "wasm32")]
 impl<T> MaybeSend for T {}
 
+/// `Sync` on native targets, no bound on wasm32.
 #[cfg(target_arch = "wasm32")]
 pub trait MaybeSync {}
 #[cfg(target_arch = "wasm32")]

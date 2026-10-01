@@ -9,7 +9,18 @@
 
 use crate::auth::sigv4::{canonicalize_query_string, hmac_sha256};
 use crate::error::ProxyError;
-use http::HeaderMap;
+use http::{HeaderMap, HeaderValue};
+
+/// Build a [`HeaderValue`] from a string produced at runtime.
+///
+/// Header values must be visible ASCII; anything else (a control character in
+/// a configured session token, say) is an error to report, not a reason to
+/// panic mid-request. The value itself is deliberately kept out of the
+/// message because it may be a credential.
+pub(crate) fn header_value(name: &str, value: &str) -> Result<HeaderValue, ProxyError> {
+    HeaderValue::from_str(value)
+        .map_err(|_| ProxyError::Internal(format!("invalid value for `{name}` header")))
+}
 
 /// Signs outbound HTTP requests using AWS SigV4.
 pub struct S3RequestSigner {
@@ -60,11 +71,17 @@ impl S3RequestSigner {
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
 
         // Set required headers
-        headers.insert("x-amz-date", amz_date.parse().unwrap());
-        headers.insert("x-amz-content-sha256", payload_hash.parse().unwrap());
+        headers.insert("x-amz-date", header_value("x-amz-date", &amz_date)?);
+        headers.insert(
+            "x-amz-content-sha256",
+            header_value("x-amz-content-sha256", payload_hash)?,
+        );
 
         if let Some(token) = &self.session_token {
-            headers.insert("x-amz-security-token", token.parse().unwrap());
+            headers.insert(
+                "x-amz-security-token",
+                header_value("x-amz-security-token", token)?,
+            );
         }
 
         let host = url
@@ -75,7 +92,7 @@ impl S3RequestSigner {
         } else {
             host.to_string()
         };
-        headers.insert("host", host_header.parse().unwrap());
+        headers.insert("host", header_value("host", &host_header)?);
 
         // Canonical request. The query must be in SigV4 canonical form — every
         // parameter as `key=value` (value-less flags like `?uploads`/`?delete`
@@ -89,7 +106,11 @@ impl S3RequestSigner {
         let canonical_headers: String = signed_header_names
             .iter()
             .map(|k| {
-                let v = headers.get(*k).unwrap().to_str().unwrap_or("").trim();
+                let v = headers
+                    .get(*k)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .trim();
                 format!("{}:{}\n", k, v)
             })
             .collect();
@@ -137,7 +158,10 @@ impl S3RequestSigner {
             "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={}, Signature={}",
             self.access_key_id, credential_scope, signed_headers, signature
         );
-        headers.insert("authorization", auth_header.parse().unwrap());
+        headers.insert(
+            "authorization",
+            header_value("authorization", &auth_header)?,
+        );
 
         Ok(())
     }

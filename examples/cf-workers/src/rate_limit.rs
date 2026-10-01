@@ -7,11 +7,8 @@
 use multistore::api::response::ErrorResponse;
 use multistore::error::ProxyError;
 use multistore::middleware::{DispatchContext, Middleware, Next};
-use multistore::route_handler::{HandlerAction, ProxyResponseBody, ProxyResult};
+use multistore::route_handler::{HandlerAction, ProxyResult};
 use multistore::types::ResolvedIdentity;
-
-use bytes::Bytes;
-use http::HeaderMap;
 
 /// Rate limiting middleware backed by Cloudflare Workers rate limit bindings.
 ///
@@ -60,13 +57,7 @@ impl Middleware for CfRateLimiter {
             Ok(_) => {
                 tracing::warn!(key = %key, "rate limited");
                 let xml = ErrorResponse::slow_down(ctx.request_id).to_xml();
-                let mut headers = HeaderMap::new();
-                headers.insert("content-type", "application/xml".parse().unwrap());
-                Ok(HandlerAction::Response(ProxyResult {
-                    status: 503,
-                    headers,
-                    body: ProxyResponseBody::Bytes(Bytes::from(xml)),
-                }))
+                Ok(HandlerAction::Response(ProxyResult::xml(503, xml)))
             }
             Err(err) => {
                 // If the rate limiter fails, log and allow the request through

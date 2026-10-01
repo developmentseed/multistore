@@ -97,14 +97,14 @@ impl<H: HttpExchange> Middleware for AwsBackendAuth<H> {
         mut ctx: DispatchContext<'a>,
         next: Next<'a>,
     ) -> Result<HandlerAction, ProxyError> {
-        if let Some(ref bucket_config) = ctx.bucket_config {
+        if let Some(bucket_config) = ctx.bucket_config.take() {
             if bucket_config.option("auth_type") == Some("oidc") {
                 match bucket_config.backend_type {
                     BackendType::S3 => {
                         let options = self.resolve_aws(bucket_config).await?;
                         ctx.bucket_config = Some(Cow::Owned(BucketConfig {
                             backend_options: options,
-                            ..ctx.bucket_config.unwrap().into_owned()
+                            ..bucket_config.into_owned()
                         }));
                     }
                     other => {
@@ -113,6 +113,8 @@ impl<H: HttpExchange> Middleware for AwsBackendAuth<H> {
                         )));
                     }
                 }
+            } else {
+                ctx.bucket_config = Some(bucket_config);
             }
         }
         next.run(ctx).await

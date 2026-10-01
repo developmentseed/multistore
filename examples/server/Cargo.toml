@@ -23,3 +23,6 @@ reqwest = { workspace = true, features = ["stream", "form"] }
 object_store.workspace = true
 futures.workspace = true
 http-body-util.workspace = true
+
+[lints]
+workspace = true
