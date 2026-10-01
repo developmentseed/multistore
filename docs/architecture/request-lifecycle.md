@@ -71,18 +71,19 @@ Built-in route handlers:
 - **`OidcRouterExt`** (`multistore-oidc-provider`) — Registers handlers for `/.well-known/openid-configuration` and `/.well-known/jwks.json`
 - **`StsRouterExt`** (`multistore-sts`) — Registers a handler that intercepts `AssumeRoleWithWebIdentity` STS requests
 
-### Method routing
+### Implementing a handler
 
-Handlers implement the `RouteHandler` trait and override individual HTTP method handlers (`get`, `post`, `put`, `delete`, `head`) for method-specific behavior, or override `handle` directly for method-agnostic handlers:
+Handlers implement the `RouteHandler` trait's single method, `handle`, as a native `async fn`. Return `Some(result)` to answer the request, or `None` to decline and let it fall through to the next handler or the S3 pipeline. The router boxes the future internally, so no `Box::pin` is needed (the same erasure pattern `Middleware` uses):
 
 ```rust
+use multistore::route_handler::{ProxyResult, RequestInfo, RouteHandler};
 use multistore::router::Router;
 
 struct HealthCheck;
 
 impl RouteHandler for HealthCheck {
-    fn get<'a>(&'a self, _req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
-        Box::pin(async { Some(ProxyResult::json(200, r#"{"ok":true}"#)) })
+    async fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> Option<ProxyResult> {
+        (req.method == http::Method::GET).then(|| ProxyResult::json(200, r#"{"ok":true}"#))
     }
 }
 

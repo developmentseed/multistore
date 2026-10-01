@@ -7,7 +7,7 @@ use crate::{
     handle_get_caller_identity, is_get_caller_identity, try_handle_sts, JwksCache, TokenKey,
 };
 use multistore::registry::CredentialRegistry;
-use multistore::route_handler::{ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture};
+use multistore::route_handler::{ProxyResult, RequestInfo, RouteHandler};
 use multistore::router::Router;
 
 /// Handler that intercepts STS `AssumeRoleWithWebIdentity` and
@@ -19,25 +19,23 @@ struct StsHandler<C> {
 }
 
 impl<C: CredentialRegistry> RouteHandler for StsHandler<C> {
-    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
-        Box::pin(async move {
-            // GetCallerIdentity is authenticated (SigV4 over the temporary
-            // credentials) and needs the full request, so it is dispatched
-            // before the unauthenticated AssumeRoleWithWebIdentity exchange.
-            if is_get_caller_identity(req.query) || is_get_caller_identity(req.form_body) {
-                let (status, xml) = handle_get_caller_identity(req, self.key.as_ref());
-                return Some(ProxyResult::xml(status, xml));
-            }
-            let (status, xml) = try_handle_sts(
-                req.query,
-                req.form_body,
-                &self.config,
-                &self.cache,
-                self.key.as_ref(),
-            )
-            .await?;
-            Some(ProxyResult::xml(status, xml))
-        })
+    async fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> Option<ProxyResult> {
+        // GetCallerIdentity is authenticated (SigV4 over the temporary
+        // credentials) and needs the full request, so it is dispatched
+        // before the unauthenticated AssumeRoleWithWebIdentity exchange.
+        if is_get_caller_identity(req.query) || is_get_caller_identity(req.form_body) {
+            let (status, xml) = handle_get_caller_identity(req, self.key.as_ref());
+            return Some(ProxyResult::xml(status, xml));
+        }
+        let (status, xml) = try_handle_sts(
+            req.query,
+            req.form_body,
+            &self.config,
+            &self.cache,
+            self.key.as_ref(),
+        )
+        .await?;
+        Some(ProxyResult::xml(status, xml))
     }
 }
 
