@@ -169,7 +169,7 @@ mod tests {
     fn bucket(name: &str, anonymous: bool) -> BucketConfig {
         BucketConfig {
             name: name.into(),
-            backend_type: "s3".into(),
+            backend_type: crate::types::BackendType::S3,
             backend_prefix: None,
             anonymous_access: anonymous,
             allowed_roles: vec![],

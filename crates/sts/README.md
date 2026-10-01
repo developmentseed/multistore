@@ -28,6 +28,7 @@ Client signs S3 requests with temp creds
 Roles define who can assume them:
 
 - **`trusted_oidc_issuers`** — accepted OIDC providers (e.g., `https://token.actions.githubusercontent.com`)
-- **`required_audiences`** — accepted `aud` claim values (string or list); a token passes if its `aud` matches any. Empty/omitted means unrestricted. Legacy `required_audience` (single string) still accepted.
-- **`subject_conditions`** — glob patterns for the `sub` claim (e.g., `repo:myorg/*`)
+- **`required_audiences`** — accepted `aud` claim values (string or list); a token passes if its `aud` matches any. Empty/omitted accepts no token. Legacy `required_audience` (single string) still accepted.
+- **`subject_conditions`** — glob patterns for the `sub` claim (e.g., `repo:myorg/*`). Empty accepts no subject; `"*"` accepts any.
+- **`allow_missing_exp_from`** — issuers whose tokens may omit `exp` because the host tracks their validity; every other issuer's tokens must carry it
 - **`allowed_scopes`** — buckets, prefixes, and actions the minted credentials grant

@@ -1,76 +1,85 @@
 //! STS credential minting.
 
 use chrono::{Duration, Utc};
+use multistore::error::ProxyError;
 use multistore::types::{AccessScope, RoleConfig, TemporaryCredentials};
 use rand::RngCore;
 
 /// Resolve `{claim_name}` template variables in access scopes against JWT claims.
 ///
 /// Each `{name}` in `bucket` or `prefixes` is replaced with the corresponding
-/// string claim value. Missing or non-string claims resolve to an empty string,
-/// which will safely fail authorization downstream.
-fn resolve_scopes(scopes: &[AccessScope], claims: &serde_json::Value) -> Vec<AccessScope> {
+/// string claim value. A claim that is missing or not a string is an error:
+/// an empty prefix matches every key in the bucket, so a template that cannot
+/// be resolved must not mint anything.
+fn resolve_scopes(
+    scopes: &[AccessScope],
+    claims: &serde_json::Value,
+) -> Result<Vec<AccessScope>, ProxyError> {
     scopes
         .iter()
         .map(|scope| {
-            let bucket = resolve_template(&scope.bucket, claims);
-            let prefixes = scope
-                .prefixes
-                .iter()
-                .map(|p| resolve_template(p, claims))
-                .collect();
-            AccessScope {
-                bucket,
-                prefixes,
+            Ok(AccessScope {
+                bucket: resolve_template(&scope.bucket, claims)?,
+                prefixes: scope
+                    .prefixes
+                    .iter()
+                    .map(|p| resolve_template(p, claims))
+                    .collect::<Result<_, _>>()?,
                 actions: scope.actions.clone(),
-            }
+            })
         })
         .collect()
 }
 
 /// Replace all `{key}` placeholders in `template` with values from `claims`.
-fn resolve_template(template: &str, claims: &serde_json::Value) -> String {
+fn resolve_template(template: &str, claims: &serde_json::Value) -> Result<String, ProxyError> {
     let mut result = template.to_string();
-    // Find all {…} placeholders and replace them
     while let Some(start) = result.find('{') {
-        if let Some(end) = result[start..].find('}') {
-            let end = start + end;
-            let key = &result[start + 1..end];
-            let value = claims.get(key).and_then(|v| v.as_str()).unwrap_or("");
-            result = format!("{}{}{}", &result[..start], value, &result[end + 1..]);
-        } else {
+        let Some(end) = result[start..].find('}') else {
             break;
-        }
+        };
+        let end = start + end;
+        let key = &result[start + 1..end];
+        let value = claims.get(key).and_then(|v| v.as_str()).ok_or_else(|| {
+            ProxyError::InvalidOidcToken(format!(
+                "token has no string claim '{}', which an access scope requires",
+                key
+            ))
+        })?;
+        result = format!("{}{}{}", &result[..start], value, &result[end + 1..]);
     }
-    result
+    Ok(result)
 }
 
 /// Mint a new set of temporary credentials for an assumed role.
 ///
 /// Template variables (`{claim_name}`) in `role.allowed_scopes` are resolved
-/// against the provided JWT `claims` before being stored in the credentials.
+/// against the provided JWT `claims` before being stored in the credentials;
+/// a claim the template needs but the token lacks is an error, not an empty
+/// scope.
 pub fn mint_temporary_credentials(
     role: &RoleConfig,
     source_identity: &str,
     duration_seconds: u64,
     key_prefix: &str,
     claims: &serde_json::Value,
-) -> TemporaryCredentials {
+) -> Result<TemporaryCredentials, ProxyError> {
+    let allowed_scopes = resolve_scopes(&role.allowed_scopes, claims)?;
     let access_key_id = format!("{}{}", key_prefix, generate_random_id(16));
     let secret_access_key = generate_random_id(40);
     let session_token = generate_session_token();
 
     let expiration = Utc::now() + Duration::seconds(duration_seconds as i64);
 
-    TemporaryCredentials {
+    Ok(TemporaryCredentials {
         access_key_id,
         secret_access_key,
         session_token,
         expiration,
-        allowed_scopes: resolve_scopes(&role.allowed_scopes, claims),
+        allowed_scopes,
         assumed_role_id: role.role_id.clone(),
         source_identity: source_identity.to_string(),
-    }
+    })
 }
 
 fn generate_random_id(len: usize) -> String {
@@ -111,7 +120,7 @@ mod tests {
     fn resolve_template_in_bucket() {
         let scopes = vec![scope("{sub}", &[], &[Action::GetObject])];
         let claims = json!({"sub": "alice"});
-        let resolved = resolve_scopes(&scopes, &claims);
+        let resolved = resolve_scopes(&scopes, &claims).unwrap();
         assert_eq!(resolved[0].bucket, "alice");
     }
 
@@ -119,7 +128,7 @@ mod tests {
     fn resolve_template_in_prefix() {
         let scopes = vec![scope("my-bucket", &["data/{sub}/"], &[Action::GetObject])];
         let claims = json!({"sub": "alice"});
-        let resolved = resolve_scopes(&scopes, &claims);
+        let resolved = resolve_scopes(&scopes, &claims).unwrap();
         assert_eq!(resolved[0].prefixes[0], "data/alice/");
     }
 
@@ -127,7 +136,7 @@ mod tests {
     fn resolve_multiple_claims() {
         let scopes = vec![scope("{org}", &["{sub}/"], &[Action::GetObject])];
         let claims = json!({"sub": "alice", "org": "acme"});
-        let resolved = resolve_scopes(&scopes, &claims);
+        let resolved = resolve_scopes(&scopes, &claims).unwrap();
         assert_eq!(resolved[0].bucket, "acme");
         assert_eq!(resolved[0].prefixes[0], "alice/");
     }
@@ -136,21 +145,19 @@ mod tests {
     fn no_templates_unchanged() {
         let scopes = vec![scope("static-bucket", &["prefix/"], &[Action::GetObject])];
         let claims = json!({"sub": "alice"});
-        let resolved = resolve_scopes(&scopes, &claims);
+        let resolved = resolve_scopes(&scopes, &claims).unwrap();
         assert_eq!(resolved[0].bucket, "static-bucket");
         assert_eq!(resolved[0].prefixes[0], "prefix/");
     }
 
     #[test]
-    fn missing_claim_resolves_to_empty() {
-        let scopes = vec![scope(
-            "{missing}",
-            &["{also_missing}/"],
-            &[Action::GetObject],
-        )];
-        let claims = json!({"sub": "alice"});
-        let resolved = resolve_scopes(&scopes, &claims);
-        assert_eq!(resolved[0].bucket, "");
-        assert_eq!(resolved[0].prefixes[0], "/");
+    fn missing_claim_is_an_error_not_an_empty_scope() {
+        // An empty prefix matches every key, so a claim the template needs
+        // but the token lacks must refuse to mint rather than widen.
+        let scopes = vec![scope("bucket", &["{org}/"], &[Action::GetObject])];
+        let claims = json!({"sub": "alice", "org": 7});
+        let err = resolve_scopes(&scopes, &claims).unwrap_err().to_string();
+        assert!(err.contains("no string claim 'org'"), "{}", err);
+        assert!(resolve_scopes(&scopes, &json!({"sub": "alice"})).is_err());
     }
 }

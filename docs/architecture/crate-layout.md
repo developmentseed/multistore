@@ -6,7 +6,7 @@ The project is organized as a Cargo workspace with libraries (traits and logic) 
 crates/
 ├── core/          (multistore)                # Runtime-agnostic: traits, S3 parsing, SigV4, registries
 ├── metering/      (multistore-metering)       # Usage metering and quota enforcement middleware
-├── sts/           (multistore-sts)            # OIDC/STS token exchange (AssumeRoleWithWebIdentity)
+├── sts/           (multistore-sts)            # OIDC/STS (AssumeRoleWithWebIdentity + GetCallerIdentity)
 ├── oidc-provider/ (multistore-oidc-provider)  # Outbound OIDC provider (JWT signing, JWKS, exchange)
 ├── static-config/ (multistore-static-config)  # Static config provider (buckets/roles/credentials)
 ├── path-mapping/  (multistore-path-mapping)   # Hierarchical path-based backend resolution
@@ -50,12 +50,14 @@ Usage metering and quota enforcement middleware:
 
 ### `multistore-sts`
 
-OIDC token exchange implementing `AssumeRoleWithWebIdentity`:
+OIDC token exchange implementing `AssumeRoleWithWebIdentity` and `GetCallerIdentity`:
 - `StsRouterExt` — registers a closure that intercepts STS requests on the `Router`
 - JWT decoding and validation (RS256)
 - JWKS fetching and caching
 - Trust policy evaluation (issuer, audience, subject conditions)
 - Temporary credential minting with scope template variables
+- `GetCallerIdentity` (SigV4-verified against the sealed session token) so
+  `aws-actions/configure-aws-credentials` and other AWS tooling work unmodified
 
 ### `multistore-oidc-provider`
 

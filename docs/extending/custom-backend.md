@@ -138,7 +138,7 @@ async fn send_raw(
 
 The `backend` module provides shared helpers:
 
-- **`create_builder(config)`** — Dispatches on `backend_type` ("s3", "az", "gcs"), iterates `backend_options` with `with_config()`, and returns a `StoreBuilder` that can be customized (e.g. inject an HTTP connector) before calling `.build()` or `.build_signer()`
+- **`create_builder(config)`** — Dispatches on the `BackendType` enum (`S3`, `Azure`, `Gcs`), iterates `backend_options` with `with_config()`, and returns a `StoreBuilder` that can be customized (e.g. inject an HTTP connector) before calling `.build()` or `.build_signer()`
 - **`build_signer(config)`** — Returns the appropriate signer: `object_store`'s built-in signer for authenticated backends, or `UnsignedUrlSigner` for anonymous backends
 
 These handle the multi-provider dispatch logic so your backend implementation only needs to provide the HTTP transport layer.

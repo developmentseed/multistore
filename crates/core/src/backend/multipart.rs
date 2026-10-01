@@ -157,7 +157,7 @@ mod tests {
         backend_options.insert("bucket_name".into(), "my-backend-bucket".into());
         BucketConfig {
             name: "test".into(),
-            backend_type: "s3".into(),
+            backend_type: crate::types::BackendType::S3,
             backend_prefix: None,
             anonymous_access: false,
             allowed_roles: vec![],

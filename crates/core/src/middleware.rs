@@ -279,7 +279,7 @@ mod tests {
         static BUCKET_CONFIG: std::sync::LazyLock<BucketConfig> =
             std::sync::LazyLock::new(|| BucketConfig {
                 name: "test".to_string(),
-                backend_type: "s3".to_string(),
+                backend_type: crate::types::BackendType::S3,
                 backend_prefix: None,
                 anonymous_access: false,
                 allowed_roles: Vec::new(),

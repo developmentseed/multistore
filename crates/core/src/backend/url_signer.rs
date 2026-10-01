@@ -8,7 +8,7 @@
 
 use super::create_builder;
 use crate::error::ProxyError;
-use crate::types::BucketConfig;
+use crate::types::{BackendType, BucketConfig};
 use object_store::signer::Signer;
 use std::sync::Arc;
 
@@ -39,10 +39,8 @@ struct UnsignedUrlSigner {
 
 impl UnsignedUrlSigner {
     fn from_config(config: &BucketConfig) -> Result<Self, ProxyError> {
-        use crate::types::BackendType;
-
-        match config.parsed_backend_type() {
-            Some(BackendType::Azure) => {
+        match config.backend_type {
+            BackendType::Azure => {
                 let account_name = config.option("account_name").unwrap_or("");
                 let container = config.option("container_name").unwrap_or("");
                 Ok(Self {
@@ -50,15 +48,14 @@ impl UnsignedUrlSigner {
                     bucket: container.to_string(),
                 })
             }
-            Some(BackendType::Gcs) => {
+            BackendType::Gcs => {
                 let bucket = config.option("bucket_name").unwrap_or("");
                 Ok(Self {
                     endpoint: "https://storage.googleapis.com".to_string(),
                     bucket: bucket.to_string(),
                 })
             }
-            _ => {
-                // S3 or unknown — use endpoint + bucket_name
+            BackendType::S3 => {
                 let endpoint = config
                     .option("endpoint")
                     .unwrap_or("https://s3.amazonaws.com");

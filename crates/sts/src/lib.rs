@@ -2,7 +2,10 @@
 //!
 //! This crate implements the `AssumeRoleWithWebIdentity` STS API, allowing
 //! workloads like GitHub Actions to exchange OIDC tokens for temporary S3
-//! credentials scoped to specific buckets and prefixes.
+//! credentials scoped to specific buckets and prefixes. It also implements
+//! `GetCallerIdentity` (see [`caller_identity`]), which standard AWS tooling —
+//! notably `aws-actions/configure-aws-credentials` — calls to validate assumed
+//! credentials, so the endpoint is a drop-in STS target.
 //!
 //! # Integration
 //!
@@ -26,6 +29,7 @@
 //!
 //! The client then uses these credentials to sign S3 requests normally.
 
+pub mod caller_identity;
 pub mod jwks;
 pub mod request;
 pub mod responses;
@@ -33,13 +37,14 @@ pub mod route_handler;
 pub mod sealed_token;
 pub mod sts;
 
+pub use caller_identity::handle_get_caller_identity;
 pub use jwks::JwksCache;
 use multistore::error::ProxyError;
 use multistore::registry::CredentialRegistry;
 use multistore::types::TemporaryCredentials;
-pub use request::try_parse_sts_request;
 use request::StsRequest;
-pub use responses::{build_sts_error_response, build_sts_response};
+pub use request::{is_get_caller_identity, try_parse_sts_request};
+pub use responses::{build_caller_identity_response, build_sts_error_response, build_sts_response};
 pub use sealed_token::TokenKey;
 
 /// Try to handle an STS request. Returns `Some((status, xml))` if the query
@@ -155,20 +160,12 @@ pub async fn assume_role_with_web_identity<C: CredentialRegistry>(
     let key = jwks::find_key(&jwks, kid)?;
     let claims = jwks::verify_token(&sts_request.web_identity_token, key, issuer, &role)?;
 
-    // Check subject conditions
     let subject = claims.get("sub").and_then(|v| v.as_str()).unwrap_or("");
-
-    if !role.subject_conditions.is_empty() {
-        let matches = role
-            .subject_conditions
-            .iter()
-            .any(|pattern| subject_matches(subject, pattern));
-        if !matches {
-            return Err(ProxyError::InvalidOidcToken(format!(
-                "subject '{}' does not match any conditions",
-                subject
-            )));
-        }
+    if !subject_allowed(subject, &role.subject_conditions) {
+        return Err(ProxyError::InvalidOidcToken(format!(
+            "subject '{}' does not match any conditions",
+            subject
+        )));
     }
 
     // Mint temporary credentials (AWS enforces 900s minimum)
@@ -178,12 +175,29 @@ pub async fn assume_role_with_web_identity<C: CredentialRegistry>(
         .unwrap_or(3600)
         .clamp(MIN_SESSION_DURATION_SECS, role.max_session_duration_secs);
 
-    let mut creds = sts::mint_temporary_credentials(&role, subject, duration, key_prefix, &claims);
+    let mut creds = sts::mint_temporary_credentials(&role, subject, duration, key_prefix, &claims)?;
 
     // Encrypt the full credentials into the session token — stateless, no storage needed
     creds.session_token = token_key.seal(&creds)?;
 
+    tracing::info!(
+        issuer,
+        subject,
+        role = %role.role_id,
+        duration_secs = duration,
+        "STS exchange succeeded"
+    );
+
     Ok(creds)
+}
+
+/// Whether `subject` matches at least one of `conditions`. An empty list
+/// matches nothing: "any subject" has to be said, with `"*"`, so that a role
+/// which forgot its conditions fails closed rather than open.
+fn subject_allowed(subject: &str, conditions: &[String]) -> bool {
+    conditions
+        .iter()
+        .any(|pattern| subject_matches(subject, pattern))
 }
 
 /// Simple glob-style matching for subject conditions.
@@ -231,6 +245,16 @@ fn subject_matches(subject: &str, pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_subject_conditions_means_no_subject_is_allowed() {
+        assert!(!subject_allowed("repo:org/repo:ref:refs/heads/main", &[]));
+        assert!(subject_allowed("anything", &["*".to_string()]));
+        assert!(subject_allowed(
+            "repo:org/repo:ref:refs/heads/main",
+            &["repo:other/*".to_string(), "repo:org/*".to_string()]
+        ));
+    }
 
     #[test]
     fn test_subject_matching() {
