@@ -178,14 +178,6 @@ pub struct RoleConfig {
     #[serde(default)]
     pub subject_conditions: Vec<String>,
 
-    /// Issuers whose tokens may omit `exp`, because the host tracks their
-    /// validity itself — its own long-lived API keys with server-side
-    /// revocation, say. Tokens from every other issuer must carry `exp`: a
-    /// third-party token with no expiry is an indefinitely replayable
-    /// credential its issuer never meant to issue.
-    #[serde(default)]
-    pub allow_missing_exp_from: Vec<String>,
-
     /// Buckets and prefixes this role can access.
     #[serde(default)]
     pub allowed_scopes: Vec<AccessScope>,

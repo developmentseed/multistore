@@ -241,13 +241,11 @@ fn validate_claims(
                 return Err(ProxyError::InvalidOidcToken("token has expired".into()));
             }
         }
-        // Only an issuer the host vouches for may leave expiry to the host.
+        // A token with no expiry is replayable for good.
         None => {
-            if !role.allow_missing_exp_from.iter().any(|i| i == issuer) {
-                return Err(ProxyError::InvalidOidcToken(
-                    "token has no exp claim".into(),
-                ));
-            }
+            return Err(ProxyError::InvalidOidcToken(
+                "token has no exp claim".into(),
+            ));
         }
     }
 
@@ -370,7 +368,6 @@ mod tests {
             trusted_oidc_issuers: vec![ISSUER.into()],
             required_audiences: vec!["aud".into()],
             subject_conditions: vec!["*".into()],
-            allow_missing_exp_from: vec![],
             allowed_scopes: vec![],
             max_session_duration_secs: 3600,
         }
@@ -411,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn exp_is_required_unless_the_issuer_is_exempt() {
+    fn exp_is_required() {
         let mut claims = claims();
         claims.as_object_mut().unwrap().remove("exp");
 
@@ -419,10 +416,6 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("no exp claim"), "{}", err);
-
-        let mut exempt = role();
-        exempt.allow_missing_exp_from = vec![ISSUER.into()];
-        validate_claims(&json!({}), &claims, ISSUER, &exempt, NOW).unwrap();
     }
 
     #[test]
