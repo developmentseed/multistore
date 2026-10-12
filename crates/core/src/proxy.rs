@@ -1121,8 +1121,7 @@ where
 
         let url = signer
             .signed_url(method.clone(), &path, PRESIGNED_URL_TTL)
-            .await
-            .map_err(ProxyError::from_object_store_error)?;
+            .await?;
 
         let mut fwd_headers = HeaderMap::new();
         for name in forward_header_names {
@@ -1322,10 +1321,7 @@ where
             ..Default::default()
         };
 
-        let paginated = store
-            .list_paginated(prefix, opts)
-            .await
-            .map_err(ProxyError::from_object_store_error)?;
+        let paginated = store.list_paginated(prefix, opts).await?;
 
         // Build S3 XML response from paginated result
         let bucket_name = display_name.unwrap_or(&config.name);
