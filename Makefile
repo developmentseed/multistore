@@ -18,6 +18,8 @@ fmt-fix:
 
 clippy:
 	cargo clippy -- -D warnings
+clippy-wasm:
+	cargo clippy -p multistore-cf-workers -p multistore-cf-workers-example --target wasm32-unknown-unknown -- -D warnings
 clippy-fix:
 	cargo clippy --fix --allow-dirty --allow-staged
 
@@ -35,7 +37,7 @@ run-server:
 run-workers:
 	npx wrangler dev --cwd examples/cf-workers
 
-ci-fast: fmt clippy check-wasm
+ci-fast: fmt clippy clippy-wasm check-wasm
 ci: ci-fast test
 
 docs:

@@ -126,12 +126,15 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
 /// Errors produced by this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum OidcProviderError {
+    /// The RSA private key could not be parsed or used.
     #[error("RSA key error: {0}")]
     KeyError(String),
 
+    /// Signing a JWT with the configured key failed.
     #[error("JWT signing error: {0}")]
     SigningError(String),
 
+    /// The backend cloud did not return usable credentials for the minted JWT.
     #[error("credential exchange failed: {0}")]
     ExchangeError(String),
 
@@ -147,6 +150,7 @@ pub enum OidcProviderError {
         message: String,
     },
 
+    /// The HTTP call to the backend cloud's token endpoint failed.
     #[error("HTTP error: {0}")]
     HttpError(String),
 }

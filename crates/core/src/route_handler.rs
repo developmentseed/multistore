@@ -10,7 +10,7 @@
 
 use crate::maybe_send::{MaybeSend, MaybeSync};
 use bytes::Bytes;
-use http::{HeaderMap, Method};
+use http::{HeaderMap, HeaderValue, Method};
 use std::future::Future;
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -99,7 +99,7 @@ impl ProxyResult {
     /// Create a JSON response with the given status and body.
     pub fn json(status: u16, body: impl Into<String>) -> Self {
         let mut headers = HeaderMap::new();
-        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
         Self {
             status,
             headers,
@@ -110,7 +110,7 @@ impl ProxyResult {
     /// Create an XML response with the given status and body.
     pub fn xml(status: u16, body: impl Into<String>) -> Self {
         let mut headers = HeaderMap::new();
-        headers.insert("content-type", "application/xml".parse().unwrap());
+        headers.insert("content-type", HeaderValue::from_static("application/xml"));
         Self {
             status,
             headers,
@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn test_passes_standard_content_headers() {
         let mut headers = http::HeaderMap::new();
-        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
         headers.insert("content-length", "1234".parse().unwrap());
         headers.insert("content-range", "bytes 0-499/1000".parse().unwrap());
         headers.insert("etag", "\"abc\"".parse().unwrap());

@@ -10,8 +10,10 @@ use std::str::FromStr;
 /// Owner identity for S3 ListBuckets responses.
 #[derive(Debug, Clone, Serialize)]
 pub struct BucketOwner {
+    /// Canonical owner identifier.
     #[serde(rename = "ID")]
     pub id: String,
+    /// Human-readable owner name.
     #[serde(rename = "DisplayName")]
     pub display_name: String,
 }
@@ -232,6 +234,7 @@ pub struct AccessScope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
+    /// Read the current version of an object.
     GetObject,
     /// Reading a *specific* object version, as opposed to the current one.
     ///
@@ -242,13 +245,21 @@ pub enum Action {
     /// action explicitly — a grant of `GetObject` alone denies version-scoped
     /// reads rather than silently permitting them.
     GetObjectVersion,
+    /// Read object metadata without the body.
     HeadObject,
+    /// Write an object, including server-side copy destinations.
     PutObject,
+    /// List keys in a bucket.
     ListBucket,
+    /// Start a multipart upload.
     CreateMultipartUpload,
+    /// Upload one part of a multipart upload.
     UploadPart,
+    /// Assemble a multipart upload into an object.
     CompleteMultipartUpload,
+    /// Discard an in-progress multipart upload.
     AbortMultipartUpload,
+    /// Delete an object, including via batch delete.
     DeleteObject,
 }
 
@@ -383,22 +394,29 @@ impl fmt::Debug for BackendCredentials {
 /// used during signature verification.
 #[derive(Debug, Clone)]
 pub struct AuthenticatedIdentity {
+    /// Human-readable name of the credential owner or assumed role session.
     pub principal_name: String,
+    /// The buckets, prefixes, and actions this identity may access.
     pub allowed_scopes: Vec<AccessScope>,
 }
 
 /// Represents the resolved identity after authentication.
 #[derive(Debug, Clone)]
 pub enum ResolvedIdentity {
+    /// No credentials were presented; only buckets with anonymous access apply.
     Anonymous,
+    /// Credentials were verified successfully.
     Authenticated(AuthenticatedIdentity),
 }
 
 /// The parsed S3 operation extracted from an incoming request.
 #[derive(Debug, Clone)]
 pub enum S3Operation {
+    /// `GET /{bucket}/{key}`.
     GetObject {
+        /// Virtual bucket name.
         bucket: String,
+        /// Object key, percent-decoded.
         key: String,
         /// The object version this read will actually return, or `None` for the
         /// current version.
@@ -419,36 +437,61 @@ pub enum S3Operation {
         /// otherwise unreachable through the proxy.
         version: Option<String>,
     },
+    /// `HEAD /{bucket}/{key}`.
     HeadObject {
+        /// Virtual bucket name.
         bucket: String,
+        /// Object key, percent-decoded.
         key: String,
     },
+    /// `PUT /{bucket}/{key}` without `x-amz-copy-source`.
     PutObject {
+        /// Virtual bucket name.
         bucket: String,
+        /// Object key, percent-decoded.
         key: String,
     },
+    /// `POST /{bucket}/{key}?uploads`.
     CreateMultipartUpload {
+        /// Virtual bucket name.
         bucket: String,
+        /// Object key, percent-decoded.
         key: String,
     },
+    /// `PUT /{bucket}/{key}?partNumber=N&uploadId=ID`.
     UploadPart {
+        /// Virtual bucket name.
         bucket: String,
+        /// Object key, percent-decoded.
         key: String,
+        /// Backend-issued multipart upload identifier.
         upload_id: String,
+        /// 1-based part number.
         part_number: u32,
     },
+    /// `POST /{bucket}/{key}?uploadId=ID` with a part list in the body.
     CompleteMultipartUpload {
+        /// Virtual bucket name.
         bucket: String,
+        /// Object key, percent-decoded.
         key: String,
+        /// Backend-issued multipart upload identifier.
         upload_id: String,
     },
+    /// `DELETE /{bucket}/{key}?uploadId=ID`.
     AbortMultipartUpload {
+        /// Virtual bucket name.
         bucket: String,
+        /// Object key, percent-decoded.
         key: String,
+        /// Backend-issued multipart upload identifier.
         upload_id: String,
     },
+    /// `DELETE /{bucket}/{key}`.
     DeleteObject {
+        /// Virtual bucket name.
         bucket: String,
+        /// Object key, percent-decoded.
         key: String,
     },
     /// Server-side copy (`PUT /{bucket}/{key}` carrying `x-amz-copy-source`).
@@ -474,9 +517,12 @@ pub enum S3Operation {
     /// request body, so this operation carries only the bucket — the body is
     /// parsed and each key authorized individually once it arrives.
     DeleteObjects {
+        /// Virtual bucket name.
         bucket: String,
     },
+    /// `GET /{bucket}` (ListObjects / ListObjectsV2).
     ListBucket {
+        /// Virtual bucket name.
         bucket: String,
         /// Raw query string from the incoming request, forwarded to the backend.
         /// The proxy may modify `prefix` (prepend backend_prefix) and inject

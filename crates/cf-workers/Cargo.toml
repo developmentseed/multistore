@@ -55,3 +55,6 @@ features = ["wasm_js"]
 [dependencies.ring]
 version = "0.17"
 features = ["wasm32_unknown_unknown_js"]
+
+[lints]
+workspace = true

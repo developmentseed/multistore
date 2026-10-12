@@ -31,6 +31,7 @@ pub struct Router {
 }
 
 impl Router {
+    /// Create an empty router with no registered routes.
     pub fn new() -> Self {
         Self {
             inner: matchit::Router::new(),
@@ -40,7 +41,12 @@ impl Router {
     /// Register a handler for a path pattern.
     ///
     /// Supports matchit syntax: `/exact`, `/prefix/{param}`, `/{*catch_all}`.
-    /// Panics if the path conflicts with an already-registered route.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `path` conflicts with an already-registered route. Routes are
+    /// registered at startup from static configuration, so a conflict is a
+    /// programming error rather than a runtime condition to recover from.
     pub fn route(mut self, path: &str, handler: impl RouteHandler + 'static) -> Self {
         self.inner
             .insert(path, Box::new(handler))

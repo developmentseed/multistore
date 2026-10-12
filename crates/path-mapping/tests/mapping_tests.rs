@@ -1,3 +1,9 @@
+//! Integration tests for `PathMapping` rewrite rules.
+
+// Integration tests: `allow-unwrap-in-tests` only covers `#[test]` fns and
+// `#[cfg(test)]` modules, not helper fns in a test crate.
+#![allow(clippy::unwrap_used)]
+
 use multistore_path_mapping::PathMapping;
 
 fn default_mapping() -> PathMapping {

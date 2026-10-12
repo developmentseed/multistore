@@ -57,6 +57,7 @@ impl crate::registry::CredentialRegistry for MockConfig {
 // ── Test signing helper ───────────────────────────────────────────
 
 /// Build a valid SigV4 Authorization header value for testing.
+#[allow(clippy::too_many_arguments)] // test helper mirrors the SigV4 parameter list
 fn sign_request(
     method: &http::Method,
     uri_path: &str,

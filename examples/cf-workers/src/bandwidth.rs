@@ -15,6 +15,10 @@
 //! Entries are stored as a single `"entries"` key in DO storage, serialized as
 //! `Vec<Entry>`. An alarm is set to prune expired entries after the window elapses.
 
+// `#[durable_object]` expands to undocumented wasm-bindgen glue that a
+// struct-level `#[allow]` does not reach.
+#![allow(missing_docs)]
+
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use worker::*;

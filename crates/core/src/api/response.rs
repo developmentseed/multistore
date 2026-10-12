@@ -10,12 +10,16 @@ pub use crate::types::BucketOwner;
 #[derive(Debug, Serialize)]
 #[serde(rename = "Error")]
 pub struct ErrorResponse {
+    /// S3 error code (e.g. `NoSuchKey`).
     #[serde(rename = "Code")]
     pub code: String,
+    /// Human-readable description of the error.
     #[serde(rename = "Message")]
     pub message: String,
+    /// The request path the error relates to.
     #[serde(rename = "Resource")]
     pub resource: String,
+    /// The proxy request identifier, for correlating with logs.
     #[serde(rename = "RequestId")]
     pub request_id: String,
 }
@@ -69,10 +73,13 @@ impl ErrorResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename = "InitiateMultipartUploadResult")]
 pub struct InitiateMultipartUploadResult {
+    /// The virtual bucket the upload targets.
     #[serde(rename = "Bucket")]
     pub bucket: String,
+    /// The object key being uploaded.
     #[serde(rename = "Key")]
     pub key: String,
+    /// Backend-issued identifier for the multipart upload.
     #[serde(rename = "UploadId")]
     pub upload_id: String,
 }
@@ -91,12 +98,16 @@ impl InitiateMultipartUploadResult {
 #[derive(Debug, Serialize)]
 #[serde(rename = "CompleteMultipartUploadResult")]
 pub struct CompleteMultipartUploadResult {
+    /// URL of the completed object.
     #[serde(rename = "Location")]
     pub location: String,
+    /// The virtual bucket the object was written to.
     #[serde(rename = "Bucket")]
     pub bucket: String,
+    /// The object key.
     #[serde(rename = "Key")]
     pub key: String,
+    /// ETag of the assembled object.
     #[serde(rename = "ETag")]
     pub etag: String,
 }
@@ -115,6 +126,7 @@ impl CompleteMultipartUploadResult {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename = "CompleteMultipartUpload")]
 pub struct CompleteMultipartUploadRequest {
+    /// The uploaded parts, in ascending part-number order.
     #[serde(rename = "Part")]
     pub parts: Vec<CompletePart>,
 }
@@ -134,8 +146,10 @@ pub struct CompletePart {
 #[derive(Debug, Serialize)]
 #[serde(rename = "ListAllMyBucketsResult")]
 pub struct ListAllMyBucketsResult {
+    /// The owner reported for every listed bucket.
     #[serde(rename = "Owner")]
     pub owner: BucketOwner,
+    /// The buckets visible to the caller.
     #[serde(rename = "Buckets")]
     pub buckets: BucketList,
 }
@@ -143,6 +157,7 @@ pub struct ListAllMyBucketsResult {
 /// Wrapper for the `<Buckets>` element in a ListAllMyBucketsResult response.
 #[derive(Debug, Serialize)]
 pub struct BucketList {
+    /// One `<Bucket>` element per virtual bucket.
     #[serde(rename = "Bucket")]
     pub buckets: Vec<BucketEntry>,
 }

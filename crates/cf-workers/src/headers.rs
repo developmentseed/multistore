@@ -27,7 +27,7 @@ impl WsHeaders {
 
 impl From<&HeaderMap> for WsHeaders {
     fn from(headers: &HeaderMap) -> Self {
-        let ws = web_sys::Headers::new().unwrap();
+        let ws = web_sys::Headers::new().expect("Headers::new() cannot fail");
         for (key, value) in headers.iter() {
             if let Ok(v) = value.to_str() {
                 let _ = ws.set(key.as_str(), v);

@@ -67,7 +67,7 @@ use crate::route_handler::{ProxyResponseBody, RequestInfo};
 use crate::router::Router;
 use crate::types::{Action, BucketConfig, ResolvedIdentity, S3Operation};
 use bytes::Bytes;
-use http::{HeaderMap, Method};
+use http::{HeaderMap, HeaderValue, Method};
 use object_store::list::PaginatedListOptions;
 use std::borrow::Cow;
 use std::net::IpAddr;
@@ -179,8 +179,9 @@ pub struct ProxyGateway<B, R, C> {
     /// When true, error responses include full internal details (for development).
     /// When false, server-side errors use generic messages.
     debug_errors: bool,
-    /// User-Agent header value for outbound backend requests.
-    user_agent: String,
+    /// User-Agent header value for outbound backend requests. Validated once
+    /// at configuration time so per-request header construction cannot fail.
+    user_agent: HeaderValue,
     /// When true, responses include a `Server-Timing` header with gateway
     /// processing metrics. Enabled by default.
     server_timing: bool,
@@ -221,7 +222,7 @@ where
             credential_resolver: None,
             router: Router::new(),
             debug_errors: false,
-            user_agent: DEFAULT_USER_AGENT.to_string(),
+            user_agent: HeaderValue::from_static(DEFAULT_USER_AGENT),
             server_timing: true,
             max_request_body_size: None,
         }
@@ -273,9 +274,20 @@ where
     ///
     /// Defaults to [`DEFAULT_USER_AGENT`] (`multistore/{version}`). Use this
     /// to include your application name, e.g. `"myapp/1.0 multistore/0.2.0"`.
-    pub fn with_user_agent(mut self, user_agent: impl Into<String>) -> Self {
-        self.user_agent = user_agent.into();
-        self
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProxyError::ConfigError`] if the value is not a valid HTTP
+    /// header value (e.g. contains a newline). Validating here means the
+    /// per-request header construction can never panic on a bad value.
+    pub fn with_user_agent(
+        mut self,
+        user_agent: impl TryInto<HeaderValue>,
+    ) -> Result<Self, ProxyError> {
+        self.user_agent = user_agent.try_into().map_err(|_| {
+            ProxyError::ConfigError("user agent is not a valid HTTP header value".into())
+        })?;
+        Ok(self)
     }
 
     /// Enable or disable `Server-Timing` headers on responses.
@@ -879,13 +891,7 @@ where
             }
             .to_xml();
 
-            let mut resp_headers = HeaderMap::new();
-            resp_headers.insert("content-type", "application/xml".parse().unwrap());
-            return Ok(HandlerAction::Response(ProxyResult {
-                status: 200,
-                headers: resp_headers,
-                body: ProxyResponseBody::from_bytes(Bytes::from(xml)),
-            }));
+            return Ok(HandlerAction::Response(ProxyResult::xml(200, xml)));
         }
 
         // All remaining operations require a bucket config.
@@ -1130,7 +1136,7 @@ where
                 fwd_headers.insert(*name, v.clone());
             }
         }
-        fwd_headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+        fwd_headers.insert(http::header::USER_AGENT, self.user_agent.clone());
 
         Ok(ForwardRequest {
             method,
@@ -1247,7 +1253,7 @@ where
         if let Some(cl) = original_headers.get(http::header::CONTENT_LENGTH) {
             headers.insert(http::header::CONTENT_LENGTH, cl.clone());
         }
-        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+        headers.insert(http::header::USER_AGENT, self.user_agent.clone());
 
         tracing::debug!(
             path = url.path(),
@@ -1378,14 +1384,7 @@ where
             )?
         };
 
-        let mut resp_headers = HeaderMap::new();
-        resp_headers.insert("content-type", "application/xml".parse().unwrap());
-
-        Ok(ProxyResult {
-            status: 200,
-            headers: resp_headers,
-            body: ProxyResponseBody::Bytes(Bytes::from(xml)),
-        })
+        Ok(ProxyResult::xml(200, xml))
     }
 
     /// Execute a multipart operation via raw signed HTTP.
@@ -1428,7 +1427,7 @@ where
                 headers.insert(name.clone(), val.clone());
             }
         }
-        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+        headers.insert(http::header::USER_AGENT, self.user_agent.clone());
 
         let payload_hash = if body.is_empty() {
             UNSIGNED_PAYLOAD.to_string()
@@ -1507,7 +1506,7 @@ where
             let backend_url = build_backend_url(config, &pending.operation)?;
 
             let mut headers = HeaderMap::new();
-            headers.insert("content-type", "application/xml".parse().unwrap());
+            headers.insert("content-type", HeaderValue::from_static("application/xml"));
             // S3 requires a Content-MD5 (or trailing checksum) on DeleteObjects.
             headers.insert(
                 "content-md5",
@@ -1515,7 +1514,7 @@ where
                     .parse()
                     .map_err(|_| ProxyError::Internal("invalid content-md5 header".into()))?,
             );
-            headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+            headers.insert(http::header::USER_AGENT, self.user_agent.clone());
 
             let payload_hash = hash_payload(&backend_body);
             sign_s3_request(
@@ -1563,13 +1562,7 @@ where
         }
 
         let xml = delete::build_delete_result(&deleted_client, &errors, quiet);
-        let mut resp_headers = HeaderMap::new();
-        resp_headers.insert("content-type", "application/xml".parse().unwrap());
-        Ok(ProxyResult {
-            status: 200,
-            headers: resp_headers,
-            body: ProxyResponseBody::from_bytes(Bytes::from(xml)),
-        })
+        Ok(ProxyResult::xml(200, xml))
     }
 
     /// Execute a server-side copy (`CopyObject`) via raw signed HTTP.
@@ -1622,7 +1615,7 @@ where
                 headers.insert(name.clone(), val.clone());
             }
         }
-        headers.insert(http::header::USER_AGENT, self.user_agent.parse().unwrap());
+        headers.insert(http::header::USER_AGENT, self.user_agent.clone());
 
         // Empty request body: sign the hash of the empty payload.
         let payload_hash = hash_payload(&[]);
@@ -1756,15 +1749,7 @@ fn determine_host_style(headers: &HeaderMap, virtual_host_domain: Option<&str>) 
 
 fn error_response(err: &ProxyError, resource: &str, request_id: &str, debug: bool) -> ProxyResult {
     let xml = ErrorResponse::from_proxy_error(err, resource, request_id, debug).to_xml();
-    let body = ProxyResponseBody::from_bytes(Bytes::from(xml));
-    let mut headers = HeaderMap::new();
-    headers.insert("content-type", "application/xml".parse().unwrap());
-
-    ProxyResult {
-        status: err.status_code(),
-        headers,
-        body,
-    }
+    ProxyResult::xml(err.status_code(), xml)
 }
 
 /// Build an object_store Path from a bucket config and client-visible key.

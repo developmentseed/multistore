@@ -12,6 +12,10 @@
 //! If an object_store upgrade changes its path encoding, these tests are
 //! the loud alarm.
 
+// Integration tests: `allow-unwrap-in-tests` only covers `#[test]` fns and
+// `#[cfg(test)]` modules, not helper fns in a test crate.
+#![allow(clippy::unwrap_used)]
+
 use std::collections::HashMap;
 use std::time::Duration;
 
