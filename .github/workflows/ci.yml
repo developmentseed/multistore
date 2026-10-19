@@ -163,7 +163,7 @@ jobs:
       # signed GetCallerIdentity call — both served by multistore-sts. It exports
       # AWS_ACCESS_KEY_ID / _SECRET_ACCESS_KEY / _SESSION_TOKEN for later steps.
       - name: Assume a role via aws-actions/configure-aws-credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
           aws-region: us-east-1
           # Sent verbatim as the STS RoleArn; must match a role_id in
