@@ -13,6 +13,8 @@ The CF Workers runtime deploys the proxy to Cloudflare's edge network. It compil
 
 Forwarded object responses (GET/HEAD) carry `Cache-Control: no-transform`, appended to any directives the backend returned. Without it, Cloudflare gzips compressible types such as `text/*` for clients that send `Accept-Encoding: gzip`, which strips `Content-Length` and `Accept-Ranges`, weakens the `ETag` (`W/"…"`), and breaks clients that size or split downloads from a HEAD or send `If-Match`.
 
+Objects stored with a `Content-Encoding` (e.g. uploaded brotli-compressed with `Content-Encoding: br`) are served as stored to clients that accept that encoding, and decoded by Cloudflare's edge for clients that don't. This relies on the backend subrequest sending `Accept-Encoding: br, gzip` on reads (`ForwardRequest::accept_encoding`); without it, Cloudflare decodes the body before the Worker sees it, and every client gets the uncompressed body without the header. Ranged reads (`206`) of an encoded object return slices of the stored bytes, and Cloudflare's edge removes their `Content-Encoding` header. `wrangler dev` passes encoded bodies through either way, so only a deployed Worker shows this behavior.
+
 To trade those guarantees for edge compression (e.g. a text-only public mirror), remove the directive from the `web_sys::Response` returned by `into_web_sys()`:
 
 ```rust

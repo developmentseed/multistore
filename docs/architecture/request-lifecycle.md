@@ -134,6 +134,7 @@ The handler generates a presigned URL using the backend's `Signer`, then the cor
 
 - Presigned URL TTL: 300 seconds
 - Headers forwarded: `range`, `if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`, `content-type`, `content-length`, `content-md5`, `content-encoding`, `content-disposition`, `cache-control`, `x-amz-content-sha256`
+- Header added on reads (GET/HEAD): `accept-encoding: br, gzip` (`ForwardRequest::accept_encoding`), so a runtime passes stored `Content-Encoding` bodies through rather than decoding them
 
 ### `Response(ProxyResult)`
 
