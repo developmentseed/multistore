@@ -83,6 +83,28 @@ impl ForwardRequest {
     pub fn should_bypass_cache(&self) -> bool {
         self.method == Method::HEAD || self.headers.contains_key(http::header::RANGE)
     }
+
+    /// The `Accept-Encoding` the runtime should send the backend, if any.
+    ///
+    /// Reads ask for the stored encoding as-is. Object stores ignore the header
+    /// (S3 serves an object exactly as stored), but a runtime in front of them
+    /// may not: on Cloudflare, a subrequest without it has an object stored with
+    /// `Content-Encoding` (e.g. uploaded brotli-compressed) decoded before the
+    /// Worker sees it, so every client gets the uncompressed body with the
+    /// header dropped. With it, the encoded body passes through and the edge
+    /// decodes it only for clients whose `Accept-Encoding` can't take it.
+    /// Covers `br` and `gzip`, the encodings Cloudflare decodes for clients.
+    ///
+    /// Ranged reads get none: Cloudflare strips `Content-Encoding` from a `206`
+    /// either way, so the header gains nothing there and would only invite a
+    /// backend that compresses on request to return a compressed slice.
+    ///
+    /// Runtimes opt in by sending this on their backend request; only the
+    /// Cloudflare Workers backend does.
+    pub fn accept_encoding(&self) -> Option<&'static str> {
+        let read = matches!(self.method, Method::GET | Method::HEAD);
+        (read && !self.headers.contains_key(http::header::RANGE)).then_some("br, gzip")
+    }
 }
 
 /// The result of handling a proxy request.
@@ -463,6 +485,32 @@ mod tests {
         // Full-object GET stays cacheable; writes don't match.
         assert!(!forward(Method::GET, None).should_bypass_cache());
         assert!(!forward(Method::PUT, None).should_bypass_cache());
+    }
+
+    #[test]
+    fn accept_encoding_on_reads_only() {
+        // Reads take the stored encoding as-is (see `accept_encoding`).
+        assert_eq!(
+            forward(Method::GET, None).accept_encoding(),
+            Some("br, gzip")
+        );
+        assert_eq!(
+            forward(Method::HEAD, None).accept_encoding(),
+            Some("br, gzip")
+        );
+        // Ranged reads gain nothing (Cloudflare strips `Content-Encoding` from
+        // 206s) and must not invite a backend to compress the slice.
+        assert_eq!(
+            forward(Method::GET, Some("bytes=0-9")).accept_encoding(),
+            None
+        );
+        assert_eq!(
+            forward(Method::HEAD, Some("bytes=0-9")).accept_encoding(),
+            None
+        );
+        // Writes return no body worth negotiating.
+        assert_eq!(forward(Method::PUT, None).accept_encoding(), None);
+        assert_eq!(forward(Method::POST, None).accept_encoding(), None);
     }
 
     #[test]
