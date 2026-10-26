@@ -74,7 +74,11 @@ impl ProxyBackend for WorkerBackend {
         // Build web_sys::RequestInit.
         let init = web_sys::RequestInit::new();
         init.set_method(request.method.as_str());
-        init.set_headers(&WsHeaders::from(&request.headers).into_inner().into());
+        let headers = WsHeaders::from(&request.headers).into_inner();
+        if let Some(accept_encoding) = request.accept_encoding() {
+            let _ = headers.set("accept-encoding", accept_encoding);
+        }
+        init.set_headers(&headers.into());
 
         // Bypass Cloudflare's subrequest cache for reads where leaving it on
         // would break the request (HEAD rewritten to GET on cacheable-extension

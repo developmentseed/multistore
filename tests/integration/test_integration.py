@@ -9,6 +9,7 @@ Environment variables:
   ACTIONS_ID_TOKEN_REQUEST_URL: GitHub Actions OIDC endpoint (automatic in CI)
 """
 
+import gzip
 import os
 import uuid
 import xml.etree.ElementTree as ET
@@ -929,6 +930,50 @@ class TestOidcCredentialAccess:
         with pytest.raises(ClientError) as exc_info:
             sts.get_caller_identity()
         assert exc_info.value.response["ResponseMetadata"]["HTTPStatusCode"] == 403
+
+
+# ---------------------------------------------------------------------------
+# Stored Content-Encoding
+# ---------------------------------------------------------------------------
+
+class TestStoredContentEncoding:
+    """An object stored with `Content-Encoding` (e.g. uploaded pre-compressed)
+    is served as stored, the encoded bytes plus the header, to a client that
+    accepts the encoding, so HTTP clients decode it transparently.
+
+    `wrangler dev` passes encoded bodies through even without the read-side
+    `Accept-Encoding` (`ForwardRequest::accept_encoding`); only Cloudflare's
+    network decodes them. This guards the proxy's own handling, not that.
+    """
+
+    BODY = b'{"id": 1, "name": "example"}\n' * 500
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def encoded_key(cls):
+        key = f"test-encoded-{uuid.uuid4()}.jsonl"
+        backend = TestByteFaithfulKeys._backend_client()
+        backend.put_object(
+            Bucket="public-data",
+            Key=key,
+            Body=gzip.compress(cls.BODY, mtime=0),
+            ContentEncoding="gzip",
+            ContentType="application/x-ndjson",
+        )
+        yield key
+        backend.delete_object(Bucket="public-data", Key=key)
+
+    def test_full_get_keeps_encoding(self, encoded_key):
+        with requests.get(
+            f"{PROXY_URL}/public-data/{encoded_key}",
+            headers={"Accept-Encoding": "gzip"},
+            stream=True,
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers.get("Content-Encoding") == "gzip"
+            wire = resp.raw.read(decode_content=False)
+        assert wire == gzip.compress(self.BODY, mtime=0)
+        assert gzip.decompress(wire) == self.BODY
 
 
 # ---------------------------------------------------------------------------
