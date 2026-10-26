@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/developmentseed/multistore/compare/v0.8.0...v0.8.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **cf-workers:** send Accept-Encoding on backend reads so stored encodings pass through ([#165](https://github.com/developmentseed/multistore/issues/165)) ([d857803](https://github.com/developmentseed/multistore/commit/d857803072f7a66e9261794676ee37a9268b8dcd))
+
 ## [0.8.0](https://github.com/developmentseed/multistore/compare/v0.7.2...v0.8.0) (2026-10-01)
 
 
