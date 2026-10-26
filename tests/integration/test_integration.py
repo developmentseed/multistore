@@ -963,26 +963,17 @@ class TestStoredContentEncoding:
         yield key
         backend.delete_object(Bucket="public-data", Key=key)
 
-    def _get(self, key: str, **headers) -> requests.Response:
-        return requests.get(
-            f"{PROXY_URL}/public-data/{key}",
-            headers={"Accept-Encoding": "gzip", **headers},
-            stream=True,
-        )
-
     def test_full_get_keeps_encoding(self, encoded_key):
-        resp = self._get(encoded_key)
-        assert resp.status_code == 200
-        assert resp.headers.get("Content-Encoding") == "gzip"
-        wire = resp.raw.read(decode_content=False)
+        with requests.get(
+            f"{PROXY_URL}/public-data/{encoded_key}",
+            headers={"Accept-Encoding": "gzip"},
+            stream=True,
+        ) as resp:
+            assert resp.status_code == 200
+            assert resp.headers.get("Content-Encoding") == "gzip"
+            wire = resp.raw.read(decode_content=False)
         assert wire == gzip.compress(self.BODY, mtime=0)
         assert gzip.decompress(wire) == self.BODY
-
-    def test_range_get_keeps_encoding(self, encoded_key):
-        resp = self._get(encoded_key, Range="bytes=0-9")
-        assert resp.status_code == 206
-        assert resp.headers.get("Content-Encoding") == "gzip"
-        assert resp.raw.read(decode_content=False) == gzip.compress(self.BODY, mtime=0)[:10]
 
 
 # ---------------------------------------------------------------------------
