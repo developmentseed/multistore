@@ -105,12 +105,38 @@ impl<H: HttpExchange> OidcCredentialProvider<H> {
         subject: &str,
         extra_claims: &[(&str, &str)],
     ) -> Result<Arc<BackendCredentials>, OidcProviderError> {
+        self.get_credentials_with_audience(
+            cache_key,
+            exchange,
+            subject,
+            &self.audience,
+            extra_claims,
+        )
+        .await
+    }
+
+    /// [`get_credentials`](Self::get_credentials), with the JWT's `aud` set to
+    /// `audience` instead of the provider's default.
+    ///
+    /// The cache entry is scoped by `audience` as well as `subject`: a cloud
+    /// checks `aud` against the client IDs registered for the issuer before it
+    /// evaluates any trust policy, so a credential minted under one audience
+    /// must never stand in for an exchange under another.
+    pub async fn get_credentials_with_audience<E: CredentialExchange<H>>(
+        &self,
+        cache_key: &str,
+        exchange: &E,
+        subject: &str,
+        audience: &str,
+        extra_claims: &[(&str, &str)],
+    ) -> Result<Arc<BackendCredentials>, OidcProviderError> {
+        let key = cache::scoped_key(&cache::scoped_key(cache_key, subject), audience);
         self.cache
-            .get_or_fetch(&cache::scoped_key(cache_key, subject), || async {
+            .get_or_fetch(&key, || async {
                 // Cache miss (or due for refresh): mint a JWT and exchange it.
-                let token =
-                    self.signer
-                        .sign(subject, &self.issuer, &self.audience, extra_claims)?;
+                let token = self
+                    .signer
+                    .sign(subject, &self.issuer, audience, extra_claims)?;
                 let creds: BackendCredentials = exchange.exchange(&self.http, &token).await?;
                 Ok(Arc::new(creds))
             })

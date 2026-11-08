@@ -40,6 +40,8 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
             )
         })?;
         let subject = config.option("oidc_subject").unwrap_or("s3-proxy");
+        // Optional per-bucket `aud`; without it the provider's default applies.
+        let audience = config.option("oidc_audience");
 
         // Name the assumed-role session after the subject so the caller's
         // CloudTrail attributes each `AssumeRoleWithWebIdentity` to the
@@ -48,10 +50,18 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         // `sub`, so sanitize before use.
         let mut exchange = AwsExchange::new(role_arn.to_string());
         exchange.session_name = sts_session_name(subject);
-        let creds = self
-            .provider
-            .get_credentials(role_arn, &exchange, subject, &[])
-            .await?;
+        let creds = match audience {
+            Some(aud) => {
+                self.provider
+                    .get_credentials_with_audience(role_arn, &exchange, subject, aud, &[])
+                    .await?
+            }
+            None => {
+                self.provider
+                    .get_credentials(role_arn, &exchange, subject, &[])
+                    .await?
+            }
+        };
 
         // Inject the temporary credentials via `BackendCredentials::apply_to`
         // (defined in `multistore` core), so the option-key set and the
@@ -66,6 +76,7 @@ impl<H: HttpExchange> AwsBackendAuth<H> {
         options.remove("auth_type");
         options.remove("oidc_role_arn");
         options.remove("oidc_subject");
+        options.remove("oidc_audience");
 
         Ok(resolved.backend_options)
     }
@@ -303,6 +314,74 @@ mod tests {
             .find(|(k, _)| k == "RoleSessionName")
             .map(|(_, v)| v.clone());
         assert_eq!(session.as_deref(), Some("scv1_conn_abc-1"));
+    }
+
+    /// The `aud` claim of the JWT in the last STS request.
+    fn sent_audience(http: &MockHttp) -> String {
+        use base64::Engine;
+        let form = http.last_form.lock().unwrap();
+        let token = &form
+            .iter()
+            .find(|(k, _)| k == "WebIdentityToken")
+            .unwrap()
+            .1;
+        let payload = token.split('.').nth(1).unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap();
+        claims["aud"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn oidc_audience_sets_aud_and_is_stripped() {
+        let http = MockHttp::new();
+        let provider = OidcCredentialProvider::new(
+            test_signer(),
+            http.clone(),
+            "https://issuer.example.com".into(),
+            "sts.amazonaws.com".into(),
+        );
+        let auth = AwsBackendAuth::new(provider);
+
+        auth.resolve_credentials(&oidc_bucket_config())
+            .await
+            .unwrap();
+        assert_eq!(sent_audience(&http), "sts.amazonaws.com");
+
+        let mut config = oidc_bucket_config();
+        config
+            .backend_options
+            .insert("oidc_audience".into(), "scv1:conn:abc-1".into());
+        let resolved = auth.resolve_credentials(&config).await.unwrap().unwrap();
+        assert_eq!(sent_audience(&http), "scv1:conn:abc-1");
+        assert!(!resolved.contains_key("oidc_audience"));
+    }
+
+    #[tokio::test]
+    async fn audiences_do_not_share_cached_credentials() {
+        let http = MockHttp::new();
+        let provider = OidcCredentialProvider::new(
+            test_signer(),
+            http.clone(),
+            "https://issuer.example.com".into(),
+            "sts.amazonaws.com".into(),
+        );
+        let auth = AwsBackendAuth::new(provider);
+        let mut config = oidc_bucket_config();
+
+        auth.resolve_credentials(&config).await.unwrap();
+        auth.resolve_credentials(&config).await.unwrap();
+        assert_eq!(http.call_count.load(Ordering::SeqCst), 1);
+
+        // Same role and subject, another audience: a fresh exchange.
+        config
+            .backend_options
+            .insert("oidc_audience".into(), "scv1:conn:abc-1".into());
+        auth.resolve_credentials(&config).await.unwrap();
+        assert_eq!(http.call_count.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
