@@ -36,7 +36,6 @@ actions = ["get_object", "head_object"]
 | `trusted_oidc_issuers` | string[] | Validated as required | OIDC provider URLs whose tokens are accepted. Deserializes fine when absent, but config validation rejects a role with no issuers (it could never accept a token). |
 | `required_audiences` | string \| string[] | Validated as required | Accepted `aud` claim values. A token passes if its `aud` matches any entry. Empty or omitted accepts no token — the audience is what keeps a token minted for another service from being exchanged here — and config validation rejects the role. Accepts a single string or a list. The legacy `required_audience` key (single string) is still accepted for backward compatibility — set one key or the other, not both. |
 | `subject_conditions` | string[] | Validated as required | Glob patterns matched against the `sub` claim. Empty or omitted accepts no subject, and config validation rejects the role; to accept every subject, say so with `"*"`. |
-| `allow_missing_exp_from` | string[] | No | Issuers whose tokens may omit `exp` because the host tracks their validity itself — its own long-lived API keys with server-side revocation, say. Tokens from every other issuer must carry `exp`. |
 | `max_session_duration_secs` | integer | Yes | Maximum session lifetime granted by this role |
 | `allowed_scopes` | AccessScope[] | Yes | Buckets, prefixes, and actions granted |
 
@@ -49,7 +48,7 @@ When a client calls `AssumeRoleWithWebIdentity`, the proxy evaluates the JWT aga
 3. **Signature** — Verified against the issuer's JWKS (fetched and cached)
 4. **Token type** — If the JWT header carries `typ`, it must be `JWT`; access tokens (`at+jwt`) and other typed tokens are not identity tokens
 5. **Audience** — The JWT's `aud` claim must match at least one of `required_audiences`; a role with none accepts no token
-6. **Expiry** — The JWT must carry `exp` (validated with 60 seconds of clock skew), unless its issuer is listed in `allow_missing_exp_from`
+6. **Expiry** — The JWT must carry `exp` (validated with 60 seconds of clock skew)
 7. **Subject** — The JWT's `sub` claim must match at least one of `subject_conditions`; a role with none accepts no subject
 
 If any check fails, the STS request returns an error.

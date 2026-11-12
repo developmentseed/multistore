@@ -298,7 +298,6 @@ mod tests {
                 trusted_oidc_issuers: vec!["https://issuer.example.com".into()],
                 required_audiences: vec!["my-audience".into()],
                 subject_conditions: vec!["*".into()],
-                allow_missing_exp_from: vec![],
                 allowed_scopes: vec![],
                 max_session_duration_secs: 3600,
             }],

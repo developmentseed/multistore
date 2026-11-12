@@ -82,7 +82,7 @@ When a client calls `AssumeRoleWithWebIdentity`:
    - **Issuer**: must be in the role's `trusted_oidc_issuers`
    - **Token type**: if the header carries `typ`, it must be `JWT`
    - **Audience**: the token's `aud` claim must match at least one of the role's `required_audiences`; a role with none accepts no token
-   - **Expiry**: the token must carry `exp`, unless its issuer is in the role's `allow_missing_exp_from`
+   - **Expiry**: the token must carry `exp`
    - **Subject**: the token's `sub` claim must match at least one of the role's `subject_conditions` (supports `*` glob wildcards); a role with none accepts no subject
 5. The proxy mints temporary credentials scoped to the role's `allowed_scopes`
 6. If `SESSION_TOKEN_KEY` is configured, the credentials are AES-256-GCM encrypted into the session token (see [Sealed Session Tokens](./sealed-tokens))
