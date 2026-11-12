@@ -10,7 +10,7 @@ jobs:
     permissions:
       id-token: write # Required for trusted publishing OIDC token exchange
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@v7.0.0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
