@@ -26,3 +26,6 @@ uuid.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 rand = "0.8"
+
+[lints]
+workspace = true

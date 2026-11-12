@@ -10,6 +10,10 @@
 //! 2. The backend's `412 Precondition Failed` is surfaced to the client
 //!    unchanged.
 
+// Integration tests: `allow-unwrap-in-tests` only covers `#[test]` fns and
+// `#[cfg(test)]` modules, not helper fns in a test crate.
+#![allow(clippy::unwrap_used)]
+
 use bytes::Bytes;
 use http::{HeaderMap, Method};
 use std::collections::HashMap;

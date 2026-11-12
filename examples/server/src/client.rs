@@ -24,6 +24,7 @@ pub struct ServerBackend {
 }
 
 impl ServerBackend {
+    /// Create a backend with a pooled `reqwest` client.
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -148,6 +149,7 @@ pub struct ReqwestHttpExchange {
 }
 
 impl ReqwestHttpExchange {
+    /// Wrap an existing `reqwest` client.
     pub fn new(client: reqwest::Client) -> Self {
         Self { client }
     }

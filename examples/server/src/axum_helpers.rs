@@ -17,5 +17,7 @@ pub fn build_proxy_response(result: ProxyResult) -> Response {
         builder = builder.header(key, value);
     }
 
-    builder.body(body).unwrap()
+    builder
+        .body(body)
+        .expect("gateway status and headers are already valid HTTP")
 }

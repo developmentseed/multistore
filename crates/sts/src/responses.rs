@@ -9,6 +9,7 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 #[serde(rename = "AssumeRoleWithWebIdentityResponse")]
 pub struct AssumeRoleWithWebIdentityResponse {
+    /// The result element wrapping credentials and the assumed-role identity.
     #[serde(rename = "AssumeRoleWithWebIdentityResult")]
     pub result: AssumeRoleWithWebIdentityResult,
 }
@@ -16,8 +17,10 @@ pub struct AssumeRoleWithWebIdentityResponse {
 /// The result payload nested inside an `AssumeRoleWithWebIdentityResponse`.
 #[derive(Debug, Serialize)]
 pub struct AssumeRoleWithWebIdentityResult {
+    /// The temporary credentials issued for this session.
     #[serde(rename = "Credentials")]
     pub credentials: StsCredentials,
+    /// The role and session the credentials belong to.
     #[serde(rename = "AssumedRoleUser")]
     pub assumed_role_user: AssumedRoleUser,
 }
@@ -25,12 +28,16 @@ pub struct AssumeRoleWithWebIdentityResult {
 /// Temporary AWS credentials returned by an STS assume-role call.
 #[derive(Debug, Serialize)]
 pub struct StsCredentials {
+    /// Temporary access key ID.
     #[serde(rename = "AccessKeyId")]
     pub access_key_id: String,
+    /// Temporary secret access key.
     #[serde(rename = "SecretAccessKey")]
     pub secret_access_key: String,
+    /// Session token that must accompany requests signed with these credentials.
     #[serde(rename = "SessionToken")]
     pub session_token: String,
+    /// Expiration time as an RFC 3339 timestamp.
     #[serde(rename = "Expiration")]
     pub expiration: String,
 }
@@ -38,8 +45,10 @@ pub struct StsCredentials {
 /// Identity information for the assumed role session.
 #[derive(Debug, Serialize)]
 pub struct AssumedRoleUser {
+    /// `{role_id}:{session_name}`, mirroring AWS's format.
     #[serde(rename = "AssumedRoleId")]
     pub assumed_role_id: String,
+    /// ARN of the assumed-role session.
     #[serde(rename = "Arn")]
     pub arn: String,
 }

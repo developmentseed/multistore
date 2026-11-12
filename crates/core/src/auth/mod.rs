@@ -22,6 +22,10 @@ use crate::types::TemporaryCredentials;
 /// Implementations handle token decryption/lookup. The core proxy calls this
 /// during identity resolution without knowing the token format.
 pub trait TemporaryCredentialResolver: MaybeSend + MaybeSync {
+    /// Resolve a session token into its temporary credentials.
+    ///
+    /// Returns `Ok(None)` when the token is well-formed but unknown or
+    /// expired, and an error when it cannot be decoded at all.
     fn resolve(&self, token: &str) -> Result<Option<TemporaryCredentials>, ProxyError>;
 }
 

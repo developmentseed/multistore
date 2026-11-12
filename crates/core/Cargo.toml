@@ -35,3 +35,6 @@ object_store.workspace = true
 reqwest.workspace = true
 futures.workspace = true
 matchit.workspace = true
+
+[lints]
+workspace = true

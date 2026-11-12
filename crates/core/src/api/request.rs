@@ -273,12 +273,16 @@ pub fn validate_key(key: &str) -> Result<(), ProxyError> {
     Ok(())
 }
 
+/// How the bucket name was addressed in the incoming request.
 #[derive(Debug, Clone)]
 pub enum HostStyle {
     /// Path-style: `/{bucket}/{key}`
     Path,
     /// Virtual-hosted-style: bucket extracted from Host header.
-    VirtualHosted { bucket: String },
+    VirtualHosted {
+        /// The bucket name taken from the `Host` header.
+        bucket: String,
+    },
 }
 
 fn parse_path_style(path: &str) -> Result<(String, String), ProxyError> {
