@@ -5,8 +5,8 @@
 //! register their routes via extension traits on `Router` (e.g. `OidcRouterExt`,
 //! `StsRouterExt`), making integration a single chained call.
 //!
-//! Handlers implement `RouteHandler` and override individual HTTP method
-//! handlers (`get`, `post`, etc.) or `handle` directly:
+//! Handlers implement [`RouteHandler::handle`] as an `async fn` and return
+//! `Some(result)` to answer the request or `None` to fall through:
 //!
 //! ```rust,ignore
 //! use multistore::router::Router;
@@ -15,7 +15,7 @@
 //!     .route("/api/health", HealthCheck);
 //! ```
 
-use crate::route_handler::{HandlerAction, Params, RequestInfo, RouteHandler};
+use crate::route_handler::{ErasedRouteHandler, HandlerAction, Params, RequestInfo, RouteHandler};
 
 /// Path-based request router.
 ///
@@ -27,7 +27,7 @@ use crate::route_handler::{HandlerAction, Params, RequestInfo, RouteHandler};
 /// registering `/.well-known/openid-configuration` alongside `/{*path}`
 /// will always route OIDC discovery before the catch-all.
 pub struct Router {
-    inner: matchit::Router<Box<dyn RouteHandler>>,
+    inner: matchit::Router<Box<dyn ErasedRouteHandler>>,
 }
 
 impl Router {
@@ -87,6 +87,37 @@ impl Default for Router {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::route_handler::ProxyResult;
+
+    /// A handler written the way integrators will write one: a plain
+    /// `async fn`, no manual boxing.
+    struct HealthCheck;
+
+    impl RouteHandler for HealthCheck {
+        async fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> Option<ProxyResult> {
+            (req.method == http::Method::GET).then(|| ProxyResult::json(200, r#"{"ok":true}"#))
+        }
+    }
+
+    #[test]
+    fn async_fn_handler_dispatches_and_falls_through() {
+        let router = Router::new().route("/health", HealthCheck);
+        let headers = http::HeaderMap::new();
+        let get = RequestInfo::new(&http::Method::GET, "/health", None, &headers, None);
+        let post = RequestInfo::new(&http::Method::POST, "/health", None, &headers, None);
+        let other = RequestInfo::new(&http::Method::GET, "/nope", None, &headers, None);
+
+        futures::executor::block_on(async {
+            assert!(matches!(
+                router.dispatch(&get).await,
+                Some(HandlerAction::Response(r)) if r.status == 200
+            ));
+            assert!(router.dispatch(&post).await.is_none(), "handler declined");
+            assert!(router.dispatch(&other).await.is_none(), "no route matched");
+        });
+    }
+
     /// `matchit`'s `/{*path}` catch-all does NOT match the bare root `/`.
     /// Route handlers that need to match `/` must register an explicit `/` route.
     #[test]

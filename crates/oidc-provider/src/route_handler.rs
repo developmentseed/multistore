@@ -6,7 +6,7 @@
 use crate::discovery::openid_configuration_json;
 use crate::jwks::jwks_json;
 use crate::jwt::JwtSigner;
-use multistore::route_handler::{ProxyResult, RequestInfo, RouteHandler, RouteHandlerFuture};
+use multistore::route_handler::{ProxyResult, RequestInfo, RouteHandler};
 use multistore::router::Router;
 
 /// Handler that serves the OpenID Connect discovery document.
@@ -16,12 +16,12 @@ struct OidcConfigHandler {
 }
 
 impl RouteHandler for OidcConfigHandler {
-    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+    async fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> Option<ProxyResult> {
         if req.method.as_str() != "GET" {
-            return Box::pin(async { None });
+            return None;
         }
         let json = openid_configuration_json(&self.issuer, &self.jwks_uri);
-        Box::pin(async move { Some(ProxyResult::json(200, json)) })
+        Some(ProxyResult::json(200, json))
     }
 }
 
@@ -31,9 +31,9 @@ struct OidcJwksHandler {
 }
 
 impl RouteHandler for OidcJwksHandler {
-    fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> RouteHandlerFuture<'a> {
+    async fn handle<'a>(&'a self, req: &'a RequestInfo<'a>) -> Option<ProxyResult> {
         if req.method.as_str() != "GET" {
-            return Box::pin(async { None });
+            return None;
         }
         let keys: Vec<_> = self
             .signers
@@ -41,7 +41,7 @@ impl RouteHandler for OidcJwksHandler {
             .map(|s| (s.public_key(), s.kid()))
             .collect();
         let json = jwks_json(&keys);
-        Box::pin(async move { Some(ProxyResult::json(200, json)) })
+        Some(ProxyResult::json(200, json))
     }
 }
 
